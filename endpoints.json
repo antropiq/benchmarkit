@@ -1,0 +1,11 @@
+{
+  "serverUrl": "http://localhost:8080/v1",
+  "endpoints": [
+    "gpt-oss-20b"
+  ],
+  "verifierAgent": {
+    "sysprompt": "You are a response expert analyser. The user will provide a json file containing the following structure { \"question\": \"<the_question>\", \"response\": \"<the_llm_response>\", \"expected\": \"<the_expected_answer_from_questions_file>\" }. Your goal is to evaluate if the response matches the expected answer. The question is provided for clarity only and you must not answer to it yourself. Words can differ but the meaning of both (response, expected) must match. If you think there is a match just respond 'true'. If not just respond 'false'. Do not add any other output or comments. Your response must only be 'true' or 'false'.",
+    "serverUrl": "http://localhost:8080/v1",
+    "endpoint": "gpt-oss-20b"
+  }
+}

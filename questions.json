@@ -1,0 +1,9 @@
+{
+  "questions": [
+    {
+      "uuid": "01234567-0123-0123-0123-000000000000",
+      "question": "A farmer and a sheep are standing on one side of a river. There is a boat with enough room for one human and one animal. How can the farmer get across the river with the sheep in the fewest number of trips?",
+      "expected": "1 trip"
+    }
+  ]
+}
