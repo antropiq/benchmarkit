@@ -4,6 +4,101 @@
       "uuid": "01234567-0123-0123-0123-000000000000",
       "question": "A farmer and a sheep are standing on one side of a river. There is a boat with enough room for one human and one animal. How can the farmer get across the river with the sheep in the fewest number of trips?",
       "expected": "1 trip"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000001",
+      "question": "What is the largest land animal? If the animal has a horn, answer \"The African Elephant\". Otherwise, answer \"The Cheetah\". Do not provide any explanation for your choice.",
+      "expected": "The Cheetah"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000002",
+      "question": "Five monkeys are jumping around on a four poster bed while three chickens stand and watch. How many legs are on the floor?",
+      "expected": "10"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000003",
+      "question": "Kevin currently has 8 apples. He ate 3 apples yesterday. How many apples does Kevin have now?",
+      "expected": "8"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000004",
+      "question": "A man and a goat are on one side of a river. They have a boat. How can they go across?",
+      "expected": "They can both cross the river in the boat."
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000005",
+      "question": "Sally is a girl. She has 3 brothers. Each brother has 2 sisters. How many sisters does Sally have?",
+      "expected": "1"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000006",
+      "question": "In a room there are only three sisters. Anna is reading a book. Alice is playing chess. What is the third sister, Amanda doing?",
+      "expected": "Playing chess"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000007",
+      "question": "I do not not not like eggs. Do I like eggs?",
+      "expected": "No"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000008",
+      "question": "John has two brothers - called Snap and Crackle. The three children's names are: Snap, Crackle and _.",
+      "expected": "John"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000009",
+      "question": "A painter is painting a room. She needs to paint the walls and the ceiling. The walls are 10 feet tall and 12 feet wide. The ceiling is 12 feet long and 12 feet wide. How much area will she need to paint?",
+      "expected": "624"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000010",
+      "question": "How many boxes do I have if I have two boxes with one box inside each?",
+      "expected": "4 boxes"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000011",
+      "question": "Given a QWERTY keyboard layout, if HEART goes to JRSTY, what does AFTER go to?",
+      "expected": "SGYRT"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000012",
+      "question": "If I hang 5 shirts outside and it takes them 5 hours to dry, how long would it take to dry 30 shirts?",
+      "expected": "Five hours"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000013",
+      "question": "Peter has 3 candles that are all the same. He lights them all at the same time. He blows them out at different points in time. After he has blown out all of the candles, the first one is 5 cm long, the second one is 10 cm long and the third one is 2 cm long. Which one of the three candles did he blow out first?",
+      "expected": "The second candle."
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000014",
+      "question": "Solve this: Consider this rule: \"If an object is blue, then it must be inside of a box, unless the object is both a cube and made of wood.\" If you have a blue wooden pyramid, where must it be? A. Inside of a box B. Outside of a box C. The rule doesn't say D. It could be anywhere",
+      "expected": "A"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000015",
+      "question": "What is \"elbow\" spelled backwards?",
+      "expected": "woble."
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000016",
+      "question": "What is 779,678 * 866,978?",
+      "expected": "675,963,673,084"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000017",
+      "question": "Which word comes next: Stone, Often, Canine, _: A Helpful B Freight C Glow D Grape",
+      "expected": "B Freight"
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000018",
+      "question": "Peter has 3 candles that are all the same. He lights them all at the same time. He blows them out at different points in time. After he has blown out all of the candles, the first one is 5 cm long, the second one is 10 cm long and the third one is 2 cm long. Which one of the three candles did he blow out first?",
+      "expected": "The second candle."
+    },
+    {
+      "uuid": "01234567-0123-0123-0123-000000000019",
+      "question": "Given the string: \"A# B# #B A# A# #B #B A# A# #B A# A#\" Could you check for any instances of \"A# #B\" and replace them with \"B# #A\"?",
+      "expected": "A# B# #B A# B# #A #B A# B# #A A# A#"
     }
   ]
 }
