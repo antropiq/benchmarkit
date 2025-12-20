@@ -1,11 +1,13 @@
 # benchmark_app.py
 import json
-import time
+
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import streamlit as st
 from litellm import completion  # pip: streamlit, litellm
+import time
+
 
 # --------------------------------------------------------------------------- #
 #                                  Typing                                     #
@@ -25,6 +27,14 @@ def load_json_from_file(file) -> JSONType:
     except Exception as exc:
         st.error(f"Could not parse JSON: {exc}")
         return {}
+
+
+def format_time(seconds: float) -> str:
+    """Return a string HH:MM:SS for given seconds."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02}:{minutes:02}:{secs:02}"
 
 
 def add_result_to_state(
@@ -106,7 +116,20 @@ def call_llm_and_stream(
     question: Dict,
 ) -> LLMResult:
     """Make LLM call with streaming and return results."""
-    messages = [{"role": "user", "content": question["question"]}]
+    sysmsg: str = """
+        You are a riddle expert.
+        Your goal is to give the best response to the user question
+        without providing any explanation.
+        The question is part of a benchmark
+        set of questions and must be answered seriously.
+        This is not a game.
+        Take you time to think and concentrate
+        upon the asked question and
+        give the best possible response.""".strip()
+    messages = [
+        {"role": "system", "content": sysmsg},
+        {"role": "user", "content": question["question"]}
+    ]
     start_time = time.time()
     buffer = ""
     last_chunk: Optional[Any] = None
@@ -126,12 +149,12 @@ def call_llm_and_stream(
     stream_placeholder = st.empty()
     try:
         for chunk in response_generator:
-            last_chunk = chunk
             content = safe_get_choice_content(chunk)
 
             if not content:
                 continue
 
+            last_chunk = chunk
             buffer += content
             stream_placeholder.markdown(buffer, unsafe_allow_html=True)
             time.sleep(0.05)  # Allow UI to update
@@ -141,6 +164,7 @@ def call_llm_and_stream(
 
     # Extract token usage safely
     tokens_used = safe_get_token_usage(last_chunk) if last_chunk else 0
+    st.session_state["total_running_time"] = st.session_state["total_running_time"] + time.time() - start_time
     return buffer, time.time() - start_time, tokens_used
 
 
@@ -198,6 +222,7 @@ def process_question(
     server_url: str,
     verifier: Dict,
     progress_bar,
+    score_progress,
     total_tests: int,
 ) -> None:
     """Process single question for a model."""
@@ -227,6 +252,16 @@ def process_question(
         tokens=tokens_used,
     )
     progress_bar.progress(st.session_state.current_index / total_tests)
+    current_successes = sum(
+        1 for model_entry in st.session_state.results
+        for resp in model_entry["responses"] if resp["succeeded"]
+    )
+    t: str = format_time(st.session_state["total_running_time"])
+    score_progress.markdown(f"""
+        **Score:** {current_successes}/{total_tests} **Running for:** {t}
+        Fail count: {st.session_state.current_index - current_successes}
+        """.strip()
+    )
 
 
 def run_benchmark(
@@ -238,6 +273,7 @@ def run_benchmark(
 ) -> None:
     """Execute benchmark for all models and questions."""
     progress_bar = st.progress(0)
+    score_progress = st.empty()
     st.session_state.current_index = 0
 
     for model in endpoints:
@@ -246,7 +282,13 @@ def run_benchmark(
             question["index"] = idx  # Add index for display
             st.session_state.current_index += 1
             process_question(
-                model, question, server_url, verifier, progress_bar, total_tests
+                model,
+                question,
+                server_url,
+                verifier,
+                progress_bar,
+                score_progress,
+                total_tests
             )
 
     st.success("✅ Benchmark finished!")
@@ -255,7 +297,8 @@ def run_benchmark(
 
 def save_results() -> None:
     """Save benchmark results to JSON file."""
-    output = {"results": st.session_state["results"]}
+    t: str = format_time(st.session_state["total_running_time"])
+    output = {"results": st.session_state["results"], "totalRunningTime": t}
     output_path = Path.cwd() / "results.json"
     try:
         with open(output_path, "w") as fp:
@@ -340,6 +383,8 @@ def main() -> None:
     # Start benchmark button
     if st.button("🏁 Start Benchmark") and questions_file and endpoints_file:
         questions, server_url, endpoints, verifier = get_session_data()
+        st.session_state["start_time"] = time.time()
+        st.session_state["total_running_time"] = 0
         run_benchmark(
             questions,
             server_url,
@@ -347,6 +392,8 @@ def main() -> None:
             verifier,
             st.session_state["total_tests"],
         )
+        duration = time.time() - st.session_state["start_time"]
+        st.session_state["total_running_time"] = duration
 
 
 if __name__ == "__main__":

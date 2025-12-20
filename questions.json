@@ -87,7 +87,7 @@
     },
     {
       "uuid": "01234567-0123-0123-0123-000000000017",
-      "question": "Which word comes next: Stone, Often, Canine, _: A Helpful B Freight C Glow D Grape",
+      "question": "Which word comes next: Stone, Often, Canine, _: A. Helpful, B. Freight, C. Glow, D. Grape",
       "expected": "B Freight"
     },
     {
