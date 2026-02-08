@@ -116,16 +116,7 @@ def call_llm_and_stream(
     question: Dict,
 ) -> LLMResult:
     """Make LLM call with streaming and return results."""
-    sysmsg: str = """
-        You are a riddle expert.
-        Your goal is to give the best response to the user question
-        without providing any explanation.
-        The question is part of a benchmark
-        set of questions and must be answered seriously.
-        This is not a game.
-        Take you time to think and concentrate
-        upon the asked question and
-        give the best possible response.""".strip()
+    sysmsg: str = "You are a helpful assistant."
     messages = [
         {"role": "system", "content": sysmsg},
         {"role": "user", "content": question["question"]}
