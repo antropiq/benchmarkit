@@ -154,7 +154,10 @@ def call_llm_and_stream(
         buffer = ""
 
     # Extract token usage safely
-    tokens_used = safe_get_token_usage(last_chunk) if last_chunk else 0
+    tokens_used = 0
+    if hasattr(response_generator, "last_response"):
+        tokens_used = response_generator.last_response.usage.total_tokens
+    # tokens_used = safe_get_token_usage(last_chunk) if last_chunk else 0
     st.session_state["total_running_time"] = st.session_state["total_running_time"] + time.time() - start_time
     return buffer, time.time() - start_time, tokens_used
 
