@@ -14,9 +14,15 @@ pip install -e .
 
 # Run the app
 streamlit run src/main.py
+
+# Install test dependencies
+pip install -e ".[test]"
+
+# Run tests
+pytest
 ```
 
-No test suite, lint, or build step exists. Dependencies are managed via `pyproject.toml` (hatchling backend).
+A pytest-based test suite lives under `tests/`. No lint or build step exists. Dependencies are managed via `pyproject.toml` (hatchling backend).
 
 ## Code structure
 

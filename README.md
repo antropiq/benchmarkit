@@ -21,4 +21,18 @@ pip install -e .
 streamlit run src/main.py
 ```
 
+## Running tests
+
+Install the test dependencies:
+
+```bash
+pip install -e ".[test]"
+```
+
+Run the test suite:
+
+```bash
+pytest
+```
+
 If you have good questions to add please share them! 🙏
