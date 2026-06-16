@@ -2,3 +2,5 @@
 .crush
 *.pyc
 results.json
+.coverage
+.vscode
