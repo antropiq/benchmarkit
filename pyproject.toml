@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "benchmarkit"
+version = "0.1.0"
+description = "Benchmark LLM endpoints with streaming responses and LLM-based verification"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "litellm",
+    "streamlit",
+    "watchdog",
+]
+
+[project.scripts]
+benchmarkit = "src.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
