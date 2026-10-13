@@ -2,7 +2,10 @@ from io import StringIO
 
 import pytest
 
-from src.utils import format_time, load_json_from_file
+from src.utils import (
+    format_time,
+    load_json_from_file,
+)
 
 
 class TestFormatTime:

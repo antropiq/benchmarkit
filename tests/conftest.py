@@ -22,9 +22,7 @@ def session_state() -> Dict[str, Any]:
         "current_index": 0,
         "results": [],
         "questions": [],
-        "server_url": "",
-        "endpoints": [],
-        "verifier_agent": {},
+        "endpoints_config": None,
         "total_running_time": 0.0,
     })
     # Patch st.session_state so modules see our dict

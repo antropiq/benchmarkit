@@ -1,11 +1,17 @@
 {
-  "serverUrl": "http://localhost:8080/v1",
-  "endpoints": [
-    "qwen-3.6-35b-a3b-ud-iq3_xxs"
-  ],
+  "serverUrl": "http://127.0.0.1:8080/v1",
+  "endpoint":"qwen3.8-flash-next-iq3_xxs",
+  "temp": "0.2",
+  "top-p": "0.95",
+  "top-k": "20",
+  "min-p": "0",
+  "repeat-penalty": "1.0",
+  "presence-penalty": "0",
+  "reasoning": "low",
   "verifierAgent": {
-    "sysprompt": "You are a response expert analyser. The user will provide a json file containing the following structure { \"question\": \"<the_question>\", \"response\": \"<the_llm_response>\", \"expected\": \"<the_expected_answer_from_questions_file>\" }. Your goal is to evaluate if the response matches the expected answer. The question is provided for clarity only and you must not answer to it yourself. Words can differ but the meaning of both (response, expected) must match. If you think there is a match just respond 'true'. If not just respond 'false'. Do not add any other output or comments. Your response must only be 'true' or 'false'.",
-    "serverUrl": "http://192.168.1.6:8080/v1",
-    "endpoint": "qwen-3.6-35b-a3b-q8_0"
+    "sysprompt": "You are a response expert analyser. The user will provide a json file containing the following structure { \"question\": \"<the_question>\", \"response\": \"<the_llm_response>\", \"expected\": \"<the_expected_answer_from_questions_file>\" }. Your goal is to evaluate if the response matches the expected answer. The question is provided for clarity only and you must not answer it. You must not think of what could be the response but only use the **expected** attribute value witch is the expected response. Words can differ but the meaning of both (response, expected) must match. If you think there is a match just respond 'true'. If not just respond 'false'. Do not add any other output or comments. Very important: Your response output must only contain one word: 'true' or 'false'.",
+    "serverUrl": "http://192.168.1.4:8080/v1",
+    "endpoint": "strata"
   }
 }
+

@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import streamlit as st
 from litellm import completion
 
+from src.models import EndpointsConfig, VerifierAgent
 from src.state import add_result_to_state
 from src.utils import format_time, LLMResult
 
@@ -38,6 +39,7 @@ def call_llm_and_stream(
     model_name: str,
     server_url: str,
     question: Dict,
+    sampling: Optional[Dict] = None,
 ) -> LLMResult:
     """Make LLM call with streaming and return results."""
     sysmsg: str = "You are a helpful assistant."
@@ -50,12 +52,20 @@ def call_llm_and_stream(
     last_chunk: Optional[Any] = None
 
     try:
+        sampling_kwargs: Dict[str, Any] = dict(sampling or {})
+        # litellm gates reasoning_effort to OpenAI reasoning models only;
+        # allow it through so custom servers (llama.cpp) receive it.
+        allowed: Optional[list] = (
+            ["reasoning_effort"] if "reasoning_effort" in sampling_kwargs else None
+        )
         response_generator = completion(
             model=f"openai/{model_name}",
             api_key="none",
             messages=messages,
             api_base=server_url,
             stream=True,
+            allowed_openai_params=allowed,
+            **sampling_kwargs,
         )
     except Exception as exc:
         st.error(f"⚠️ LLM call failed: {exc}")
@@ -87,14 +97,17 @@ def call_llm_and_stream(
 
 
 def verify_response(
-    verifier: Dict,
+    verifier: Optional[VerifierAgent],
     question: Dict,
     response_text: str,
 ) -> bool:
     """Verify LLM response against expected answer."""
+    if not verifier or not verifier.endpoint:
+        st.error("⚠️ No verifierAgent configured in endpoints config")
+        return False
     try:
         messages = [
-            {"role": "system", "content": verifier.get("sysprompt", "")},
+            {"role": "system", "content": verifier.sysprompt},
             {
                 "role": "user",
                 "content": json.dumps({
@@ -105,10 +118,10 @@ def verify_response(
             },
         ]
         v_resp = completion(
-            model=f"openai/{verifier['endpoint']}",
+            model=f"openai/{verifier.endpoint}",
             api_key="none",
             messages=messages,
-            api_base=verifier["serverUrl"],
+            api_base=verifier.serverUrl,
         )
 
         # Handle different response types safely
@@ -134,8 +147,7 @@ def verify_response(
 def process_question(
     model: str,
     question: Dict,
-    server_url: str,
-    verifier: Dict,
+    config: EndpointsConfig,
     progress_bar,
     score_progress,
     total_tests: int,
@@ -146,11 +158,11 @@ def process_question(
 
     # LLM call with streaming
     response_text, took, tokens_used = call_llm_and_stream(
-        model, server_url, question
+        model, config.serverUrl, question, config.to_kwargs()
     )
 
     # Verification
-    succeeded = verify_response(verifier, question, response_text)
+    succeeded = verify_response(config.verifierAgent, question, response_text)
 
     # Update UI and state
     st.metric(

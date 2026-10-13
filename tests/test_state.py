@@ -1,3 +1,4 @@
+from src.models import EndpointsConfig
 from src.state import add_result_to_state, get_session_data
 
 
@@ -43,12 +44,23 @@ class TestAddResultToState:
 class TestGetSessionData:
     def test_returns_expected_tuple(self, session_state):
         session_state["questions"] = [{"uuid": "q1", "question": "?", "expected": "a"}]
-        session_state["server_url"] = "http://localhost:8080"
-        session_state["endpoints"] = ["model-a", "model-b"]
-        session_state["verifier_agent"] = {"serverUrl": "http://verifier"}
+        config = EndpointsConfig.model_validate({
+            "serverUrl": "http://localhost:8080",
+            "endpoint": "model-a",
+            "temp": "1.0",
+            "verifierAgent": {"serverUrl": "http://verifier", "endpoint": "v"},
+        })
+        session_state["endpoints_config"] = config
 
-        (questions, server_url, endpoints, verifier) = get_session_data()
+        questions, returned = get_session_data()
         assert questions == session_state["questions"]
-        assert server_url == "http://localhost:8080"
-        assert endpoints == ["model-a", "model-b"]
-        assert verifier == {"serverUrl": "http://verifier"}
+        assert returned is config
+        assert returned.serverUrl == "http://localhost:8080"
+        assert returned.model_list() == ["model-a"]
+        assert returned.to_kwargs() == {"temperature": 1.0}
+        assert returned.verifierAgent.serverUrl == "http://verifier"
+
+    def test_missing_config_defaults_to_none(self, session_state):
+        session_state.pop("endpoints_config")
+        (_, config) = get_session_data()
+        assert config is None

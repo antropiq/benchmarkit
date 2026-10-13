@@ -34,13 +34,14 @@ Package layout under `src/`, organized into these modules:
 | **`bench.py`** | `run_benchmark()` — orchestrates model/question iteration |
 | **`llm.py`** | `call_llm_and_stream()`, `verify_response()`, `process_question()` |
 | **`config.py`** | Streamlit page config, session-state initialization |
+| **`models.py`** | Pydantic models for `endpoints.json` (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`) |
 | **`state.py`** | Session-state result management |
 | **`utils.py`** | JSON loading, result saving, helpers |
 
 ## Data files
 
 - **`questions.json`** — Array of `{ uuid, question, expected }` objects. UUIDs are sequential (`01234567-0123-0123-0123-0000000000XX`). 30 questions from matchingpennies.com.
-- **`endpoints.json`** — Contains `serverUrl` (target LLM), `endpoints` (model names to test), and `verifierAgent` (a separate LLM used to verify responses).
+- **`endpoints.json`** — Contains `serverUrl` (target LLM), `endpoint` (the model name to test), sampling parameters for the tested model (`temp`, `top-p`, `top-k`, `min-p`, `repeat-penalty`, `presence-penalty` — string or number values), an optional `reasoning` effort (`off`/`low`/`medium`/`high`/`xhigh`, mapped to litellm's `reasoning_effort`), and `verifierAgent` (a separate LLM used to verify responses). Parsed into pydantic models in `src/models.py` (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`): config keys are field aliases mapped to litellm/OpenAI names (`temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `reasoning_effort`), string values are coerced, and invalid values raise a `ValidationError` shown in the UI. The legacy `endpoints` array is still accepted if `endpoint` is absent.
 - **`results.json`** — Generated output, gitignored.
 
 ## Key patterns & conventions
@@ -66,4 +67,4 @@ Add entries to `questions.json` under the `"questions"` key. Each needs a unique
 
 ## Adding endpoints
 
-Edit `endpoints.json` — add model names to the `"endpoints"` array. The `serverUrl` should point to your llama.cpp or compatible inference server.
+Edit `endpoints.json` — set the model name in `"endpoint"`. The `serverUrl` should point to your llama.cpp or compatible inference server. Sampling parameters (`temp`, `top-p`, `top-k`, `min-p`, `repeat-penalty`, `presence-penalty`) are optional and forwarded to `litellm.completion()` for the tested model. `reasoning` is optional too and sets the reasoning effort (`off`/`low`/`medium`/`high`/`xhigh`).

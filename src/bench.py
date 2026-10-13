@@ -3,15 +3,14 @@ from typing import Dict, List
 import streamlit as st
 
 from src.llm import process_question
+from src.models import EndpointsConfig
 from src.state import get_session_data
 from src.utils import save_results
 
 
 def run_benchmark(
     questions: List[Dict],
-    server_url: str,
-    endpoints: List[str],
-    verifier: Dict,
+    config: EndpointsConfig,
     total_tests: int,
 ) -> None:
     """Execute benchmark for all models and questions."""
@@ -19,7 +18,7 @@ def run_benchmark(
     score_progress = st.empty()
     st.session_state.current_index = 0
 
-    for model in endpoints:
+    for model in config.model_list():
         st.subheader(f"🔍 Model **{model}**")
         for idx, question in enumerate(questions, 1):
             question["index"] = idx  # Add index for display
@@ -27,8 +26,7 @@ def run_benchmark(
             process_question(
                 model,
                 question,
-                server_url,
-                verifier,
+                config,
                 progress_bar,
                 score_progress,
                 total_tests

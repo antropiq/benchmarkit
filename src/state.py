@@ -1,6 +1,8 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
+
+from src.models import EndpointsConfig
 
 
 def add_result_to_state(
@@ -36,13 +38,9 @@ def add_result_to_state(
     model_entry["score"] = f"{succeeded_count}/{len(model_entry['responses'])}"
 
 
-def get_session_data() -> Tuple[
-    List[Dict], str, List[str], Dict
-]:
+def get_session_data() -> Tuple[List[Dict], Optional[EndpointsConfig]]:
     """Retrieve benchmark configuration from session state."""
     return (
         st.session_state["questions"],
-        st.session_state["server_url"],
-        st.session_state["endpoints"],
-        st.session_state["verifier_agent"],
+        st.session_state.get("endpoints_config"),
     )

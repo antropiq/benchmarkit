@@ -15,9 +15,9 @@ def setup_ui() -> None:
     st.title("🔬 LLM Benchmark")
     st.markdown(
         """
-        Provide two JSON files:
-        * **resources/questions.json** – list of questions (must contain `uuid`, `question` & `expected`)
-        * **conf/endpoints.json** – list of LLM endpoints + verifier settings
+        Config files are loaded automatically on page load:
+        * **resources/questions.json** – list of questions
+        * **conf/endpoints.json** – LLM endpoints + verifier settings
 
         Click **Start Benchmark** to run tests with real-time streaming.
         """
