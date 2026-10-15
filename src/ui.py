@@ -11,7 +11,7 @@ div[data-testid="stColumn"]:last-child
   > div[data-testid="stVerticalBlock"]
   > div[data-testid="stLayoutWrapper"]
   > div[data-testid="stVerticalBlock"] {
-  border: 3px solid #FFFFFF;
+  border: 3px solid currentColor;
   background-color: transparent;
 }
 </style>
@@ -19,7 +19,7 @@ div[data-testid="stColumn"]:last-child
 
 
 def render_stream_box_style() -> None:
-    """Give the response-stream container a transparent fill and 3px yellow border."""
+    """Give the response-stream container a transparent fill and a 3px border that follows the active theme's text color."""
     st.markdown(_STREAM_BOX_CSS, unsafe_allow_html=True)
 
 _LAYOUT_CSS = """

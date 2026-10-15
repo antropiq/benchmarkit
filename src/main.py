@@ -75,7 +75,7 @@ def main() -> None:
 
     # Brand row
     render_layout_style()
-    st.title("Benchmark'it", icon=":material/science:")
+    st.title(":material/science: Benchmark'it")
 
     questions = st.session_state.get("questions", [])
     config: Optional[EndpointsConfig] = st.session_state.get("endpoints_config")
