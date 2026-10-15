@@ -4,17 +4,18 @@ from typing import Any, Dict, Optional
 
 import streamlit as st
 from litellm import completion
+from streamlit.delta_generator import DeltaGenerator
 
 from src.models import EndpointsConfig, VerifierAgent
 from src.state import add_result_to_state
-from src.utils import format_time, LLMResult
+from src.utils import LLMResult
 
 
 def safe_get_choice_content(chunk: Any) -> str:
     """Safely extract content from various response types."""
     if isinstance(chunk, dict):
         return (
-            chunk.get("choices", [{}])[0]
+            (chunk.get("choices") or [{}])[0]
             .get("delta", {})
             .get("content", "")
         )
@@ -26,30 +27,36 @@ def safe_get_choice_content(chunk: Any) -> str:
     return ""
 
 
-def safe_get_token_usage(chunk: Any) -> int:
-    """Safely extract token usage from various response types."""
-    if isinstance(chunk, dict):
-        return chunk.get("usage", {}).get("total_tokens", 0)
-    elif hasattr(chunk, "usage"):
-        return getattr(chunk, "usage", {}).get("total_tokens", 0)
-    return 0
+def _extract_total_tokens(chunk: Any) -> Optional[int]:
+    """Read total token usage from a streamed chunk, when the server sent one."""
+    usage = (
+        chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
+    )
+    if usage is None:
+        return None
+    total = (
+        usage.get("total_tokens")
+        if isinstance(usage, dict)
+        else getattr(usage, "total_tokens", None)
+    )
+    return int(total) if total else None
 
 
 def call_llm_and_stream(
     model_name: str,
     server_url: str,
     question: Dict,
+    slot: DeltaGenerator,
     sampling: Optional[Dict] = None,
 ) -> LLMResult:
-    """Make LLM call with streaming and return results."""
-    sysmsg: str = "You are a helpful assistant."
+    """Make LLM call, stream the answer into ``slot``, return results."""
     messages = [
-        {"role": "system", "content": sysmsg},
-        {"role": "user", "content": question["question"]}
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": question["question"]},
     ]
     start_time = time.time()
     buffer = ""
-    last_chunk: Optional[Any] = None
+    response_generator: Optional[Any] = None
 
     try:
         sampling_kwargs: Dict[str, Any] = dict(sampling or {})
@@ -64,35 +71,31 @@ def call_llm_and_stream(
             messages=messages,
             api_base=server_url,
             stream=True,
+            # Ask the server to report token usage in the final stream chunk.
+            stream_options={"include_usage": True},
             allowed_openai_params=allowed,
             **sampling_kwargs,
         )
     except Exception as exc:
-        st.error(f"⚠️ LLM call failed: {exc}")
+        st.error(f"LLM call failed: {exc}", icon=":material/error:")
         return "", time.time() - start_time, 0
 
-    stream_placeholder = st.empty()
+    tokens_used = 0
     try:
         for chunk in response_generator:
+            tokens_used = _extract_total_tokens(chunk) or tokens_used
             content = safe_get_choice_content(chunk)
 
             if not content:
                 continue
 
-            last_chunk = chunk
             buffer += content
-            stream_placeholder.markdown(buffer, unsafe_allow_html=True)
+            slot.markdown(buffer)
             time.sleep(0.05)  # Allow UI to update
     except Exception as exc:
-        st.error(f"⚠️ Stream error: {exc}")
+        st.error(f"Stream error: {exc}", icon=":material/error:")
         buffer = ""
 
-    # Extract token usage safely
-    tokens_used = 0
-    if hasattr(response_generator, "last_response"):
-        tokens_used = response_generator.last_response.usage.total_tokens
-    # tokens_used = safe_get_token_usage(last_chunk) if last_chunk else 0
-    st.session_state["total_running_time"] = st.session_state["total_running_time"] + time.time() - start_time
     return buffer, time.time() - start_time, tokens_used
 
 
@@ -103,7 +106,10 @@ def verify_response(
 ) -> bool:
     """Verify LLM response against expected answer."""
     if not verifier or not verifier.endpoint:
-        st.error("⚠️ No verifierAgent configured in endpoints config")
+        st.error(
+            "No verifier agent configured in the endpoints config",
+            icon=":material/error:",
+        )
         return False
     try:
         messages = [
@@ -140,36 +146,34 @@ def verify_response(
 
         return content.strip().lower() == "true" if content else False
     except Exception as exc:
-        st.error(f"⚠️ Verifier failed: {exc}")
+        st.error(f"Verifier failed: {exc}", icon=":material/error:")
         return False
 
 
 def process_question(
     model: str,
     question: Dict,
+    number: int,
     config: EndpointsConfig,
-    progress_bar,
-    score_progress,
-    total_tests: int,
+    stream: DeltaGenerator,
 ) -> None:
-    """Process single question for a model."""
-    st.subheader(f"Question `{question['index']}`")
-    st.text(f"❓ {question['question']}")
+    """Process single question for a model inside the stream container."""
+    with stream.container(border=True):
+        st.caption(f"Question {number} · `{model}`")
+        st.markdown(f"**{question['question']}**")
 
-    # LLM call with streaming
-    response_text, took, tokens_used = call_llm_and_stream(
-        model, config.serverUrl, question, config.to_kwargs()
-    )
+        response_slot = st.empty()
+        response_text, took, tokens_used = call_llm_and_stream(
+            model, config.serverUrl, question, response_slot, config.to_kwargs()
+        )
 
-    # Verification
-    succeeded = verify_response(config.verifierAgent, question, response_text)
+        succeeded = verify_response(config.verifierAgent, question, response_text)
+        if succeeded:
+            st.badge("Correct", icon=":material/check_circle:", color="green")
+        else:
+            st.badge("Incorrect", icon=":material/error:", color="red")
+        st.caption(f"{took:.1f}s · {tokens_used:,} tokens")
 
-    # Update UI and state
-    st.metric(
-        label="✅ Succeeded" if succeeded else "❌ Failed",
-        value=None,
-        delta=None,
-    )
     add_result_to_state(
         model=model,
         question_uuid=question["uuid"],
@@ -177,15 +181,4 @@ def process_question(
         response_text=response_text,
         took=took,
         tokens=tokens_used,
-    )
-    progress_bar.progress(st.session_state.current_index / total_tests)
-    current_successes = sum(
-        1 for model_entry in st.session_state.results
-        for resp in model_entry["responses"] if resp["succeeded"]
-    )
-    t: str = format_time(st.session_state["total_running_time"])
-    score_progress.markdown(f"""
-        **Score:** {current_successes}/{total_tests} **Running for:** {t}
-        Fail count: {st.session_state.current_index - current_successes}
-        """.strip()
     )

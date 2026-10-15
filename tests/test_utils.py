@@ -1,11 +1,4 @@
-from io import StringIO
-
-import pytest
-
-from src.utils import (
-    format_time,
-    load_json_from_file,
-)
+from src.utils import format_time
 
 
 class TestFormatTime:
@@ -26,20 +19,3 @@ class TestFormatTime:
 
     def test_fractional_seconds_truncated(self):
         assert format_time(59.9) == "00:00:59"
-
-
-class TestLoadJsonFromFile:
-    def test_valid_json(self, sample_questions_file: StringIO):
-        result = load_json_from_file(sample_questions_file)
-        assert isinstance(result, dict)
-        assert "questions" in result
-        assert len(result["questions"]) == 3
-
-    def test_invalid_json_calls_error_and_returns_empty_dict(
-        self, mocker
-    ):
-        mock_error = mocker.patch("src.utils.st.error")
-        bad_file = StringIO("{bad json}")
-        result = load_json_from_file(bad_file)
-        assert result == {}
-        mock_error.assert_called_once()

@@ -1,6 +1,4 @@
-import json
-from io import StringIO
-from typing import Dict, Any
+from typing import Any, Dict
 
 import pytest
 import streamlit as st
@@ -32,21 +30,3 @@ def session_state() -> Dict[str, Any]:
         yield state
     finally:
         st.session_state = original
-
-
-@pytest.fixture
-def sample_questions_json() -> str:
-    """Return a JSON string with three sample questions."""
-    return json.dumps({
-        "questions": [
-            {"uuid": "00000001-0001-0001-0001-000000000001", "question": "What is 2+2?", "expected": "4"},
-            {"uuid": "00000001-0001-0001-0001-000000000002", "question": "Capital of France?", "expected": "Paris"},
-            {"uuid": "00000001-0001-0001-0001-000000000003", "question": "Is water wet?", "expected": "yes"},
-        ]
-    })
-
-
-@pytest.fixture
-def sample_questions_file(sample_questions_json: str) -> StringIO:
-    """Return a file-like object containing sample questions JSON."""
-    return StringIO(sample_questions_json)

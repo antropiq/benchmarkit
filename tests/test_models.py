@@ -164,3 +164,47 @@ class TestEndpointsConfig:
     def test_invalid_sampling_raises(self):
         with pytest.raises(ValidationError):
             EndpointsConfig.model_validate({"temp": "hot"})
+
+
+class TestFromEnv:
+    def test_full_env(self):
+        cfg = EndpointsConfig.from_env({
+            "SERVER_URL": "http://host:8080/v1",
+            "ENDPOINT": "model-a",
+            "TEMP": "0.2",
+            "TOP_P": "0.95",
+            "TOP_K": "20",
+            "MIN_P": "0",
+            "REPEAT_PENALTY": "1.0",
+            "PRESENCE_PENALTY": "0",
+            "REASONING": "low",
+            "VERIFIER_AGENT_SYSPROMPT": "verify",
+            "VERIFIER_AGENT_SERVERURL": "http://verif:8080/v1",
+            "VERIFIER_AGENT_ENDPOINT": "strata",
+        })
+        assert cfg.serverUrl == "http://host:8080/v1"
+        assert cfg.model_list() == ["model-a"]
+        assert cfg.temperature == 0.2
+        assert cfg.top_k == 20
+        assert cfg.reasoning_effort == "low"
+        assert cfg.verifierAgent.endpoint == "strata"
+        assert cfg.verifierAgent.serverUrl == "http://verif:8080/v1"
+        assert cfg.verifierAgent.sysprompt == "verify"
+
+    def test_blank_and_missing_keys(self):
+        cfg = EndpointsConfig.from_env({"ENDPOINT": "  ", "SERVER_URL": ""})
+        assert cfg.model_list() == []
+        assert cfg.serverUrl == ""
+        assert cfg.verifierAgent is None
+
+    def test_env_endpoints_list(self):
+        cfg = EndpointsConfig.from_env({"ENDPOINTS": "a, b ,c"})
+        assert cfg.model_list() == ["a", "b", "c"]
+
+    def test_endpoint_takes_precedence_over_endpoints(self):
+        cfg = EndpointsConfig.from_env({"ENDPOINT": "x", "ENDPOINTS": "a,b"})
+        assert cfg.model_list() == ["x"]
+
+    def test_invalid_reasoning_raises(self):
+        with pytest.raises(ValidationError):
+            EndpointsConfig.from_env({"REASONING": "sideways"})

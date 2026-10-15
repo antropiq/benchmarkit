@@ -3,22 +3,21 @@ import streamlit as st
 
 def initialize_session_state() -> None:
     """Initialize required session state variables."""
-    if "current_index" not in st.session_state:
-        st.session_state.current_index = 0
-    if "results" not in st.session_state:
-        st.session_state.results = []
+    defaults = {
+        "current_index": 0,
+        "results": [],
+        "total_running_time": 0.0,
+        "benchmark_started_at": None,
+        "benchmark_finished_at": None,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
 
 
 def setup_ui() -> None:
-    """Configure Streamlit UI components."""
-    st.set_page_config(page_title="LLM Benchmark UI", layout="wide")
-    st.title("🔬 LLM Benchmark")
-    st.markdown(
-        """
-        Config files are loaded automatically on page load:
-        * **resources/questions.json** – list of questions
-        * **conf/endpoints.json** – LLM endpoints + verifier settings
-
-        Click **Start Benchmark** to run tests with real-time streaming.
-        """
+    """Configure the Streamlit page."""
+    st.set_page_config(
+        page_title="LLM benchmark",
+        page_icon=":material/science:",
+        layout="wide",
     )

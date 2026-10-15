@@ -1,21 +1,12 @@
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Tuple
 
 import streamlit as st
 
-JSONType = Union[Dict[str, Any], List[Any], str, int, float, bool, None]
 LLMResult = Tuple[str, float, int]  # (response_text, took, tokens_used)
-VerificationResult = Tuple[bool, str]  # (succeeded, response_text)
 
-
-def load_json_from_file(file) -> JSONType:
-    """Read a JSON file and return the dict."""
-    try:
-        return json.load(file)
-    except Exception as exc:
-        st.error(f"Could not parse JSON: {exc}")
-        return {}
+RESULTS_PATH = Path(__file__).resolve().parent.parent / "results.json"
 
 
 def format_time(seconds: float) -> str:
@@ -23,22 +14,26 @@ def format_time(seconds: float) -> str:
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
-    return f"{hours:02}:{minutes:02}:{secs:02}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def save_results() -> None:
     """Save benchmark results to JSON file."""
-    t: str = format_time(st.session_state["total_running_time"])
-    output = {"results": st.session_state["results"], "totalRunningTime": t}
-    output_path = Path.cwd() / "results.json"
+    total_running_time: float = st.session_state.get("total_running_time", 0.0)
+    output = {
+        "results": st.session_state.get("results", []),
+        "totalRunningTime": format_time(total_running_time),
+    }
+    data = json.dumps(output, indent=2)
     try:
-        with open(output_path, "w") as fp:
-            json.dump(output, fp, indent=2)
-        st.download_button(
-            label="📥 Download results.json",
-            data=output_path.read_bytes(),
-            file_name="results.json",
-            mime="application/json",
-        )
+        RESULTS_PATH.write_text(data, encoding="utf-8")
     except Exception as exc:
-        st.error(f"⚠️ Could not write `{output_path}`: {exc}")
+        st.error(f"Could not write `{RESULTS_PATH}`: {exc}")
+        return
+    st.download_button(
+        label="Download results.json",
+        icon=":material/download:",
+        data=data,
+        file_name="results.json",
+        mime="application/json",
+    )

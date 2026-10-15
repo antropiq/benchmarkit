@@ -2,7 +2,7 @@
 
 ## Project overview
 
-A Streamlit app that benchmarks LLM endpoints by streaming questions, collecting responses, and verifying them against expected answers using a secondary LLM verifier agent. Data is loaded via two JSON files uploaded through the UI.
+A Streamlit app that benchmarks LLM endpoints by streaming questions, collecting responses, and verifying them against expected answers using a secondary LLM verifier agent. Questions are auto-loaded from `resources/questions.json` and configuration from `.env` on page load.
 
 ## Commands
 
@@ -30,18 +30,19 @@ Package layout under `src/`, organized into these modules:
 
 | Module | Purpose |
 |---|---|
-| **`main.py`** | Streamlit UI scaffolding, file upload handling, benchmark trigger |
-| **`bench.py`** | `run_benchmark()` — orchestrates model/question iteration |
+| **`main.py`** | Streamlit UI: brand row + two-column layout (`st.columns([1, 4])`), auto-loading of `.env` + questions, benchmark trigger |
+| **`bench.py`** | `run_benchmark()`, `BenchmarkUi` dataclass (stream/question/score slots), `update_stats()` metric cards |
 | **`llm.py`** | `call_llm_and_stream()`, `verify_response()`, `process_question()` |
+| **`ui.py`** | `chronometer_html()` / `render_chronometer()` — client-side JS digital clock (no native Streamlit equivalent) |
 | **`config.py`** | Streamlit page config, session-state initialization |
-| **`models.py`** | Pydantic models for `endpoints.json` (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`) |
+| **`models.py`** | Pydantic models for the benchmark config (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`), built from env vars via `EndpointsConfig.from_env()` |
 | **`state.py`** | Session-state result management |
 | **`utils.py`** | JSON loading, result saving, helpers |
 
 ## Data files
 
 - **`questions.json`** — Array of `{ uuid, question, expected }` objects. UUIDs are sequential (`01234567-0123-0123-0123-0000000000XX`). 30 questions from matchingpennies.com.
-- **`endpoints.json`** — Contains `serverUrl` (target LLM), `endpoint` (the model name to test), sampling parameters for the tested model (`temp`, `top-p`, `top-k`, `min-p`, `repeat-penalty`, `presence-penalty` — string or number values), an optional `reasoning` effort (`off`/`low`/`medium`/`high`/`xhigh`, mapped to litellm's `reasoning_effort`), and `verifierAgent` (a separate LLM used to verify responses). Parsed into pydantic models in `src/models.py` (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`): config keys are field aliases mapped to litellm/OpenAI names (`temperature`, `top_p`, `top_k`, `min_p`, `repeat_penalty`, `presence_penalty`, `reasoning_effort`), string values are coerced, and invalid values raise a `ValidationError` shown in the UI. The legacy `endpoints` array is still accepted if `endpoint` is absent.
+- **`.env`** (project root, gitignored; see `.env.example`) — Platform-independent benchmark configuration. Keys: `SERVER_URL`, `ENDPOINT` (or comma-separated `ENDPOINTS`), `TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING`, and the verifier block `VERIFIER_AGENT_SYSPROMPT`, `VERIFIER_AGENT_SERVERURL`, `VERIFIER_AGENT_ENDPOINT`. Loaded via `python-dotenv` (real env vars take precedence) and parsed by `EndpointsConfig.from_env()` into the same pydantic models (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`); string values are coerced, invalid values raise a `ValidationError` shown in the UI.
 - **`results.json`** — Generated output, gitignored.
 
 ## Key patterns & conventions
@@ -56,9 +57,11 @@ Package layout under `src/`, organized into these modules:
 ## Gotchas
 
 - The verifier agent and the target LLM can be **different endpoints** — `serverUrl` is the target, `verifierAgent.serverUrl` is the verifier.
-- Token counting relies on `response_generator.last_response` attribute from LiteLLM, not the last chunk. The chunk-based approach is commented out (l.160).
+- Token counting relies on `stream_options={"include_usage": True}`: the server reports usage in the final stream chunk, read via `_extract_total_tokens()`. Servers that ignore `include_usage` report 0 tokens.
 - `time.sleep(0.05)` in the streaming loop is intentional — it allows Streamlit's UI to update between chunks.
-- The app reuses the same `endpoints.json` `serverUrl` for both the target LLM and the verifier's `api_base` unless overridden in `verifierAgent`.
+- The chronometer ticks **client-side** (JS in `ui.py`, rendered via `st.html(unsafe_allow_javascript=True)`) because the benchmark run blocks the Streamlit script server-side; it is seeded from `benchmark_started_at`/`benchmark_finished_at` epoch timestamps.
+- Look & feel (colors, Inter/JetBrains Mono fonts, radii) is set in `.streamlit/config.toml` — do not style with custom CSS.
+- The app reuses the same `SERVER_URL` for both the target LLM and the verifier's `api_base` unless `VERIFIER_AGENT_SERVERURL` is set.
 - Results are saved only at the end of the full benchmark run, not incrementally.
 
 ## Adding questions
@@ -67,4 +70,4 @@ Add entries to `questions.json` under the `"questions"` key. Each needs a unique
 
 ## Adding endpoints
 
-Edit `endpoints.json` — set the model name in `"endpoint"`. The `serverUrl` should point to your llama.cpp or compatible inference server. Sampling parameters (`temp`, `top-p`, `top-k`, `min-p`, `repeat-penalty`, `presence-penalty`) are optional and forwarded to `litellm.completion()` for the tested model. `reasoning` is optional too and sets the reasoning effort (`off`/`low`/`medium`/`high`/`xhigh`).
+Edit `.env` — set the model name in `ENDPOINT`. `SERVER_URL` should point to your llama.cpp or compatible inference server. Sampling parameters (`TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`) are optional and forwarded to `litellm.completion()` for the tested model. `REASONING` is optional too and sets the reasoning effort (`off`/`low`/`medium`/`high`/`xhigh`).

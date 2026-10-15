@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Literal, Optional, Union
+import os
+from typing import Any, Dict, List, Literal, Mapping, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -57,7 +58,7 @@ class SamplingParams(BaseModel):
 
 
 class EndpointsConfig(SamplingParams):
-    """Full parsed contents of conf/endpoints.json."""
+    """Benchmark configuration built from environment variables."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -76,11 +77,51 @@ class EndpointsConfig(SamplingParams):
             return cleaned or None
         return value
 
+    @classmethod
+    def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "EndpointsConfig":
+        """Build the configuration from environment variables.
+
+        Recognized keys: ``SERVER_URL``, ``ENDPOINT``, ``ENDPOINTS``
+        (comma-separated), ``TEMP``, ``TOP_P``, ``TOP_K``, ``MIN_P``,
+        ``REPEAT_PENALTY``, ``PRESENCE_PENALTY``, ``REASONING`` and the
+        ``VERIFIER_AGENT_*`` block (``SYSPROMPT``, ``SERVERURL``,
+        ``ENDPOINT``).
+        """
+        source: Mapping[str, str] = os.environ if env is None else env
+
+        def get(key: str) -> Optional[str]:
+            value = source.get(key)
+            if isinstance(value, str):
+                value = value.strip()
+            return value or None
+
+        endpoints = get("ENDPOINTS")
+        data: Dict[str, Any] = {
+            "serverUrl": get("SERVER_URL") or "",
+            "endpoint": get("ENDPOINT"),
+            "endpoints": [e.strip() for e in endpoints.split(",")] if endpoints else None,
+            "temp": get("TEMP"),
+            "top-p": get("TOP_P"),
+            "top-k": get("TOP_K"),
+            "min-p": get("MIN_P"),
+            "repeat-penalty": get("REPEAT_PENALTY"),
+            "presence-penalty": get("PRESENCE_PENALTY"),
+            "reasoning": get("REASONING"),
+        }
+        verifier = {
+            "sysprompt": get("VERIFIER_AGENT_SYSPROMPT") or "",
+            "serverUrl": get("VERIFIER_AGENT_SERVERURL") or "",
+            "endpoint": get("VERIFIER_AGENT_ENDPOINT") or "",
+        }
+        if any(verifier.values()):
+            data["verifierAgent"] = verifier
+        return cls.model_validate(data)
+
     def model_list(self) -> List[str]:
         """Return the tested model names.
 
-        Supports the single ``endpoint`` value and the legacy ``endpoints``
-        list; ``endpoint`` takes precedence.
+        Supports the single ``endpoint`` value and the comma-separated
+        ``endpoints`` list; ``endpoint`` takes precedence.
         """
         for value in (self.endpoint, self.endpoints):
             if isinstance(value, str):

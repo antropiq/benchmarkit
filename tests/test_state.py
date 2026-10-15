@@ -1,5 +1,5 @@
 from src.models import EndpointsConfig
-from src.state import add_result_to_state, get_session_data
+from src.state import add_result_to_state, get_overall_stats
 
 
 class TestAddResultToState:
@@ -41,26 +41,12 @@ class TestAddResultToState:
         assert llama["score"] == "0/1"
 
 
-class TestGetSessionData:
-    def test_returns_expected_tuple(self, session_state):
-        session_state["questions"] = [{"uuid": "q1", "question": "?", "expected": "a"}]
-        config = EndpointsConfig.model_validate({
-            "serverUrl": "http://localhost:8080",
-            "endpoint": "model-a",
-            "temp": "1.0",
-            "verifierAgent": {"serverUrl": "http://verifier", "endpoint": "v"},
-        })
-        session_state["endpoints_config"] = config
+class TestGetOverallStats:
+    def test_empty_results(self, session_state):
+        assert get_overall_stats() == (0, 0)
 
-        questions, returned = get_session_data()
-        assert questions == session_state["questions"]
-        assert returned is config
-        assert returned.serverUrl == "http://localhost:8080"
-        assert returned.model_list() == ["model-a"]
-        assert returned.to_kwargs() == {"temperature": 1.0}
-        assert returned.verifierAgent.serverUrl == "http://verifier"
-
-    def test_missing_config_defaults_to_none(self, session_state):
-        session_state.pop("endpoints_config")
-        (_, config) = get_session_data()
-        assert config is None
+    def test_counts_across_models(self, session_state):
+        add_result_to_state("gpt-4", "q1", True, "a", 1.0, 50)
+        add_result_to_state("gpt-4", "q2", False, "b", 2.0, 60)
+        add_result_to_state("llama", "q1", True, "c", 1.5, 70)
+        assert get_overall_stats() == (2, 3)

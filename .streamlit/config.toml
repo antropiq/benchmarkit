@@ -1,0 +1,46 @@
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#4F46E5"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F4F6"
+textColor = "#111827"
+linkColor = "#4F46E5"
+borderColor = "#D1D5DB"
+codeBackgroundColor = "#F3F4F6"
+codeTextColor = "#111827"
+greenColor = "#059669"
+redColor = "#DC2626"
+orangeColor = "#D97706"
+blueColor = "#2563EB"
+violetColor = "#7C3AED"
+grayColor = "#6B7280"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@600;700&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap"
+baseFontSize = 14
+baseRadius = "8px"
+buttonRadius = "8px"
+showWidgetBorder = true
+linkUnderline = false
+
+[theme.dark]
+primaryColor = "#6366F1"
+backgroundColor = "#0B1120"
+secondaryBackgroundColor = "#151F32"
+textColor = "#E5E7EB"
+linkColor = "#818CF8"
+borderColor = "#374151"
+codeBackgroundColor = "#151F32"
+codeTextColor = "#E5E7EB"
+greenColor = "#34D399"
+redColor = "#F87171"
+orangeColor = "#FBBF24"
+blueColor = "#60A5FA"
+violetColor = "#A78BFA"
+grayColor = "#9CA3AF"
+
+[theme.sidebar]
+backgroundColor = "#F3F4F6"

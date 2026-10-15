@@ -10,7 +10,7 @@ With it you can benchmark several llm's using natural language questions that ev
 
 > The 20 initial questions come from https://matchingpennies.com/hard_questions_for_llms/ thank's 🙂
 
-* Edit the `conf/endpoints.json` file to point to the LLM's you have
+* Edit the .env file (project root) to point to the LLM's you have
 
 * Initialize the project
 

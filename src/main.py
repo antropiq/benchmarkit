@@ -1,26 +1,27 @@
 import json
 import sys
 import time
-
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import streamlit as st
+from dotenv import load_dotenv
 from pydantic import ValidationError
 
 # Ensure project root is on sys.path for package imports
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.bench import run_benchmark
+from src.bench import BenchmarkUi, run_benchmark, update_stats
 from src.config import initialize_session_state, setup_ui
 from src.models import EndpointsConfig
-from src.state import get_session_data
-
+from src.ui import render_layout_style, render_chronometer, render_stream_box_style
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 QUESTIONS_PATH = PROJECT_ROOT / "resources" / "questions.json"
-ENDPOINTS_PATH = PROJECT_ROOT / "conf" / "endpoints.json"
+ENV_PATH = PROJECT_ROOT / ".env"
+
+STREAM_HEIGHT_PX = 448
 
 
 def _load_json_file(path: Path) -> Dict[str, Any]:
@@ -33,106 +34,102 @@ def _load_json_file(path: Path) -> Dict[str, Any]:
 
 
 def _load_config() -> None:
-    """Auto-load endpoints and questions on page load."""
+    """Auto-load the .env configuration and questions on page load."""
     if "config_loaded" in st.session_state:
         return
 
-    endpoints_data = _load_json_file(ENDPOINTS_PATH)
+    if ENV_PATH.exists():
+        # Existing environment variables take precedence over the file.
+        load_dotenv(ENV_PATH)
+    else:
+        st.warning(f"No `{ENV_PATH.name}` found — using environment variables only.")
+
     questions_data = _load_json_file(QUESTIONS_PATH)
-
-    if not endpoints_data and not questions_data:
-        st.error(f"Failed to load {ENDPOINTS_PATH} and {QUESTIONS_PATH}")
-        return
-
-    if not endpoints_data:
-        st.error(f"Failed to load {ENDPOINTS_PATH}")
     if not questions_data:
         st.error(f"Failed to load {QUESTIONS_PATH}")
 
+    questions: List[Dict] = questions_data.get("questions", [])
     st.session_state["config_loaded"] = True
-    st.session_state["questions"] = questions_data.get("questions", [])
-    _apply_endpoints_config(endpoints_data)
+    st.session_state["questions"] = questions
+    _apply_env_config()
 
-    _update_total_tests()
-
-
-def _apply_endpoints_config(endpoints_data: Dict[str, Any]) -> None:
-    """Validate the endpoints config and store it in session state."""
-    try:
-        st.session_state["endpoints_config"] = EndpointsConfig.model_validate(
-            endpoints_data
-        )
-    except ValidationError as exc:
-        st.error(f"⚠️ Invalid endpoints configuration: {exc}")
-
-
-def _update_total_tests() -> None:
-    """Recalculate total_tests from current questions and endpoints."""
-    questions: List[Dict] = st.session_state.get("questions", [])
     config: Optional[EndpointsConfig] = st.session_state.get("endpoints_config")
     endpoints: List[str] = config.model_list() if config else []
     st.session_state["total_tests"] = len(questions) * len(endpoints)
+
+
+def _apply_env_config() -> None:
+    """Build and validate the endpoints config from the environment."""
+    try:
+        st.session_state["endpoints_config"] = EndpointsConfig.from_env()
+    except ValidationError as exc:
+        st.error(f"Invalid endpoints configuration: {exc}")
 
 
 def main() -> None:
     setup_ui()
     initialize_session_state()
 
-    # Auto-load from disk
+    # Auto-load .env configuration and questions from resources
     _load_config()
 
-    # File upload section (overrides auto-loaded config)
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        questions_file = st.file_uploader(
-            "Upload *resources/questions.json*", type="json", key="questions_file"
-        )
-    with col2:
-        endpoints_file = st.file_uploader(
-            "Upload *conf/endpoints.json*", type="json", key="endpoints_file"
-        )
-
-    # Handle file uploads (override auto-loaded config)
-    if questions_file:
-        questions_data: Dict[str, Any] = json.load(questions_file)
-        st.session_state["questions"] = questions_data.get("questions", [])
-        _update_total_tests()
-
-    if endpoints_file:
-        endpoints_data: Dict[str, Any] = json.load(endpoints_file)
-        _apply_endpoints_config(endpoints_data)
-        _update_total_tests()
+    # Brand row
+    render_layout_style()
+    st.title("Benchmark'it", icon=":material/science:")
 
     questions = st.session_state.get("questions", [])
     config: Optional[EndpointsConfig] = st.session_state.get("endpoints_config")
-    endpoints: List[str] = config.model_list() if config else []
-    server_url: str = config.serverUrl if config else ""
+    total_tests: int = st.session_state.get("total_tests", 0)
     sampling: Dict[str, Any] = config.to_kwargs() if config else {}
-    total = st.session_state.get("total_tests", 0)
-
     sampling_summary = (
         ", ".join(f"{k}={v}" for k, v in sampling.items()) or "defaults"
     )
-    st.markdown(
-        f"- **Questions:** {len(questions)}  "
-        f"**- Models:** {len(endpoints)}  "
-        f"**- Total tests:** {total}  "
-        f"**- Server:** `{server_url}`"
-    )
-    st.markdown(f"- **Sampling:** `{sampling_summary}`")
 
-    # Start benchmark button
-    if st.button("🏁 Start Benchmark"):
-        questions, config = get_session_data()
-        st.session_state["start_time"] = time.time()
-        st.session_state["total_running_time"] = 0
-        run_benchmark(
-            questions,
-            config,
-            st.session_state["total_tests"],
+    col_stats, col_stream = st.columns([1, 4], gap="medium")
+
+    with col_stats:
+        start_clicked = st.button(
+            "Start benchmark",
+            icon=":material/flag:",
+            type="primary",
+            disabled=total_tests == 0 or not config or not config.model_list(),
         )
-        duration = time.time() - st.session_state["start_time"]
-        st.session_state["total_running_time"] = duration
+        st.caption(f"{len(questions)} questions · `{sampling_summary}`")
+        st.caption(":material/timer: Elapsed")
+        clock_slot = st.empty()
+        question_slot = st.empty()
+        score_slot = st.empty()
+
+    with col_stream:
+        render_stream_box_style()
+        ui = BenchmarkUi(
+            stream=st.container(
+                height=STREAM_HEIGHT_PX, border=True, autoscroll=True
+            ),
+            question=question_slot,
+            score=score_slot,
+        )
+
+    update_stats(ui, total_tests)
+
+    if start_clicked and config:
+        st.session_state["benchmark_started_at"] = time.time()
+        st.session_state["benchmark_finished_at"] = None
+        render_chronometer(clock_slot, st.session_state["benchmark_started_at"])
+
+        run_benchmark(questions, config, total_tests, ui)
+
+        st.session_state["benchmark_finished_at"] = time.time()
+        st.session_state["total_running_time"] = (
+            st.session_state["benchmark_finished_at"]
+            - st.session_state["benchmark_started_at"]
+        )
+
+    render_chronometer(
+        clock_slot,
+        st.session_state.get("benchmark_started_at"),
+        st.session_state.get("benchmark_finished_at"),
+    )
 
 
 if __name__ == "__main__":

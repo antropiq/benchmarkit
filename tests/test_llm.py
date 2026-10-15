@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.llm import safe_get_choice_content, safe_get_token_usage
+from src.llm import _extract_total_tokens, safe_get_choice_content
 
 
 class TestSafeGetChoiceContent:
@@ -37,25 +37,26 @@ class TestSafeGetChoiceContent:
         assert safe_get_choice_content("string") == ""
         assert safe_get_choice_content(123) == ""
 
+    def test_dict_with_empty_choices_returns_empty(self):
+        chunk = {"choices": [], "usage": {"total_tokens": 12}}
+        assert safe_get_choice_content(chunk) == ""
 
-class TestSafeGetTokenUsage:
-    def test_dict_with_usage_total_tokens(self):
-        chunk = {"usage": {"total_tokens": 42}}
-        assert safe_get_token_usage(chunk) == 42
 
-    def test_dict_missing_usage_returns_zero(self):
-        chunk = {}
-        assert safe_get_token_usage(chunk) == 0
+class TestExtractTotalTokens:
+    def test_dict_chunk_with_usage(self):
+        chunk = {"choices": [], "usage": {"total_tokens": 42}}
+        assert _extract_total_tokens(chunk) == 42
 
-    def test_dict_usage_without_total_tokens_returns_zero(self):
-        chunk = {"usage": {}}
-        assert safe_get_token_usage(chunk) == 0
-
-    def test_object_with_usage_total_tokens(self):
+    def test_object_chunk_with_usage(self):
+        usage = MagicMock()
+        usage.total_tokens = 7
         chunk = MagicMock()
-        chunk.usage = {"total_tokens": 99}
-        assert safe_get_token_usage(chunk) == 99
+        chunk.usage = usage
+        assert _extract_total_tokens(chunk) == 7
 
-    def test_object_missing_usage_attribute_returns_zero(self):
-        chunk = MagicMock(spec=[])
-        assert safe_get_token_usage(chunk) == 0
+    def test_chunk_without_usage_returns_none(self):
+        chunk = {"choices": [{"delta": {"content": "hi"}}]}
+        assert _extract_total_tokens(chunk) is None
+
+    def test_zero_total_returns_none(self):
+        assert _extract_total_tokens({"usage": {"total_tokens": 0}}) is None
