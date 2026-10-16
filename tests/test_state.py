@@ -1,5 +1,21 @@
-from src.models import EndpointsConfig
-from src.state import add_result_to_state, get_overall_stats
+from src.state import (
+    add_result_to_state,
+    get_answered_time,
+    get_consumed_tokens,
+    get_overall_stats,
+    get_overall_token_rate,
+)
+
+
+class TestGetAnsweredTime:
+    def test_empty_results(self, session_state):
+        assert get_answered_time() == 0.0
+
+    def test_sums_took_across_models(self, session_state):
+        add_result_to_state("gpt-4", "q1", True, "a", 1.5, 50)
+        add_result_to_state("gpt-4", "q2", False, "b", 2.25, 60)
+        add_result_to_state("llama", "q1", True, "c", 3.0, 70)
+        assert get_answered_time() == 6.75
 
 
 class TestAddResultToState:
@@ -50,3 +66,24 @@ class TestGetOverallStats:
         add_result_to_state("gpt-4", "q2", False, "b", 2.0, 60)
         add_result_to_state("llama", "q1", True, "c", 1.5, 70)
         assert get_overall_stats() == (2, 3)
+
+
+class TestGetConsumedTokens:
+    def test_empty_results(self, session_state):
+        assert get_consumed_tokens() == 0
+
+    def test_sums_tokens_across_models(self, session_state):
+        add_result_to_state("gpt-4", "q1", True, "a", 1.5, 50)
+        add_result_to_state("gpt-4", "q2", False, "b", 2.25, 60)
+        add_result_to_state("llama", "q1", True, "c", 3.0, 70)
+        assert get_consumed_tokens() == 180
+
+
+class TestGetOverallTokenRate:
+    def test_zero_when_nothing_answered(self, session_state):
+        assert get_overall_token_rate() == 0.0
+
+    def test_tokens_per_answered_second(self, session_state):
+        add_result_to_state("gpt-4", "q1", True, "a", 2.0, 100)
+        add_result_to_state("gpt-4", "q2", False, "b", 1.0, 75)
+        assert get_overall_token_rate() == 175 / 3

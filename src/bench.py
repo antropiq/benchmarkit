@@ -6,7 +6,8 @@ from streamlit.delta_generator import DeltaGenerator
 
 from src.llm import process_question
 from src.models import EndpointsConfig
-from src.state import get_overall_stats
+from src.state import get_overall_stats, get_overall_token_rate
+from src.ui import render_token_rate
 from src.utils import save_results
 
 
@@ -17,12 +18,15 @@ class BenchmarkUi:
     stream: DeltaGenerator
     question: DeltaGenerator
     score: DeltaGenerator
+    clock: DeltaGenerator
+    rate: DeltaGenerator
 
 
 def update_stats(ui: BenchmarkUi, total_tests: int) -> None:
     """Refresh the current-question and score metric cards."""
     current_index: int = st.session_state.current_index
     successes, answered = get_overall_stats()
+    render_token_rate(ui.rate, get_overall_token_rate())
     ui.question.metric(
         "Question in progress",
         f"{current_index:02d}" if current_index else "--",
@@ -55,7 +59,7 @@ def run_benchmark(
         for idx, question in enumerate(questions, 1):
             st.session_state.current_index += 1
             update_stats(ui, total_tests)
-            process_question(model, question, idx, config, ui.stream)
+            process_question(model, question, idx, config, ui)
             progress_bar.progress(st.session_state.current_index / total_tests)
             update_stats(ui, total_tests)
 

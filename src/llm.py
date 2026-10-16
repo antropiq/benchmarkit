@@ -7,7 +7,8 @@ from litellm import completion
 from streamlit.delta_generator import DeltaGenerator
 
 from src.models import EndpointsConfig, VerifierAgent
-from src.state import add_result_to_state
+from src.state import add_result_to_state, get_answered_time
+from src.ui import render_chronometer, render_checking
 from src.utils import LLMResult
 
 
@@ -155,19 +156,29 @@ def process_question(
     question: Dict,
     number: int,
     config: EndpointsConfig,
-    stream: DeltaGenerator,
+    ui: Any,
 ) -> None:
     """Process single question for a model inside the stream container."""
-    with stream.container(border=True):
+    with ui.stream.container(border=True):
         st.caption(f"Question {number} · `{model}`")
         st.markdown(f"**{question['question']}**")
 
         response_slot = st.empty()
+
+        # Elapsed time is the cumulative answer time only. Tick live from the
+        # answered-so-far baseline while the LLM streams this answer.
+        answered_before = get_answered_time()
+        render_chronometer(ui.clock, answered_before, time.time())
         response_text, took, tokens_used = call_llm_and_stream(
             model, config.serverUrl, question, response_slot, config.to_kwargs()
         )
 
+        # Freeze the clock at the new cumulative value and show a static
+        # "Checking" indicator so verifier time is never counted.
+        render_checking(ui.clock)
         succeeded = verify_response(config.verifierAgent, question, response_text)
+        render_chronometer(ui.clock, answered_before + took)
+
         if succeeded:
             st.badge("Correct", icon=":material/check_circle:", color="green")
         else:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.bench import BenchmarkUi, run_benchmark, update_stats
 from src.config import initialize_session_state, setup_ui
 from src.models import EndpointsConfig
+from src.state import get_answered_time
 from src.ui import render_layout_style, render_chronometer, render_stream_box_style
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -66,16 +67,17 @@ def _apply_env_config() -> None:
         st.error(f"Invalid endpoints configuration: {exc}")
 
 
+def _mark_benchmark_running() -> None:
+    """Flag the benchmark as running before the script rerun renders the button."""
+    st.session_state["benchmark_running"] = True
+
+
 def main() -> None:
     setup_ui()
     initialize_session_state()
 
     # Auto-load .env configuration and questions from resources
     _load_config()
-
-    # Brand row
-    render_layout_style()
-    st.title(":material/science: Benchmark'it")
 
     questions = st.session_state.get("questions", [])
     config: Optional[EndpointsConfig] = st.session_state.get("endpoints_config")
@@ -84,19 +86,41 @@ def main() -> None:
     sampling_summary = (
         ", ".join(f"{k}={v}" for k, v in sampling.items()) or "defaults"
     )
+    models: List[str] = config.model_list() if config else []
+
+    # Brand row: tested model beside the brand
+    render_layout_style()
+    col_model, col_brand = st.columns([1, 4], gap="medium")
+    with col_model:
+        if models:
+            st.markdown(
+                f'<div class="model-name">{", ".join(models)}</div>',
+                unsafe_allow_html=True,
+            )
+    with col_brand:
+        st.markdown("### :material/science: Benchmark'it")
 
     col_stats, col_stream = st.columns([1, 4], gap="medium")
 
+    benchmark_running: bool = st.session_state.get("benchmark_running", False)
     with col_stats:
-        start_clicked = st.button(
-            "Start benchmark",
-            icon=":material/flag:",
-            type="primary",
-            disabled=total_tests == 0 or not config or not config.model_list(),
-        )
+        with st.container(horizontal_alignment="center"):
+            st.button(
+                "Start benchmark",
+                icon=":material/flag:",
+                type="primary",
+                disabled=(
+                    total_tests == 0
+                    or not config
+                    or not config.model_list()
+                    or benchmark_running
+                ),
+                on_click=_mark_benchmark_running,
+            )
         st.caption(f"{len(questions)} questions · `{sampling_summary}`")
         st.caption(":material/timer: Elapsed")
         clock_slot = st.empty()
+        rate_slot = st.empty()
         question_slot = st.empty()
         score_slot = st.empty()
 
@@ -108,28 +132,27 @@ def main() -> None:
             ),
             question=question_slot,
             score=score_slot,
+            clock=clock_slot,
+            rate=rate_slot,
         )
 
     update_stats(ui, total_tests)
 
-    if start_clicked and config:
+    if benchmark_running and config:
         st.session_state["benchmark_started_at"] = time.time()
         st.session_state["benchmark_finished_at"] = None
-        render_chronometer(clock_slot, st.session_state["benchmark_started_at"])
+        render_chronometer(clock_slot, 0.0)
 
-        run_benchmark(questions, config, total_tests, ui)
+        try:
+            run_benchmark(questions, config, total_tests, ui)
+        finally:
+            st.session_state["benchmark_running"] = False
 
         st.session_state["benchmark_finished_at"] = time.time()
-        st.session_state["total_running_time"] = (
-            st.session_state["benchmark_finished_at"]
-            - st.session_state["benchmark_started_at"]
-        )
+        st.session_state["total_running_time"] = get_answered_time()
+        st.rerun()
 
-    render_chronometer(
-        clock_slot,
-        st.session_state.get("benchmark_started_at"),
-        st.session_state.get("benchmark_finished_at"),
-    )
+    render_chronometer(clock_slot, st.session_state.get("total_running_time", 0.0))
 
 
 if __name__ == "__main__":

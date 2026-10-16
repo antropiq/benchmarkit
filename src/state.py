@@ -3,6 +3,37 @@ from typing import Dict, Tuple
 import streamlit as st
 
 
+def get_answered_time() -> float:
+    """Return the cumulative answer time in seconds.
+
+    Source of truth for the elapsed chronometer: the sum of the per-question
+    response times reported by the evaluated LLM, excluding any time spent
+    verifying answers or updating the UI.
+    """
+    return sum(
+        response["took"]
+        for model_entry in st.session_state.get("results", [])
+        for response in model_entry["responses"]
+    )
+
+
+def get_consumed_tokens() -> int:
+    """Return the cumulative tokens consumed by the evaluated LLM."""
+    return sum(
+        response["consumedTokens"]
+        for model_entry in st.session_state.get("results", [])
+        for response in model_entry["responses"]
+    )
+
+
+def get_overall_token_rate() -> float:
+    """Return overall tokens per second of answered time."""
+    elapsed = get_answered_time()
+    if not elapsed:
+        return 0.0
+    return get_consumed_tokens() / elapsed
+
+
 def add_result_to_state(
     model: str,
     question_uuid: str,

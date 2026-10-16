@@ -59,7 +59,7 @@ Package layout under `src/`, organized into these modules:
 - The verifier agent and the target LLM can be **different endpoints** — `serverUrl` is the target, `verifierAgent.serverUrl` is the verifier.
 - Token counting relies on `stream_options={"include_usage": True}`: the server reports usage in the final stream chunk, read via `_extract_total_tokens()`. Servers that ignore `include_usage` report 0 tokens.
 - `time.sleep(0.05)` in the streaming loop is intentional — it allows Streamlit's UI to update between chunks.
-- The chronometer ticks **client-side** (JS in `ui.py`, rendered via `st.html(unsafe_allow_javascript=True)`) because the benchmark run blocks the Streamlit script server-side; it is seeded from `benchmark_started_at`/`benchmark_finished_at` epoch timestamps.
+- The chronometer ticks **client-side** (JS in `ui.py`, rendered via `st.html(unsafe_allow_javascript=True)`) because the benchmark run blocks the Streamlit script server-side. Its source of truth is `get_answered_time()` in `state.py` — the cumulative sum of the per-question `took` values (LLM answer time only, verifier time excluded). It ticks live only while an answer streams, and shows `Checking…` during verification.
 - Look & feel (colors, Inter/JetBrains Mono fonts, radii) is set in `.streamlit/config.toml` — do not style with custom CSS.
 - The app reuses the same `SERVER_URL` for both the target LLM and the verifier's `api_base` unless `VERIFIER_AGENT_SERVERURL` is set.
 - Results are saved only at the end of the full benchmark run, not incrementally.

@@ -9,6 +9,7 @@ def initialize_session_state() -> None:
         "total_running_time": 0.0,
         "benchmark_started_at": None,
         "benchmark_finished_at": None,
+        "benchmark_running": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)

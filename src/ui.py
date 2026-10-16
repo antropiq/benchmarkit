@@ -27,6 +27,14 @@ _LAYOUT_CSS = """
 div[data-testid="stHeadingWithActionElements"] {
   text-align: center;
 }
+[data-testid="stMain"] h3 {
+  text-align: center;
+}
+.model-name {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--secondaryTextColor);
+}
 [data-testid="stMain"] {
   overflow-y: hidden;
 }
@@ -35,7 +43,7 @@ div[data-testid="stHeadingWithActionElements"] {
 
 
 def render_layout_style() -> None:
-    """Center the brand heading and hide the main column scrollbar."""
+    """Center the brand heading and model name; hide the main column scrollbar."""
     st.markdown(_LAYOUT_CSS, unsafe_allow_html=True)
 
 _DIGITAL_STYLE = (
@@ -50,8 +58,8 @@ _CHRONOMETER_TEMPLATE = """
 (function () {
   var el = document.getElementById("benchmark-chronometer");
   if (!el) { return; }
-  var start = __START_MS__;
-  var end = __END_MS__;
+  var base = __BASE_MS__;
+  var live = __LIVE_MS__;
   function format(ms) {
     var total = Math.max(0, Math.floor(ms / 1000));
     var parts = [
@@ -65,11 +73,12 @@ _CHRONOMETER_TEMPLATE = """
   }
   function tick() {
     if (!el.isConnected) { clearInterval(timer); return; }
-    var now = end === null ? Date.now() : Math.min(Date.now(), end);
-    el.textContent = format(now - start);
-    if (end !== null && now >= end) { clearInterval(timer); }
+    el.textContent = format(base + (Date.now() - live));
   }
-  if (start === null) { return; }
+  if (live === null) {
+    el.textContent = format(base);
+    return;
+  }
   var timer = setInterval(tick, 250);
   tick();
 })();
@@ -78,31 +87,55 @@ _CHRONOMETER_TEMPLATE = """
 
 
 def chronometer_html(
-    started_at: Optional[float],
-    finished_at: Optional[float] = None,
+    elapsed_seconds: float,
+    live_since: Optional[float] = None,
 ) -> str:
-    """Return the chronometer markup, seeded from epoch-seconds timestamps.
+    """Return the chronometer markup for a cumulative answer time.
 
-    The clock ticks client-side, so it keeps running while the benchmark
-    blocks the Streamlit script. ``finished_at`` freezes the display.
+    ``elapsed_seconds`` is the sum of the per-question response times already
+    completed. When ``live_since`` (epoch seconds) is given, the clock keeps
+    ticking client-side from it — so it runs while the LLM streams an answer —
+    otherwise the display is frozen at ``elapsed_seconds``.
     """
-    start_ms = int(started_at * 1000) if started_at else "null"
-    end_ms = int(finished_at * 1000) if finished_at else "null"
+    base_ms = int(elapsed_seconds * 1000)
+    live_ms = int(live_since * 1000) if live_since else "null"
     return (
         _CHRONOMETER_TEMPLATE
         .replace("__STYLE__", _DIGITAL_STYLE)
-        .replace("__START_MS__", str(start_ms))
-        .replace("__END_MS__", str(end_ms))
+        .replace("__BASE_MS__", str(base_ms))
+        .replace("__LIVE_MS__", str(live_ms))
+    )
+
+
+def render_token_rate(slot: DeltaGenerator, tokens_per_second: float) -> None:
+    """Show the overall tokens-per-second rate below the chronometer."""
+    slot.caption(f":material/speed: overall token/s {tokens_per_second:.1f}")
+
+
+_CHECKING_TEMPLATE = """
+<div style="__STYLE__">Checking&hellip;</div>
+"""
+
+
+def render_checking(slot: DeltaGenerator) -> None:
+    """Show a static ``Checking...`` placeholder while the verifier runs.
+
+    Replaces the chronometer so verification time is visibly excluded from
+    the elapsed answer counter.
+    """
+    slot.html(
+        _CHECKING_TEMPLATE.replace("__STYLE__", _DIGITAL_STYLE),
+        unsafe_allow_javascript=False,
     )
 
 
 def render_chronometer(
     slot: DeltaGenerator,
-    started_at: Optional[float],
-    finished_at: Optional[float] = None,
+    elapsed_seconds: float,
+    live_since: Optional[float] = None,
 ) -> None:
     """Render the chronometer into ``slot`` (an ``st.empty()`` placeholder)."""
     slot.html(
-        chronometer_html(started_at, finished_at),
+        chronometer_html(elapsed_seconds, live_since),
         unsafe_allow_javascript=True,
     )
