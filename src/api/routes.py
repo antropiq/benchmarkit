@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import os
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
@@ -105,6 +106,29 @@ def _settings_json(values: Dict[str, str]) -> Dict[str, Any]:
         field: values.get(key, "") for field, key in VERIFIER_ENV_KEYS.items()
     }
     return data
+
+
+def _models_url(server_url: str) -> str:
+    """Build the OpenAI-compatible models listing URL for a server URL.
+
+    ``SERVER_URL`` usually already ends with ``/v1`` (it is used as the
+    litellm ``api_base``), so only ``/models`` is appended in that case.
+    """
+    url = server_url.strip().rstrip("/")
+    if url.endswith("/v1"):
+        return f"{url}/models"
+    return f"{url}/v1/models"
+
+
+def _model_ids(payload: Any) -> List[str]:
+    """Extract model ids from an OpenAI-compatible /models payload."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    ids = [
+        item["id"]
+        for item in data or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+    return sorted(set(ids))
 
 
 def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
@@ -208,6 +232,29 @@ def build_router(state: RunState) -> APIRouter:
         # template, so custom comments in .env are not preserved.
         save_settings(env_values)
         return _settings_json(load_settings())
+
+    @router.get("/models")
+    async def get_models(serverUrl: str = "") -> Dict[str, Any]:
+        """List models exposed by an OpenAI-compatible server URL."""
+        url = serverUrl.strip()
+        if not url:
+            raise HTTPException(status_code=422, detail="No server URL provided")
+        if not url.lower().startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=422, detail="Server URL must start with http:// or https://"
+            )
+        models_url = _models_url(url)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(models_url)
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not fetch models from {models_url}: {exc}",
+            ) from exc
+        return {"models": _model_ids(payload)}
 
     @router.post("/run", status_code=202)
     async def start_run() -> Dict[str, Any]:

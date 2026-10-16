@@ -27,6 +27,12 @@ const state = reactive({
   settingsLoading: false,
   settingsSaving: false,
   settingsError: null,
+  benchmarkModels: [],
+  benchmarkModelsLoading: false,
+  benchmarkModelsError: null,
+  verifierModels: [],
+  verifierModelsLoading: false,
+  verifierModelsError: null,
 })
 
 let eventSource = null
@@ -79,10 +85,15 @@ function applyEvent(event) {
       state.status = 'running'
       state.runId = event.runId
       state.totalTests = event.totalTests
-      state.clock = { mode: 'ticking', baseMs: 0, startedAt: Date.now() }
+      // The server warms the model up first; the clock only starts ticking
+      // when the first question begins.
+      state.clock = { mode: 'starting', baseMs: 0, startedAt: 0 }
       break
     case 'model_started':
       // The tested model lives in the app bar; no stream entry for it.
+      // The backend now warms the model up, so hold the chronometer at
+      // "Starting…" until question_started arrives.
+      state.clock = { mode: 'starting', baseMs: answeredMsSoFar, startedAt: 0 }
       break
     case 'question_started':
       state.current = event.index
@@ -95,6 +106,7 @@ function applyEvent(event) {
         raw: '',
         html: '',
         streaming: true,
+        startedAt: Date.now(),
         succeeded: null,
         took: 0,
         tokens: 0,
@@ -360,6 +372,11 @@ export function useBenchmark() {
         return
       }
       state.settings = body
+      state.benchmarkModels = []
+      state.verifierModels = []
+      state.benchmarkModelsError = null
+      state.verifierModelsError = null
+      refreshModelLists()
     } catch (exc) {
       state.settingsError = `Could not reach the API: ${exc}`
     } finally {
@@ -370,6 +387,68 @@ export function useBenchmark() {
   function closeSettings() {
     state.settingsOpen = false
     state.settingsError = null
+  }
+
+  const MODEL_FIELDS = {
+    benchmark: {
+      serverUrl: () => state.settings?.serverUrl,
+      current: () => state.settings?.endpoint,
+      setCurrent: (value) => {
+        state.settings.endpoint = value
+      },
+      models: 'benchmarkModels',
+      loading: 'benchmarkModelsLoading',
+      error: 'benchmarkModelsError',
+    },
+    verifier: {
+      // Same fallback as the backend: an unset verifier URL reuses the
+      // benchmark server URL.
+      serverUrl: () =>
+        state.settings?.verifier?.serverUrl || state.settings?.serverUrl,
+      current: () => state.settings?.verifier?.endpoint,
+      setCurrent: (value) => {
+        state.settings.verifier.endpoint = value
+      },
+      models: 'verifierModels',
+      loading: 'verifierModelsLoading',
+      error: 'verifierModelsError',
+    },
+  }
+
+  async function fetchModels(kind) {
+    const fields = MODEL_FIELDS[kind]
+    if (!fields || !state.settings || state[fields.loading]) return
+    state[fields.error] = null
+    const serverUrl = (fields.serverUrl() || '').trim()
+    if (!serverUrl) {
+      state[fields.models] = []
+      return
+    }
+    state[fields.loading] = true
+    try {
+      const res = await fetch(`/api/models?serverUrl=${encodeURIComponent(serverUrl)}`)
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state[fields.error] = describeError(
+          body,
+          `Could not load models (${res.status})`,
+        )
+        return
+      }
+      state[fields.models] = body.models || []
+      if (!fields.current()) {
+        fields.setCurrent(state[fields.models][0] || '')
+      }
+    } catch (exc) {
+      state[fields.error] = `Could not reach the API: ${exc}`
+    } finally {
+      state[fields.loading] = false
+    }
+  }
+
+  function refreshModelLists() {
+    fetchModels('benchmark')
+    fetchModels('verifier')
   }
 
   async function saveSettings() {
@@ -410,5 +489,6 @@ export function useBenchmark() {
     openSettings,
     closeSettings,
     saveSettings,
+    fetchModels,
   }
 }

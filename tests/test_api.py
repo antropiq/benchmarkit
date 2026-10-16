@@ -331,3 +331,79 @@ class TestSettingsEndpoint:
         response = client.post("/api/settings", json=payload)
         assert response.status_code == 200
         assert "REASONING" not in os.environ
+
+
+class TestModelsEndpoint:
+    class _FakeResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import httpx
+
+                raise httpx.ConnectError("boom")
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, captured, response):
+            self.captured = captured
+            self.response = response
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url):
+            self.captured["url"] = url
+            self.response.raise_for_status()
+            return self.response
+
+    def _patch_httpx(self, monkeypatch, response):
+        captured: Dict[str, Any] = {}
+        fake_cls = self._FakeClient(captured, response)
+
+        def factory(*args, **kwargs):
+            return fake_cls
+
+        monkeypatch.setattr(routes.httpx, "AsyncClient", factory)
+        return captured
+
+    def test_lists_models_from_v1_url(self, client, monkeypatch):
+        payload = {"data": [{"id": "b"}, {"id": "a"}, {"id": "a"}, {"nope": 1}]}
+        captured = self._patch_httpx(monkeypatch, self._FakeResponse(payload))
+        body = client.get(
+            "/api/models", params={"serverUrl": "http://llm:8080/v1"}
+        ).json()
+        assert body == {"models": ["a", "b"]}
+        assert captured["url"] == "http://llm:8080/v1/models"
+
+    def test_appends_v1_models_for_base_url(self, client, monkeypatch):
+        captured = self._patch_httpx(monkeypatch, self._FakeResponse({"data": []}))
+        response = client.get(
+            "/api/models", params={"serverUrl": "http://llm:8080/"}
+        )
+        assert response.json() == {"models": []}
+        assert captured["url"] == "http://llm:8080/v1/models"
+
+    def test_empty_url_returns_422(self, client):
+        assert client.get("/api/models").status_code == 422
+        assert client.get("/api/models", params={"serverUrl": "  "}).status_code == 422
+
+    def test_non_http_scheme_returns_422(self, client):
+        response = client.get(
+            "/api/models", params={"serverUrl": "file:///etc/passwd"}
+        )
+        assert response.status_code == 422
+
+    def test_upstream_failure_returns_502(self, client, monkeypatch):
+        self._patch_httpx(monkeypatch, self._FakeResponse({}, status_code=500))
+        response = client.get(
+            "/api/models", params={"serverUrl": "http://llm:8080/v1"}
+        )
+        assert response.status_code == 502

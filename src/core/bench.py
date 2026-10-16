@@ -2,7 +2,13 @@ import threading
 from typing import Any, Callable, Dict, List, Optional
 
 from src.core.job import RunJob
-from src.core.llm import Emit, RunCancelled, call_llm_and_stream, verify_response
+from src.core.llm import (
+    Emit,
+    RunCancelled,
+    call_llm_and_stream,
+    verify_response,
+    warmup_model,
+)
 from src.core.models import EndpointsConfig
 from src.core.utils import save_results
 
@@ -101,6 +107,11 @@ def run_benchmark(
     for model in models:
         _check_cancelled(cancel_event)
         emit({"event": "model_started", "model": model})
+        # Load the model before the first question so neither the chronometer
+        # (which shows "Starting…" until question_started) nor the first
+        # question's ``took`` includes model-loading wait.
+        warmup_model(model, config.serverUrl, cancel_event)
+        _check_cancelled(cancel_event)
         for idx, question in enumerate(questions, 1):
             job.current_index += 1
             process_question(

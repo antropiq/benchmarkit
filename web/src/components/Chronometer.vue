@@ -4,7 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 const props = defineProps({
   clock: {
     type: Object,
-    required: true, // { mode: idle|ticking|checking|frozen, baseMs, startedAt }
+    required: true, // { mode: idle|starting|ticking|checking|frozen, baseMs, startedAt }
   },
 })
 
@@ -28,6 +28,7 @@ function format(ms) {
 const display = computed(() => {
   const { mode, baseMs, startedAt } = props.clock
   if (mode === 'checking') return 'Checking…'
+  if (mode === 'starting') return 'Starting…'
   if (mode === 'idle') return '00:00:00'
   const elapsed = mode === 'ticking' ? baseMs + (now.value - startedAt) : baseMs
   return format(elapsed)

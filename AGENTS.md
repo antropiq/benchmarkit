@@ -71,7 +71,7 @@ Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
 
 ## SSE event contract
 
-Events carry an SSE `id:` (sequence number). `run_started` → `model_started` → per question `question_started` / `token` / `answer_done` / `question_done` → `run_finished`; `run_error` for per-question failures. The client clock live-ticks between `question_started` and `answer_done`, shows `Checking…` between `answer_done` and `question_done`, and accumulates only `answer_done.took` — verifier time is excluded.
+Events carry an SSE `id:` (sequence number). `run_started` → `model_started` → per question `question_started` / `token` / `answer_done` / `question_done` → `run_finished`; `run_error` for per-question failures. The client clock live-ticks between `question_started` and `answer_done`, shows `Checking…` between `answer_done` and `question_done`, shows `Starting…` between `run_started`/`model_started` and the first `question_started` (the backend warms the model up with a `max_tokens=1` request first, so model-loading time is excluded from elapsed time), and accumulates only `answer_done.took` — verifier time is excluded.
 
 ## Data files
 

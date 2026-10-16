@@ -110,6 +110,31 @@ def call_llm_and_stream(
     return buffer, time.time() - start_time, tokens_used
 
 
+def warmup_model(
+    model_name: str,
+    server_url: str,
+    cancel_event: Optional[threading.Event] = None,
+) -> None:
+    """Best-effort request that forces the server to load ``model_name``.
+
+    The answer is discarded; a failure is ignored so real errors still
+    surface on the actual questions. Keeps elapsed time (and the first
+    question's ``took``) free of model-loading wait.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        return
+    try:
+        completion(
+            model=f"openai/{model_name}",
+            api_key="none",
+            messages=[{"role": "user", "content": "ping"}],
+            api_base=server_url,
+            max_tokens=1,
+        )
+    except Exception:  # noqa: BLE001 — warm-up is best-effort
+        pass
+
+
 def verify_response(
     verifier: Optional[VerifierAgent],
     question: Dict,

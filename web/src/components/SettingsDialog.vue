@@ -1,8 +1,8 @@
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useBenchmark } from '../composables/useBenchmark'
 
-const { state, closeSettings, saveSettings } = useBenchmark()
+const { state, closeSettings, saveSettings, fetchModels } = useBenchmark()
 
 const dialogEl = ref(null)
 
@@ -13,6 +13,22 @@ const REASONING_OPTIONS = [
   { value: 'high', label: 'high' },
   { value: 'xhigh', label: 'xhigh' },
 ]
+
+// The saved model must stay selectable even when the server no longer lists
+// it (endpoint down, model renamed), so prepend the current value.
+const benchmarkModelOptions = computed(() => {
+  const options = [...state.benchmarkModels]
+  const current = state.settings?.endpoint
+  if (current && !options.includes(current)) options.unshift(current)
+  return options
+})
+
+const verifierModelOptions = computed(() => {
+  const options = [...state.verifierModels]
+  const current = state.settings?.verifier?.endpoint
+  if (current && !options.includes(current)) options.unshift(current)
+  return options
+})
 
 // Depends on settings too: the dialog only renders once the first fetch
 // filled state.settings, which may land after settingsOpen flipped.
@@ -67,12 +83,39 @@ function onNativeClose() {
         <legend>Benchmark LLM</legend>
         <label>
           Server URL
-          <input v-model="state.settings.serverUrl" type="url" placeholder="http://127.0.0.1:8080/v1" />
+          <input
+            v-model="state.settings.serverUrl"
+            type="url"
+            placeholder="http://127.0.0.1:8080/v1"
+            @change="fetchModels('benchmark')"
+          />
         </label>
         <label>
           Model
-          <input v-model="state.settings.endpoint" type="text" placeholder="my-model" />
+          <div class="settings-model-row">
+            <select v-model="state.settings.endpoint">
+              <option v-if="!benchmarkModelOptions.length" value="" disabled>
+                {{ state.benchmarkModelsLoading ? 'Loading models…' : 'No models available' }}
+              </option>
+              <option v-for="model in benchmarkModelOptions" :key="model" :value="model">
+                {{ model }}
+              </option>
+            </select>
+            <button
+              type="button"
+              class="secondary outline settings-model-refresh"
+              :disabled="state.benchmarkModelsLoading"
+              title="Reload models from server"
+              aria-label="Reload models from server"
+              @click="fetchModels('benchmark')"
+            >
+              ↻
+            </button>
+          </div>
         </label>
+        <p v-if="state.benchmarkModelsError" class="caption alert-error" role="alert">
+          {{ state.benchmarkModelsError }}
+        </p>
         <div class="settings-grid">
           <label>
             Temperature
@@ -113,12 +156,39 @@ function onNativeClose() {
         <legend>Verifier</legend>
         <label>
           Server URL
-          <input v-model="state.settings.verifier.serverUrl" type="url" placeholder="http://127.0.0.1:8080/v1" />
+          <input
+            v-model="state.settings.verifier.serverUrl"
+            type="url"
+            placeholder="http://127.0.0.1:8080/v1"
+            @change="fetchModels('verifier')"
+          />
         </label>
         <label>
           Model
-          <input v-model="state.settings.verifier.endpoint" type="text" placeholder="verifier-model" />
+          <div class="settings-model-row">
+            <select v-model="state.settings.verifier.endpoint">
+              <option v-if="!verifierModelOptions.length" value="" disabled>
+                {{ state.verifierModelsLoading ? 'Loading models…' : 'No models available' }}
+              </option>
+              <option v-for="model in verifierModelOptions" :key="model" :value="model">
+                {{ model }}
+              </option>
+            </select>
+            <button
+              type="button"
+              class="secondary outline settings-model-refresh"
+              :disabled="state.verifierModelsLoading"
+              title="Reload models from server"
+              aria-label="Reload models from server"
+              @click="fetchModels('verifier')"
+            >
+              ↻
+            </button>
+          </div>
         </label>
+        <p v-if="state.verifierModelsError" class="caption alert-error" role="alert">
+          {{ state.verifierModelsError }}
+        </p>
         <label>
           System prompt
           <textarea
@@ -141,3 +211,22 @@ function onNativeClose() {
     </article>
   </dialog>
 </template>
+
+<style scoped>
+.settings-model-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings-model-row select {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.settings-model-refresh {
+  width: auto;
+  margin-bottom: 0;
+  padding: 0.35rem 0.75rem;
+}
+</style>
