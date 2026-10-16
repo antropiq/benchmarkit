@@ -1,0 +1,38 @@
+- generic [ref=f1e2]:
+  - banner [ref=f1e3]:
+    - generic [ref=f1e8]:
+      - generic [ref=f1e9]: Benchmark'it
+      - generic [ref=f1e10]: qwen3.8-flash-next-unsloth-ud-iq4_xs
+    - generic [ref=f1e11]:
+      - status [ref=f1e12]: idle
+      - generic [ref=f1e14]:
+        - button "Run benchmark" [ref=f1e15] [cursor=pointer]
+        - button "Stop run" [disabled]
+      - button "Switch to dark theme" [ref=f1e18] [cursor=pointer]
+  - main [ref=f1e21]:
+    - complementary [ref=f1e22]:
+      - region "Elapsed time" [ref=f1e23]:
+        - paragraph [ref=f1e24]: ⏱ Elapsed
+        - paragraph [ref=f1e25]: 00:00:00
+        - paragraph [ref=f1e26]: 30 questions · temperature=0.2, top_p=0.95, top_k=20, min_p=0.0, repeat_penalty=1.0, presence_penalty=0.0, reasoning_effort=low
+      - generic [ref=f1e27]:
+        - paragraph [ref=f1e28]: ⚡ Overall token/s
+        - paragraph [ref=f1e29]: "0.0"
+      - generic [ref=f1e30]:
+        - paragraph [ref=f1e31]: Question in progress
+        - paragraph [ref=f1e32]: "--"
+        - paragraph [ref=f1e33]: 0 of 0
+      - generic [ref=f1e34]:
+        - paragraph [ref=f1e35]: Score
+        - paragraph [ref=f1e36]: 0/0
+        - paragraph [ref=f1e37]: 0%
+      - paragraph [ref=f1e38]: "Failed: none"
+      - link "Download results.json" [ref=f1e39] [cursor=pointer]:
+        - /url: /api/results
+    - region "Answer stream" [ref=f1e42]:
+      - generic [ref=f1e44]:
+        - paragraph [ref=f1e48]: Ready to benchmark
+        - paragraph [ref=f1e49]: Press play to run all questions against the configured endpoints.
+      - generic [ref=f1e50]:
+        - progressbar "Run progress" [ref=f1e51]
+        - generic [ref=f1e52]: 0/0

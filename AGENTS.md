@@ -52,14 +52,18 @@ Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
 | File | Purpose |
 |---|---|
 | **`composables/useBenchmark.js`** | Singleton reactive state + EventSource client (SSE event → UI state), snapshot-rebuild reconnect |
-| **`App.vue`** | Brand row + `[1, 4]` grid: stats column (start button, chronometer, metric cards) beside `StreamPanel` |
-| **`components/`** | `StreamPanel` (autoscroll stream box), `QuestionCard`, `Chronometer` (idle/ticking/checking/frozen), `MetricCard`, `StartButton` |
+| **`composables/useTheme.js`** | Dark/light theme singleton (persisted to `localStorage`, applied via `data-theme`) |
+| **`App.vue`** | Sticky `AppBar` + grid: sticky stats column (chronometer, metric cards) beside `StreamPanel` and progress bar |
+| **`components/`** | `AppBar` (brand left; status pill, play/stop run controls, settings cog, theme toggle right), `StreamPanel` (autoscroll stream box), `QuestionCard`, `Chronometer` (idle/ticking/checking/frozen), `MetricCard`, `RunControls` (play icon + stop icon, stop only active while running), `SettingsDialog` (native `<dialog>`; edit benchmark + verifier settings via `/api/settings`, opens from the cog, disabled while running), `ThemeToggle` |
 | **`styles/theme.css`** | Pico CSS variable overrides (palette formerly in `.streamlit/config.toml`) + metric card / badge / stream box classes |
 
 ## HTTP API
 
 - `GET /api/config` — models, sampling summary, question count, `runStatus`, `hasResults`
+- `GET /api/settings` — raw `.env` values for the settings dialog (empty strings when unset)
+- `POST /api/settings` — save settings: rewrites `.env` (regenerated from a fixed template, empty optional keys commented out) and refreshes `os.environ` so the next run uses them (409 while running; 422 with pydantic detail on invalid values). Real process env vars set before startup keep precedence until restart.
 - `POST /api/run` — start a run (202 `{runId}`; 409 if running; 400/422 on bad config)
+- `POST /api/run/stop` — cancel the active run (202; 409 if not running). The run loop aborts between questions and mid-stream, then emits `run_finished` with `cancelled: true` (partial results are not saved). `runStatus` becomes `cancelled`.
 - `GET /api/run` — status snapshot + all buffered events (client rebuilds UI from this)
 - `GET /api/run/events` — SSE stream (`since` query or `Last-Event-ID` header for replay)
 - `GET /api/results` — download `results.json`
@@ -79,7 +83,7 @@ Events carry an SSE `id:` (sequence number). `run_started` → `model_started` �
 
 - **LiteLLM abstraction**: All LLM calls use `litellm.completion()` with `openai/<model>` prefix and `api_base` pointing to a compatible server (e.g., llama.cpp). `api_key="none"` — no real API keys used. The benchmark loop runs sync litellm in a worker thread (`asyncio.to_thread`) publishing to the `EventBus`; the SSE endpoint subscribes on the event loop.
 - **Event emission**: core modules never render — they call an injected `emit(event: dict)`. Keep `src/core/` free of FastAPI and browser concerns; `src/api/` owns transport.
-- **Single run**: one run at a time, state in memory (`RunState`); restarting the server abandons the active run. No cancellation yet.
+- **Single run**: one run at a time, state in memory (`RunState`); restarting the server abandons the active run. Cancellation goes through `POST /api/run/stop`, which sets a `threading.Event` the benchmark loop and stream reader poll (`RunCancelled` in `core/llm.py`).
 - **Frontend state**: one reactive singleton in `useBenchmark.js`; components read/mutate it directly. SSE reconnects by fetching the `/api/run` snapshot and replaying all events, so no client-side dedupe is needed. Markdown answers go through `marked` + `DOMPurify` (never `v-html` raw).
 - **Type annotations**: Explicit `: str`, `: float`, `: Dict` etc. with `typing` imports (Python side).
 
@@ -89,7 +93,7 @@ Events carry an SSE `id:` (sequence number). `run_started` → `model_started` �
 - Token counting relies on `stream_options={"include_usage": True}`: the server reports usage in the final stream chunk, read via `_extract_total_tokens()`. Servers that ignore `include_usage` report 0 tokens.
 - There is **no `sleep()` throttle** in the streaming loop anymore: token events go straight to SSE, and the client re-renders markdown at most once per animation frame.
 - The chronometer is pure frontend state (`Chronometer.vue`) driven by event boundaries; its source of truth is the cumulative `took` values (LLM answer time only, verifier time excluded).
-- Look & feel is Pico.css + `web/src/styles/theme.css` (colors, Inter/JetBrains Mono, 8px radii, light + dark). Fonts are self-hosted via `@fontsource/*`. `index.html` sets `data-theme` from `prefers-color-scheme`.
+- Look & feel is Pico.css + `web/src/styles/theme.css` (colors, Inter/JetBrains Mono, 8px radii, light + dark). Fonts are self-hosted via `@fontsource/*`. `index.html` sets `data-theme` from the saved `benchmarkit:theme` choice, falling back to `prefers-color-scheme`; the `ThemeToggle` in the app bar switches and persists it.
 - The app reuses the same `SERVER_URL` for both the target LLM and the verifier's `api_base` unless `VERIFIER_AGENT_SERVERURL` is set.
 - `web/dist` must exist (or `npm run build` run) for FastAPI to serve the UI; the API works without it. In dev use the Vite server instead — it proxies `/api`.
 - The old Streamlit app is gone (`src/ui.py`, `.streamlit/`, `streamlit` dep removed); run state is no longer in `st.session_state`.

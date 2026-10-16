@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -8,6 +9,10 @@ from src.core.models import VerifierAgent
 from src.core.utils import LLMResult
 
 Emit = Callable[[Dict[str, Any]], None]
+
+
+class RunCancelled(Exception):
+    """Raised inside the streaming loop when a stop has been requested."""
 
 
 def safe_get_choice_content(chunk: Any) -> str:
@@ -47,6 +52,7 @@ def call_llm_and_stream(
     question: Dict,
     emit: Emit,
     sampling: Optional[Dict] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> LLMResult:
     """Make LLM call, stream the answer as ``token`` events, return results."""
     messages = [
@@ -82,6 +88,11 @@ def call_llm_and_stream(
     tokens_used = 0
     try:
         for chunk in response_generator:
+            if cancel_event is not None and cancel_event.is_set():
+                close = getattr(response_generator, "close", None)
+                if close:
+                    close()
+                raise RunCancelled()
             tokens_used = _extract_total_tokens(chunk) or tokens_used
             content = safe_get_choice_content(chunk)
 
@@ -90,6 +101,8 @@ def call_llm_and_stream(
 
             buffer += content
             emit({"event": "token", "text": content})
+    except RunCancelled:
+        raise
     except Exception as exc:
         emit({"event": "run_error", "message": f"Stream error: {exc}"})
         buffer = ""

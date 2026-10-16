@@ -8,8 +8,9 @@ const state = reactive({
   config: null,
   configError: null,
   startError: null,
-  status: 'idle', // idle | running | finished | failed
+  status: 'idle', // idle | running | finished | failed | cancelled
   runId: null,
+  stopping: false,
   totalTests: 0,
   current: 0,
   successes: 0,
@@ -21,6 +22,11 @@ const state = reactive({
   totalRunningTime: 0,
   progress: 0,
   hasResults: false,
+  settingsOpen: false,
+  settings: null,
+  settingsLoading: false,
+  settingsSaving: false,
+  settingsError: null,
 })
 
 let eventSource = null
@@ -28,6 +34,7 @@ let lastSeq = -1
 let answeredMsSoFar = 0
 let renderScheduled = false
 let activeQuestion = null
+let cancelNoticeTimer = null
 
 function renderMarkdown(raw) {
   return DOMPurify.sanitize(marked.parse(raw || ''))
@@ -42,6 +49,14 @@ function scheduleMarkdownRender() {
   })
 }
 
+function resetToIdle() {
+  disconnect()
+  resetUi()
+  state.status = 'idle'
+  state.runId = null
+  state.totalTests = 0
+}
+
 function resetUi() {
   state.entries = []
   state.current = 0
@@ -51,6 +66,7 @@ function resetUi() {
   state.failedLabel = 'Failed: none'
   state.progress = 0
   state.totalRunningTime = 0
+  state.stopping = false
   state.clock = { mode: 'idle', baseMs: 0, startedAt: 0 }
   activeQuestion = null
   answeredMsSoFar = 0
@@ -66,7 +82,7 @@ function applyEvent(event) {
       state.clock = { mode: 'ticking', baseMs: 0, startedAt: Date.now() }
       break
     case 'model_started':
-      state.entries.push({ type: 'model', model: event.model })
+      // The tested model lives in the app bar; no stream entry for it.
       break
     case 'question_started':
       state.current = event.index
@@ -128,15 +144,30 @@ function applyEvent(event) {
       state.clock = { mode: 'frozen', baseMs: answeredMsSoFar, startedAt: 0 }
       break
     }
-    case 'run_finished':
-      state.status = 'finished'
-      state.totalRunningTime = event.totalRunningTime ?? answeredMsSoFar / 1000
-      state.progress = 1
-      state.entries.push({ type: 'finished' })
-      state.hasResults = true
-      state.clock = { mode: 'frozen', baseMs: answeredMsSoFar, startedAt: 0 }
+    case 'run_finished': {
+      state.stopping = false
+      if (event.cancelled) {
+        // Revert the whole UI to its initial state; the cancelled notice
+        // fades out on its own after a few seconds.
+        resetUi()
+        state.status = 'cancelled'
+        state.entries.push({ type: 'cancelled' })
+        clearTimeout(cancelNoticeTimer)
+        cancelNoticeTimer = setTimeout(() => {
+          const i = state.entries.findIndex((e) => e.type === 'cancelled')
+          if (i !== -1) state.entries.splice(i, 1)
+        }, 5000)
+      } else {
+        state.status = 'finished'
+        state.totalRunningTime = event.totalRunningTime ?? answeredMsSoFar / 1000
+        state.progress = 1
+        state.entries.push({ type: 'finished' })
+        state.hasResults = true
+        state.clock = { mode: 'frozen', baseMs: answeredMsSoFar, startedAt: 0 }
+      }
       disconnect()
       break
+    }
     case 'run_error':
       state.entries.push({ type: 'error', message: event.message })
       break
@@ -217,6 +248,21 @@ async function reconnectViaSnapshot() {
   }
 }
 
+function describeError(body, fallback) {
+  const detail = body?.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => {
+      const field = Array.isArray(item?.loc)
+        ? item.loc.filter((part) => part !== 'body').join('.')
+        : ''
+      return field ? `${field}: ${item?.msg ?? 'invalid'}` : item?.msg ?? 'invalid'
+    })
+    if (messages.length) return messages.join(' · ')
+  }
+  return fallback
+}
+
 export function useBenchmark() {
   async function loadConfig() {
     state.configError = null
@@ -233,7 +279,9 @@ export function useBenchmark() {
       state.config = body
       state.hasResults = body.hasResults
       state.status = body.runStatus
-      if (body.runStatus === 'running' || body.runStatus === 'finished' || body.runStatus === 'failed') {
+      // A cancelled run must not replay its partial stream on load: the UI
+      // stays in its initial state, like after the stop button was used.
+      if (['running', 'finished', 'failed'].includes(body.runStatus)) {
         await reconnectViaSnapshot()
       }
     } catch (exc) {
@@ -262,9 +310,105 @@ export function useBenchmark() {
     }
   }
 
+  async function stop() {
+    state.startError = null
+    // Finished/failed runs keep the stop button enabled as a reset: clicking
+    // it returns the UI to its initial state so a new run can start clean.
+    if (state.status === 'finished' || state.status === 'failed') {
+      resetToIdle()
+      return
+    }
+    if (state.status !== 'running') return
+    state.stopping = true
+    try {
+      const res = await fetch('/api/run/stop', { method: 'POST' })
+      if (res.status === 409) {
+        // Run already ended between the click and the request.
+        await reconnectViaSnapshot()
+        return
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        state.startError =
+          typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+      }
+      // On success keep running until the run_finished(cancelled) event arrives.
+    } catch (exc) {
+      state.stopping = false
+      state.startError = `Could not reach the API: ${exc}`
+    }
+  }
+
   function running() {
     return state.status === 'running'
   }
 
-  return { state, loadConfig, start, running }
+  function canStop() {
+    return ['running', 'finished', 'failed'].includes(state.status)
+  }
+
+  async function openSettings() {
+    if (state.status === 'running' || state.settingsLoading) return
+    state.settingsError = null
+    state.settingsLoading = true
+    state.settingsOpen = true
+    try {
+      const res = await fetch('/api/settings')
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.settingsError = describeError(body, `Could not load settings (${res.status})`)
+        return
+      }
+      state.settings = body
+    } catch (exc) {
+      state.settingsError = `Could not reach the API: ${exc}`
+    } finally {
+      state.settingsLoading = false
+    }
+  }
+
+  function closeSettings() {
+    state.settingsOpen = false
+    state.settingsError = null
+  }
+
+  async function saveSettings() {
+    if (!state.settings || state.settingsSaving) return
+    state.settingsError = null
+    state.settingsSaving = true
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.settings),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.settingsError = describeError(
+          body,
+          `Could not save settings (${res.status})`,
+        )
+        return
+      }
+      state.settings = body
+      state.settingsOpen = false
+      await loadConfig()
+    } catch (exc) {
+      state.settingsError = `Could not reach the API: ${exc}`
+    } finally {
+      state.settingsSaving = false
+    }
+  }
+
+  return {
+    state,
+    loadConfig,
+    start,
+    stop,
+    running,
+    canStop,
+    openSettings,
+    closeSettings,
+    saveSettings,
+  }
 }

@@ -2,35 +2,142 @@
 
 import asyncio
 import json
+import threading
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+import os
+
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from src.api.events import EventBus, sse_format
-from src.config import load_endpoints_config, load_questions, QUESTIONS_PATH
+from src.config import (
+    load_endpoints_config,
+    load_questions,
+    load_settings,
+    save_settings,
+    QUESTIONS_PATH,
+)
 from src.core.bench import run_benchmark
 from src.core.job import RunJob
+from src.core.llm import RunCancelled
 from src.core.models import EndpointsConfig
 from src.core.utils import RESULTS_PATH
+
+
+class SettingsFieldsMixin(BaseModel):
+    """Tolerant request fields: JSON scalars are accepted and stringified.
+
+    ``null`` means "unset" and unknown keys are ignored, so hand-written
+    clients may post numbers (``"temp": 0.2``) or omit optional fields.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _stringify_scalars(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        if isinstance(value, (dict, list, BaseModel)) or isinstance(value, bool):
+            return value
+        if isinstance(value, (str, int, float)):
+            return str(value)
+        raise ValueError("expected a string or number")
+
+
+class VerifierSettingsIn(SettingsFieldsMixin):
+    """Verifier agent settings as sent by the settings dialog."""
+
+    serverUrl: str = ""
+    endpoint: str = ""
+    sysprompt: str = ""
+
+
+class SettingsIn(SettingsFieldsMixin):
+    """Benchmark settings as sent by the settings dialog (raw strings)."""
+
+    serverUrl: str = ""
+    endpoint: str = ""
+    temp: str = ""
+    topP: str = ""
+    topK: str = ""
+    minP: str = ""
+    repeatPenalty: str = ""
+    presencePenalty: str = ""
+    reasoning: str = ""
+    verifier: VerifierSettingsIn = VerifierSettingsIn()
+
+    @field_validator("verifier", mode="before")
+    @classmethod
+    def _empty_verifier(cls, value: Any) -> Any:
+        # Accept "verifier": null / "" / {} as "all verifier fields unset".
+        return value or VerifierSettingsIn()
+
+
+# Dialog field -> .env key, used for both directions of the settings API.
+SETTINGS_ENV_KEYS: Dict[str, str] = {
+    "serverUrl": "SERVER_URL",
+    "endpoint": "ENDPOINT",
+    "temp": "TEMP",
+    "topP": "TOP_P",
+    "topK": "TOP_K",
+    "minP": "MIN_P",
+    "repeatPenalty": "REPEAT_PENALTY",
+    "presencePenalty": "PRESENCE_PENALTY",
+    "reasoning": "REASONING",
+}
+VERIFIER_ENV_KEYS: Dict[str, str] = {
+    "serverUrl": "VERIFIER_AGENT_SERVERURL",
+    "endpoint": "VERIFIER_AGENT_ENDPOINT",
+    "sysprompt": "VERIFIER_AGENT_SYSPROMPT",
+}
+
+
+def _settings_json(values: Dict[str, str]) -> Dict[str, Any]:
+    """Shape raw env values into the settings dialog payload."""
+    data: Dict[str, Any] = {
+        field: values.get(key, "") for field, key in SETTINGS_ENV_KEYS.items()
+    }
+    data["verifier"] = {
+        field: values.get(key, "") for field, key in VERIFIER_ENV_KEYS.items()
+    }
+    return data
+
+
+def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
+    """Convert a settings payload into the managed .env key/value mapping."""
+    payload = settings.model_dump()
+    values: Dict[str, str] = {
+        key: (payload.get(field) or "").strip()
+        for field, key in SETTINGS_ENV_KEYS.items()
+    }
+    if values.get("REASONING", "").strip().lower() == "none":
+        values["REASONING"] = ""
+    verifier = payload.get("verifier") or {}
+    for field, key in VERIFIER_ENV_KEYS.items():
+        values[key] = (verifier.get(field) or "").strip()
+    return values
 
 
 class RunState:
     """Process-wide state for the single active (or last) benchmark run."""
 
     def __init__(self) -> None:
-        self.status: str = "idle"  # idle | running | finished | failed
+        self.status: str = "idle"  # idle | running | finished | failed | cancelled
         self.run_id: Optional[str] = None
         self.job: Optional[RunJob] = None
         self.bus: Optional[EventBus] = None
         self.error: Optional[str] = None
+        self.cancel_event: Optional[threading.Event] = None
 
     def reset(self) -> None:
         self.job = RunJob()
         self.bus = EventBus()
         self.error = None
+        self.cancel_event = threading.Event()
 
 
 def build_router(state: RunState) -> APIRouter:
@@ -71,6 +178,37 @@ def build_router(state: RunState) -> APIRouter:
             "hasResults": RESULTS_PATH.is_file(),
         }
 
+    @router.get("/settings")
+    def get_settings() -> Dict[str, Any]:
+        return _settings_json(load_settings())
+
+    @router.post("/settings")
+    def post_settings(settings: SettingsIn) -> Dict[str, Any]:
+        # The .env is process-wide configuration; changing it mid-run would
+        # silently mix two configurations into one result set.
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change settings while a benchmark run is in progress",
+            )
+        env_values = _settings_env_values(settings)
+        merged = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in env_values or env_values[key]
+        }
+        merged.update({k: v for k, v in env_values.items() if v})
+        try:
+            EndpointsConfig.from_env(merged)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=json.loads(exc.json())) from exc
+        # Note: keys that were set as real process environment variables before
+        # startup keep precedence in the live process until restart; the file
+        # is still updated. The file itself is regenerated from a fixed
+        # template, so custom comments in .env are not preserved.
+        save_settings(env_values)
+        return _settings_json(load_settings())
+
     @router.post("/run", status_code=202)
     async def start_run() -> Dict[str, Any]:
         config = _load_config()
@@ -100,6 +238,13 @@ def build_router(state: RunState) -> APIRouter:
         })
         asyncio.create_task(_execute_run(state, questions, config))
         return {"runId": state.run_id}
+
+    @router.post("/run/stop", status_code=202)
+    async def stop_run() -> Dict[str, Any]:
+        if state.status != "running" or state.cancel_event is None:
+            raise HTTPException(status_code=409, detail="No benchmark run in progress")
+        state.cancel_event.set()
+        return {"runId": state.run_id, "cancelling": True}
 
     @router.get("/run")
     def get_run() -> Dict[str, Any]:
@@ -163,8 +308,18 @@ async def _execute_run(
     assert state.job is not None and state.bus is not None
     bus = state.bus
     try:
-        await asyncio.to_thread(run_benchmark, questions, config, state.job, bus.publish)
+        await asyncio.to_thread(
+            run_benchmark, questions, config, state.job, bus.publish, state.cancel_event
+        )
         state.status = "finished"
+    except RunCancelled:
+        state.status = "cancelled"
+        bus.publish({
+            "event": "run_finished",
+            "cancelled": True,
+            "totalRunningTime": state.job.total_running_time,
+            "totalTests": len(questions) * len(config.model_list()),
+        })
     except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
         state.error = str(exc)
         state.status = "failed"

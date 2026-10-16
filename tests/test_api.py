@@ -83,7 +83,7 @@ class TestConfigEndpoint:
 
 
 def patch_bench(monkeypatch, run_fn=None, block: Optional[threading.Event] = None):
-    def fake(questions, config, job, emit):
+    def fake(questions, config, job, emit, cancel_event=None):
         if block is not None:
             block.wait()
         for text in ("Hel", "lo"):
@@ -123,7 +123,7 @@ class TestRunLifecycle:
         _wait_until(client, lambda s: s["status"] != "running")
 
     def test_run_failure_emits_run_error(self, client, monkeypatch):
-        def boom(questions, config, job, emit):
+        def boom(questions, config, job, emit, cancel_event=None):
             raise RuntimeError("kaboom")
 
         patch_bench(monkeypatch, run_fn=boom)
@@ -133,6 +133,34 @@ class TestRunLifecycle:
         assert snapshot["error"] == "kaboom"
         names = [item["event"]["event"] for item in snapshot["events"]]
         assert "run_error" in names
+
+    def test_stop_cancels_running_run(self, client, monkeypatch):
+        from src.core.llm import RunCancelled
+
+        entered = threading.Event()
+
+        def slow(questions, config, job, emit, cancel_event=None):
+            entered.set()
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise RunCancelled()
+                time.sleep(0.02)
+            raise AssertionError("run was not cancelled in time")
+
+        patch_bench(monkeypatch, run_fn=slow)
+        assert client.post("/api/run").status_code == 202
+        assert entered.wait(5)
+        assert client.post("/api/run/stop").status_code == 202
+
+        snapshot = _wait_until(client, lambda s: s["status"] != "running")
+        assert snapshot["status"] == "cancelled"
+        last = snapshot["events"][-1]["event"]
+        assert last["event"] == "run_finished"
+        assert last.get("cancelled") is True
+
+    def test_stop_without_run_returns_409(self, client: TestClient):
+        assert client.post("/api/run/stop").status_code == 409
 
     def test_missing_models_returns_400(self, client, monkeypatch):
         empty = EndpointsConfig(serverUrl="http://x/v1")
@@ -168,3 +196,138 @@ class TestEventsEndpoint:
 
     def test_events_without_run_returns_404(self, client: TestClient):
         assert client.get("/api/run/events").status_code == 404
+
+
+class TestSettingsEndpoint:
+    @pytest.fixture(autouse=True)
+    def isolated_settings_env(self, monkeypatch, tmp_path):
+        from src import config as config_module
+
+        for key in config_module.SETTING_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
+
+    @staticmethod
+    def _payload(**overrides):
+        payload = {
+            "serverUrl": "http://target:8080/v1",
+            "endpoint": "model-a",
+            "temp": "0.2",
+            "topP": "",
+            "topK": "",
+            "minP": "",
+            "repeatPenalty": "",
+            "presencePenalty": "",
+            "reasoning": "low",
+            "verifier": {
+                "serverUrl": "http://judge:8080/v1",
+                "endpoint": "judge",
+                "sysprompt": 'Say "true" or "false" only.',
+            },
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_get_returns_env_values(self, client, monkeypatch):
+        monkeypatch.setenv("SERVER_URL", "http://x/v1")
+        monkeypatch.setenv("VERIFIER_AGENT_SYSPROMPT", "verify!")
+        body = client.get("/api/settings").json()
+        assert body["serverUrl"] == "http://x/v1"
+        assert body["endpoint"] == ""
+        assert body["verifier"]["sysprompt"] == "verify!"
+
+    def test_get_empty_when_nothing_set(self, client):
+        body = client.get("/api/settings").json()
+        assert body["serverUrl"] == ""
+        assert body["verifier"] == {"serverUrl": "", "endpoint": "", "sysprompt": ""}
+
+    def test_save_writes_file_and_environ(self, client):
+        from dotenv import dotenv_values
+
+        from src import config as config_module
+
+        response = client.post("/api/settings", json=self._payload())
+        assert response.status_code == 200
+        assert response.json()["endpoint"] == "model-a"
+
+        import os
+
+        assert os.environ["SERVER_URL"] == "http://target:8080/v1"
+        assert os.environ["REASONING"] == "low"
+        assert "TOP_P" not in os.environ
+
+        file_values = dotenv_values(config_module.ENV_PATH)
+        assert file_values["SERVER_URL"] == "http://target:8080/v1"
+        # The quoted sysprompt must survive the .env round-trip verbatim.
+        assert file_values["VERIFIER_AGENT_SYSPROMPT"] == 'Say "true" or "false" only.'
+        assert file_values.get("TOP_P") is None
+        text = config_module.ENV_PATH.read_text(encoding="utf-8")
+        assert "#TOP_P=" in text
+
+    def test_save_removes_emptied_optional_key(self, client, monkeypatch):
+        from src import config as config_module
+
+        monkeypatch.setenv("TEMP", "0.5")
+        response = client.post("/api/settings", json=self._payload(temp=""))
+        assert response.status_code == 200
+        import os
+
+        assert "TEMP" not in os.environ
+        text = config_module.ENV_PATH.read_text(encoding="utf-8")
+        assert "#TEMP=" in text
+
+    def test_save_invalid_value_returns_422(self, client):
+        from src import config as config_module
+
+        response = client.post("/api/settings", json=self._payload(temp="abc"))
+        assert response.status_code == 422
+        assert not config_module.ENV_PATH.exists()
+
+    def test_save_invalid_reasoning_returns_422(self, client):
+        response = client.post("/api/settings", json=self._payload(reasoning="ultra"))
+        assert response.status_code == 422
+
+    def test_save_while_running_returns_409(self, client):
+        client.app.state.run_state.status = "running"
+        response = client.post("/api/settings", json=self._payload())
+        assert response.status_code == 409
+        client.app.state.run_state.status = "idle"
+
+    def test_saved_settings_are_used_by_config_endpoint(self, client, monkeypatch):
+        from src import config as config_module
+
+        monkeypatch.setattr(
+            routes, "load_endpoints_config", config_module.load_endpoints_config
+        )
+        assert client.post("/api/settings", json=self._payload()).status_code == 200
+        body = client.get("/api/config").json()
+        assert body["models"] == ["model-a"]
+        assert "temperature=0.2" in body["samplingSummary"]
+        assert body["verifierConfigured"] is True
+
+    def test_save_accepts_json_numbers_and_nulls(self, client):
+        import os
+
+        payload = {
+            "serverUrl": "http://target:8080/v1",
+            "endpoint": "model-a",
+            "temp": 0.2,
+            "topK": 20,
+            "topP": None,
+            "verifier": None,
+            "unknownKey": "ignored",
+        }
+        response = client.post("/api/settings", json=payload)
+        assert response.status_code == 200
+        assert os.environ["TEMP"] == "0.2"
+        assert os.environ["TOP_K"] == "20"
+        assert "TOP_P" not in os.environ
+        assert os.environ["ENDPOINT"] == "model-a"
+
+    def test_save_reasoning_none_is_omitted(self, client):
+        import os
+
+        payload = self._payload(reasoning="none")
+        response = client.post("/api/settings", json=payload)
+        assert response.status_code == 200
+        assert "REASONING" not in os.environ

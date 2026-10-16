@@ -1,17 +1,17 @@
 <script setup>
 import { computed, onMounted } from 'vue'
+import AppBar from './components/AppBar.vue'
+import SettingsDialog from './components/SettingsDialog.vue'
 import MetricCard from './components/MetricCard.vue'
 import Chronometer from './components/Chronometer.vue'
-import StartButton from './components/StartButton.vue'
 import StreamPanel from './components/StreamPanel.vue'
 import { useBenchmark } from './composables/useBenchmark'
 
-const { state, loadConfig, start } = useBenchmark()
+const { state, loadConfig, start, stop } = useBenchmark()
 
 onMounted(loadConfig)
 
 const config = computed(() => state.config)
-const models = computed(() => config.value?.models ?? [])
 const running = computed(() => state.status === 'running')
 const canStart = computed(() => {
   const cfg = config.value
@@ -23,65 +23,73 @@ const scorePercent = computed(() =>
 </script>
 
 <template>
-  <main class="app-shell">
-    <div class="brand-row">
-      <div class="model-name">{{ models.join(', ') }}</div>
-      <h1>🔬 Benchmark'it</h1>
-    </div>
+  <AppBar
+    :can-start="canStart"
+    @start="start"
+    @stop="stop"
+  />
 
-    <div class="main-grid">
-      <div class="stats-col">
-        <div style="display: flex; justify-content: center">
-          <StartButton :disabled="!canStart" :running="running" @click="start" />
-        </div>
-        <p v-if="state.startError" class="error-line">{{ state.startError }}</p>
-        <p v-if="state.configError" class="error-line">{{ state.configError }}</p>
-        <p v-if="config" class="caption" style="text-align: center">
+  <SettingsDialog />
+
+  <main class="app-shell">
+    <aside class="stats-col">
+      <section class="panel run-summary" aria-label="Elapsed time">
+        <p class="caption">⏱ Elapsed</p>
+        <Chronometer :clock="state.clock" />
+        <p v-if="config" class="caption run-meta">
           {{ config.questionCount }} questions · {{ config.samplingSummary }}
         </p>
-        <p v-if="config && !config.verifierConfigured" class="error-line">
-          No verifier agent configured — every answer will be marked incorrect.
-        </p>
-        <p class="caption" style="text-align: center">⏱ Elapsed</p>
-        <Chronometer :clock="state.clock" />
-        <MetricCard
-          label="⚡ overall token/s"
-          :value="state.tokenRate.toFixed(1)"
-        />
-        <MetricCard
-          label="Question in progress"
-          :value="state.current ? String(state.current).padStart(2, '0') : '--'"
-          :delta="`${state.current} of ${state.totalTests}`"
-        />
-        <MetricCard
-          label="Score"
-          :value="`${state.successes}/${state.answered}`"
-          :delta="scorePercent"
-        />
-        <p class="caption">{{ state.failedLabel }}</p>
-        <a
-          v-if="state.hasResults"
-          class="secondary"
-          role="button"
-          href="/api/results"
-          download="results.json"
-          style="justify-content: center"
-        >⬇ Download results.json</a>
-      </div>
+      </section>
 
-      <div>
-        <StreamPanel />
-        <div class="progress-row">
-          <progress
-            :value="Math.round(state.progress * 100)"
-            max="100"
-            style="width: 100%"
-          ></progress>
-          <span class="caption mono">
-            {{ state.current }}/{{ state.totalTests }}
-          </span>
-        </div>
+      <MetricCard
+        label="⚡ Overall token/s"
+        :value="state.tokenRate.toFixed(1)"
+      />
+      <MetricCard
+        label="Question in progress"
+        :value="state.current ? String(state.current).padStart(2, '0') : '--'"
+        :delta="`${state.current} of ${state.totalTests}`"
+      />
+      <MetricCard
+        label="Score"
+        :value="`${state.successes}/${state.answered}`"
+        :delta="scorePercent"
+      />
+
+      <p class="caption failed-label">{{ state.failedLabel }}</p>
+
+      <p v-if="state.startError" class="alert-error" role="alert">{{ state.startError }}</p>
+      <p v-if="state.configError" class="alert-error" role="alert">{{ state.configError }}</p>
+      <p v-if="config && !config.verifierConfigured" class="alert-error" role="alert">
+        No verifier agent configured — every answer will be marked incorrect.
+      </p>
+
+      <a
+        v-if="state.hasResults"
+        class="download-link"
+        href="/api/results"
+        download="results.json"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
+        </svg>
+        Download results.json
+      </a>
+    </aside>
+
+    <section class="stream-col" aria-label="Answer stream">
+      <StreamPanel />
+      <div class="progress-row">
+        <progress
+          :value="Math.round(state.progress * 100)"
+          max="100"
+          aria-label="Run progress"
+        ></progress>
+        <span class="caption mono">
+          {{ state.current }}/{{ state.totalTests }}
+        </span>
       </div>
-    </div>
+    </section>
   </main>
 </template>
