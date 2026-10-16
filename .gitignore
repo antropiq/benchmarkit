@@ -6,3 +6,5 @@ results.json
 .vscode
 .python-version
 .env
+node_modules
+web/dist

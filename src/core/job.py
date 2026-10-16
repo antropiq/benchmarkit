@@ -1,0 +1,111 @@
+from typing import Any, Dict, List, Tuple
+
+from src.core.utils import format_time
+
+
+class RunJob:
+    """Holds the state of a single benchmark run.
+
+    Replaces the Streamlit session state: plain attributes, no UI imports.
+    """
+
+    def __init__(self) -> None:
+        self.current_index: int = 0
+        self.results: List[Dict[str, Any]] = []
+        self.failed_questions: List[int] = []
+        self.total_running_time: float = 0.0
+
+    def reset(self) -> None:
+        """Clear all run state."""
+        self.current_index = 0
+        self.results = []
+        self.failed_questions = []
+        self.total_running_time = 0.0
+
+    # -- failed questions -------------------------------------------------
+
+    def get_failed_questions(self) -> List[int]:
+        """Return the sorted, deduplicated list of question numbers that failed."""
+        return sorted(int(q) for q in set(self.failed_questions))
+
+    def mark_question_failed(self, question_number: int) -> None:
+        """Record that a question number failed."""
+        if question_number not in self.failed_questions:
+            self.failed_questions.append(question_number)
+
+    def failed_label(self) -> str:
+        """Return the ``Failed: ...`` label for the current failed questions."""
+        failed = self.get_failed_questions()
+        if not failed:
+            return "Failed: none"
+        return "Failed: " + ",".join(str(n) for n in failed)
+
+    # -- aggregate stats ----------------------------------------------------
+
+    def _responses(self) -> List[Dict[str, Any]]:
+        return [
+            response for model_entry in self.results for response in model_entry["responses"]
+        ]
+
+    def get_answered_time(self) -> float:
+        """Return the cumulative answer time in seconds.
+
+        Source of truth for the elapsed chronometer: the sum of the per-question
+        response times reported by the evaluated LLM, excluding any time spent
+        verifying answers or updating the UI.
+        """
+        return sum(response["took"] for response in self._responses())
+
+    def get_consumed_tokens(self) -> int:
+        """Return the cumulative tokens consumed by the evaluated LLM."""
+        return sum(response["consumedTokens"] for response in self._responses())
+
+    def get_overall_token_rate(self) -> float:
+        """Return overall tokens per second of answered time."""
+        elapsed = self.get_answered_time()
+        if not elapsed:
+            return 0.0
+        return self.get_consumed_tokens() / elapsed
+
+    def get_overall_stats(self) -> Tuple[int, int]:
+        """Return ``(successes, answered)`` across all models and questions."""
+        responses = self._responses()
+        successes = sum(1 for response in responses if response["succeeded"])
+        return successes, len(responses)
+
+    # -- results ------------------------------------------------------------
+
+    def add_result(
+        self,
+        model: str,
+        question_uuid: str,
+        succeeded: bool,
+        response_text: str,
+        took: float,
+        tokens: int,
+    ) -> None:
+        """Store a per-question result."""
+        model_entry = next((e for e in self.results if e["llm"] == model), None)
+        if not model_entry:
+            model_entry = {"llm": model, "score": "", "responses": []}
+            self.results.append(model_entry)
+
+        model_entry["responses"].append({
+            "uuid": question_uuid,
+            "response": response_text,
+            "took": took,
+            "consumedTokens": tokens,
+            "succeeded": succeeded,
+        })
+
+        # Update model score
+        succeeded_count = sum(r["succeeded"] for r in model_entry["responses"])
+        model_entry["score"] = f"{succeeded_count}/{len(model_entry['responses'])}"
+
+    def to_output(self) -> Dict[str, Any]:
+        """Return the serialized run output matching the results.json schema."""
+        self.total_running_time = self.get_answered_time()
+        return {
+            "results": self.results,
+            "totalRunningTime": format_time(self.total_running_time),
+        }

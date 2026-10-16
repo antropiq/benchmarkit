@@ -1,0 +1,257 @@
+/* Theme tokens ported from .streamlit/config.toml + custom components
+   (metric cards, badges, stream box) that Streamlit used to provide. */
+
+:root {
+  --pico-font-family: 'Inter', system-ui, sans-serif;
+  --pico-font-family-monospace: 'JetBrains Mono', ui-monospace, SFMono-Regular,
+    monospace;
+  --pico-font-size: 14px;
+  --pico-line-height: 1.5;
+  --pico-border-radius: 8px;
+  --pico-form-element-spacing-vertical: 0.5rem;
+  --pico-form-element-spacing-horizontal: 0.75rem;
+}
+
+:root[data-theme='light'] {
+  --pico-primary: #4f46e5;
+  --pico-primary-hover: #4338ca;
+  --pico-primary-hover-background: #4338ca;
+  --pico-primary-underline: rgba(79, 70, 229, 0.4);
+  --pico-background-color: #ffffff;
+  --pico-card-background-color: #ffffff;
+  --pico-card-sectioning-background-color: #ffffff;
+  --pico-color: #111827;
+  --pico-muted-color: #6b7280;
+  --pico-muted-border-color: #d1d5db;
+  --pico-code-background-color: #f3f4f6;
+  --pico-code-color: #111827;
+  --pico-secondary: #6b7280;
+  --pico-secondary-hover: #4b5563;
+  --pico-secondary-background: #f3f4f6;
+  --pico-secondary-hover-background: #e5e7eb;
+  --pico-secondary-color: #111827;
+  --pico-secondary-hover-color: #111827;
+  --pico-secondary-border-color: #d1d5db;
+  --bi-success: #059669;
+  --bi-danger: #dc2626;
+  --bi-warning: #d97706;
+  --bi-info: #2563eb;
+  --bi-violet: #7c3aed;
+}
+
+:root[data-theme='dark'] {
+  --pico-primary: #6366f1;
+  --pico-primary-hover: #818cf8;
+  --pico-primary-hover-background: #818cf8;
+  --pico-primary-underline: rgba(129, 140, 248, 0.4);
+  --pico-background-color: #0b1120;
+  --pico-card-background-color: #0b1120;
+  --pico-card-sectioning-background-color: #0b1120;
+  --pico-color: #e5e7eb;
+  --pico-muted-color: #9ca3af;
+  --pico-muted-border-color: #374151;
+  --pico-code-background-color: #151f32;
+  --pico-code-color: #e5e7eb;
+  --pico-secondary: #9ca3af;
+  --pico-secondary-hover: #d1d5db;
+  --pico-secondary-background: #151f32;
+  --pico-secondary-hover-background: #1e2a3f;
+  --pico-secondary-color: #e5e7eb;
+  --pico-secondary-hover-color: #ffffff;
+  --pico-secondary-border-color: #374151;
+  --bi-success: #34d399;
+  --bi-danger: #f87171;
+  --bi-warning: #fbbf24;
+  --bi-info: #60a5fa;
+  --bi-violet: #a78bfa;
+}
+
+/* -- layout -------------------------------------------------------------- */
+
+.app-shell {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 0.5rem 1.5rem 1.5rem;
+  overflow-y: hidden;
+}
+
+.brand-row {
+  display: grid;
+  grid-template-columns: 1fr 4fr;
+  gap: 1rem;
+  align-items: center;
+}
+
+.brand-row h1 {
+  text-align: center;
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.model-name {
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+  word-break: break-word;
+}
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 4fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.stats-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.caption {
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+  margin: 0;
+}
+
+.caption.mono {
+  font-family: var(--pico-font-family-monospace);
+}
+
+/* -- metric cards (st.metric lookalikes) ---------------------------------- */
+
+.metric-card {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 0.6rem 0.85rem;
+}
+
+.metric-card .metric-label {
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+  margin: 0;
+}
+
+.metric-card .metric-value {
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.metric-card .metric-delta {
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+  margin: 0;
+}
+
+/* -- badges --------------------------------------------------------------- */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+.badge.green { color: var(--bi-success); }
+.badge.red { color: var(--bi-danger); }
+.badge.violet { color: var(--bi-violet); }
+.badge.gray { color: var(--pico-muted-color); }
+
+/* -- chronometer ----------------------------------------------------------- */
+
+.chronometer {
+  font-family: var(--pico-font-family-monospace);
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+  text-align: center;
+  margin: 0;
+}
+
+/* -- stream panel (transparent box with 3px theme-colored border) --------- */
+
+.stream-panel {
+  border: 3px solid currentColor;
+  border-radius: var(--pico-border-radius);
+  background-color: transparent;
+  height: 448px;
+  overflow-y: auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.question-card {
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  padding: 0.6rem 0.85rem;
+}
+
+.question-card .question-text {
+  font-weight: 600;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.question-card .answer {
+  overflow-wrap: break-word;
+}
+
+.question-card .answer :first-child { margin-top: 0; }
+.question-card .answer :last-child { margin-bottom: 0; }
+
+.question-card .answer pre {
+  background-color: var(--pico-code-background-color);
+  color: var(--pico-code-color);
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--pico-border-radius);
+  overflow-x: auto;
+}
+
+.question-card .answer code {
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.85em;
+}
+
+.question-card .answer table {
+  font-size: 0.85em;
+  margin: 0.5rem 0;
+}
+
+.model-badge-row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.finished-banner {
+  border: 1px solid var(--bi-success);
+  color: var(--bi-success);
+  border-radius: var(--pico-border-radius);
+  padding: 0.5rem 0.85rem;
+  font-weight: 500;
+}
+
+.error-line {
+  color: var(--bi-danger);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+
+.progress-row progress { margin: 0; flex: 1; }

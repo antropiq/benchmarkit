@@ -2,7 +2,7 @@
 
 ## Project overview
 
-A Streamlit app that benchmarks LLM endpoints by streaming questions, collecting responses, and verifying them against expected answers using a secondary LLM verifier agent. Questions are auto-loaded from `resources/questions.json` and configuration from `.env` on page load.
+A FastAPI + Vue 3 app that benchmarks LLM endpoints by streaming questions, collecting responses, and verifying them against expected answers using a secondary LLM verifier agent. Questions are auto-loaded from `resources/questions.json` and configuration from `.env` on server startup. The frontend is a Vite-built SPA served by FastAPI; run progress is pushed to the browser over SSE.
 
 ## Commands
 
@@ -12,8 +12,15 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
-# Run the app
-streamlit run src/main.py
+# Frontend build (requires Node.js; output in web/dist, served by FastAPI)
+cd web && npm install && npm run build
+
+# Run the app (serves API + UI on http://127.0.0.1:8000)
+benchmarkit
+# or: uvicorn src.api.server:app
+
+# Frontend dev server (hot reload on :5173, proxies /api to :8000)
+cd web && npm run dev
 
 # Install test dependencies
 pip install -e ".[test]"
@@ -22,47 +29,70 @@ pip install -e ".[test]"
 pytest
 ```
 
-A pytest-based test suite lives under `tests/`. No lint or build step exists. Dependencies are managed via `pyproject.toml` (hatchling backend).
+A pytest-based test suite lives under `tests/`. No lint or build step exists beyond `vite build`. Dependencies are managed via `pyproject.toml` (hatchling backend).
 
 ## Code structure
 
-Package layout under `src/`, organized into these modules:
+Python package layout under `src/`, split into a UI-free core and the API:
 
 | Module | Purpose |
 |---|---|
-| **`main.py`** | Streamlit UI: brand row + two-column layout (`st.columns([1, 4])`), auto-loading of `.env` + questions, benchmark trigger |
-| **`bench.py`** | `run_benchmark()`, `BenchmarkUi` dataclass (stream/question/score slots), `update_stats()` metric cards |
-| **`llm.py`** | `call_llm_and_stream()`, `verify_response()`, `process_question()` |
-| **`ui.py`** | `chronometer_html()` / `render_chronometer()` — client-side JS digital clock (no native Streamlit equivalent) |
-| **`config.py`** | Streamlit page config, session-state initialization |
-| **`models.py`** | Pydantic models for the benchmark config (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`), built from env vars via `EndpointsConfig.from_env()` |
-| **`state.py`** | Session-state result management |
-| **`utils.py`** | JSON loading, result saving, helpers |
+| **`api/server.py`** | `create_app()` (routers + `StaticFiles("web/dist")`), `run()` console entry |
+| **`api/routes.py`** | REST + SSE endpoints, `RunState` (single active run), worker-thread launch |
+| **`api/events.py`** | `EventBus`: seq-numbered in-memory event buffer, thread-safe publish, async subscribe with replay; `sse_format()` |
+| **`core/bench.py`** | `run_benchmark()`, `process_question()` — pure loop + event emission |
+| **`core/llm.py`** | `call_llm_and_stream()`, `verify_response()` — take an `emit` callable, no UI code |
+| **`core/job.py`** | `RunJob` class: results, failed questions, score/token/time aggregates |
+| **`core/models.py`** | Pydantic models for the benchmark config, built from env vars via `EndpointsConfig.from_env()` |
+| **`core/utils.py`** | `format_time()`, `save_results(job, path)` |
+| **`config.py`** | `.env` loading + questions + `load_endpoints_config()` (config lives in the process environment, not the browser) |
+
+Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
+
+| File | Purpose |
+|---|---|
+| **`composables/useBenchmark.js`** | Singleton reactive state + EventSource client (SSE event → UI state), snapshot-rebuild reconnect |
+| **`App.vue`** | Brand row + `[1, 4]` grid: stats column (start button, chronometer, metric cards) beside `StreamPanel` |
+| **`components/`** | `StreamPanel` (autoscroll stream box), `QuestionCard`, `Chronometer` (idle/ticking/checking/frozen), `MetricCard`, `StartButton` |
+| **`styles/theme.css`** | Pico CSS variable overrides (palette formerly in `.streamlit/config.toml`) + metric card / badge / stream box classes |
+
+## HTTP API
+
+- `GET /api/config` — models, sampling summary, question count, `runStatus`, `hasResults`
+- `POST /api/run` — start a run (202 `{runId}`; 409 if running; 400/422 on bad config)
+- `GET /api/run` — status snapshot + all buffered events (client rebuilds UI from this)
+- `GET /api/run/events` — SSE stream (`since` query or `Last-Event-ID` header for replay)
+- `GET /api/results` — download `results.json`
+- Everything else → SPA static files
+
+## SSE event contract
+
+Events carry an SSE `id:` (sequence number). `run_started` → `model_started` → per question `question_started` / `token` / `answer_done` / `question_done` → `run_finished`; `run_error` for per-question failures. The client clock live-ticks between `question_started` and `answer_done`, shows `Checking…` between `answer_done` and `question_done`, and accumulates only `answer_done.took` — verifier time is excluded.
 
 ## Data files
 
 - **`questions.json`** — Array of `{ uuid, question, expected }` objects. UUIDs are sequential (`01234567-0123-0123-0123-0000000000XX`). 30 questions from matchingpennies.com.
-- **`.env`** (project root, gitignored; see `.env.example`) — Platform-independent benchmark configuration. Keys: `SERVER_URL`, `ENDPOINT` (or comma-separated `ENDPOINTS`), `TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING`, and the verifier block `VERIFIER_AGENT_SYSPROMPT`, `VERIFIER_AGENT_SERVERURL`, `VERIFIER_AGENT_ENDPOINT`. Loaded via `python-dotenv` (real env vars take precedence) and parsed by `EndpointsConfig.from_env()` into the same pydantic models (`EndpointsConfig`, `SamplingParams`, `VerifierAgent`); string values are coerced, invalid values raise a `ValidationError` shown in the UI.
-- **`results.json`** — Generated output, gitignored.
+- **`.env`** (project root, gitignored; see `.env.example`) — Platform-independent benchmark configuration. Keys: `SERVER_URL`, `ENDPOINT` (or comma-separated `ENDPOINTS`), `TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING`, and the verifier block `VERIFIER_AGENT_SYSPROMPT`, `VERIFIER_AGENT_SERVERURL`, `VERIFIER_AGENT_ENDPOINT`. Loaded via `python-dotenv` at server startup (real env vars take precedence) and parsed by `EndpointsConfig.from_env()` into the pydantic models; string values are coerced, invalid values raise a `ValidationError` returned as HTTP 422.
+- **`results.json`** — Generated output, gitignored. Saved once at the end of a run (`save_results()` in `core/bench.py`).
 
 ## Key patterns & conventions
 
-- **LiteLLM abstraction**: All LLM calls use `litellm.completion()` with `openai/<model>` prefix and `api_base` pointing to a compatible server (e.g., llama.cpp). `api_key="none"` — no real API keys used.
-- **Streaming**: `call_llm_and_stream()` iterates chunks, extracts content via `safe_get_choice_content()`, and updates a Streamlit placeholder in real time. Token usage is read from `response_generator.last_response.usage.total_tokens`.
-- **Session state**: All mutable state lives in `st.session_state` — results, current index, running time, config. Initialize with `initialize_session_state()`.
-- **Verifier agent**: A separate LLM call that evaluates whether a model's response matches the expected answer. Returns `true`/`false` (case-insensitive).
-- **Type annotations**: Explicit `: str`, `: float`, `: Dict` etc. with `typing` imports.
-- **Error handling**: All external calls wrapped in try/except with `st.error()` UI feedback.
+- **LiteLLM abstraction**: All LLM calls use `litellm.completion()` with `openai/<model>` prefix and `api_base` pointing to a compatible server (e.g., llama.cpp). `api_key="none"` — no real API keys used. The benchmark loop runs sync litellm in a worker thread (`asyncio.to_thread`) publishing to the `EventBus`; the SSE endpoint subscribes on the event loop.
+- **Event emission**: core modules never render — they call an injected `emit(event: dict)`. Keep `src/core/` free of FastAPI and browser concerns; `src/api/` owns transport.
+- **Single run**: one run at a time, state in memory (`RunState`); restarting the server abandons the active run. No cancellation yet.
+- **Frontend state**: one reactive singleton in `useBenchmark.js`; components read/mutate it directly. SSE reconnects by fetching the `/api/run` snapshot and replaying all events, so no client-side dedupe is needed. Markdown answers go through `marked` + `DOMPurify` (never `v-html` raw).
+- **Type annotations**: Explicit `: str`, `: float`, `: Dict` etc. with `typing` imports (Python side).
 
 ## Gotchas
 
 - The verifier agent and the target LLM can be **different endpoints** — `serverUrl` is the target, `verifierAgent.serverUrl` is the verifier.
 - Token counting relies on `stream_options={"include_usage": True}`: the server reports usage in the final stream chunk, read via `_extract_total_tokens()`. Servers that ignore `include_usage` report 0 tokens.
-- `time.sleep(0.05)` in the streaming loop is intentional — it allows Streamlit's UI to update between chunks.
-- The chronometer ticks **client-side** (JS in `ui.py`, rendered via `st.html(unsafe_allow_javascript=True)`) because the benchmark run blocks the Streamlit script server-side. Its source of truth is `get_answered_time()` in `state.py` — the cumulative sum of the per-question `took` values (LLM answer time only, verifier time excluded). It ticks live only while an answer streams, and shows `Checking…` during verification.
-- Look & feel (colors, Inter/JetBrains Mono fonts, radii) is set in `.streamlit/config.toml` — do not style with custom CSS.
+- There is **no `sleep()` throttle** in the streaming loop anymore: token events go straight to SSE, and the client re-renders markdown at most once per animation frame.
+- The chronometer is pure frontend state (`Chronometer.vue`) driven by event boundaries; its source of truth is the cumulative `took` values (LLM answer time only, verifier time excluded).
+- Look & feel is Pico.css + `web/src/styles/theme.css` (colors, Inter/JetBrains Mono, 8px radii, light + dark). Fonts are self-hosted via `@fontsource/*`. `index.html` sets `data-theme` from `prefers-color-scheme`.
 - The app reuses the same `SERVER_URL` for both the target LLM and the verifier's `api_base` unless `VERIFIER_AGENT_SERVERURL` is set.
-- Results are saved only at the end of the full benchmark run, not incrementally.
+- `web/dist` must exist (or `npm run build` run) for FastAPI to serve the UI; the API works without it. In dev use the Vite server instead — it proxies `/api`.
+- The old Streamlit app is gone (`src/ui.py`, `.streamlit/`, `streamlit` dep removed); run state is no longer in `st.session_state`.
 
 ## Adding questions
 

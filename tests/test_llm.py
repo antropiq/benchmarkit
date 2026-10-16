@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.llm import _extract_total_tokens, safe_get_choice_content
+from src.core.llm import _extract_total_tokens, safe_get_choice_content
 
 
 class TestSafeGetChoiceContent:

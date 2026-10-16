@@ -1,24 +1,38 @@
-import streamlit as st
+"""Application configuration: .env loading, questions, and endpoint config."""
+
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from dotenv import load_dotenv
+from pydantic import ValidationError
+
+from src.core.models import EndpointsConfig
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+QUESTIONS_PATH = PROJECT_ROOT / "resources" / "questions.json"
+ENV_PATH = PROJECT_ROOT / ".env"
 
 
-def initialize_session_state() -> None:
-    """Initialize required session state variables."""
-    defaults = {
-        "current_index": 0,
-        "results": [],
-        "total_running_time": 0.0,
-        "benchmark_started_at": None,
-        "benchmark_finished_at": None,
-        "benchmark_running": False,
-    }
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
+def load_dotenv_once() -> None:
+    """Load the .env file once; existing environment variables take precedence."""
+    if ENV_PATH.exists():
+        load_dotenv(ENV_PATH)
 
 
-def setup_ui() -> None:
-    """Configure the Streamlit page."""
-    st.set_page_config(
-        page_title="LLM benchmark",
-        page_icon=":material/science:",
-        layout="wide",
-    )
+def load_questions(path: Path = QUESTIONS_PATH) -> List[Dict[str, Any]]:
+    """Load the benchmark questions from disk."""
+    data: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data.get("questions", [])
+
+
+def load_endpoints_config() -> Tuple[Optional[EndpointsConfig], Optional[ValidationError]]:
+    """Build and validate the endpoints config from the environment.
+
+    Returns ``(config, None)`` on success or ``(None, error)`` when the
+    environment is invalid.
+    """
+    try:
+        return EndpointsConfig.from_env(), None
+    except ValidationError as exc:
+        return None, exc

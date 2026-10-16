@@ -9,22 +9,23 @@ description = "Benchmark LLM endpoints with streaming responses and LLM-based ve
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "fastapi",
     "litellm",
     "pydantic>=2",
     "python-dotenv",
-    "streamlit",
-    "watchdog",
+    "uvicorn[standard]",
 ]
 
 [project.optional-dependencies]
 test = [
+    "httpx",
     "pytest",
     "pytest-mock",
     "pytest-cov",
 ]
 
 [project.scripts]
-benchmarkit = "src.main:main"
+benchmarkit = "src.api.server:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

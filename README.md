@@ -14,11 +14,44 @@ With it you can benchmark several llm's using natural language questions that ev
 
 * Initialize the project
 
+This project uses a [pyenv](https://github.com/pyenv/pyenv) virtualenv named `benchmarkit`
+(see the gitignored `.python-version` file) — it auto-activates when you `cd` into the
+project, so no `source .../activate` step is needed:
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-streamlit run src/main.py
+cd /path/to/benchmarkit
+pip install -e ".[test]"
+```
+
+> Using plain venvs instead? `python -m venv .venv && source .venv/bin/activate && pip install -e ".[test]"` —
+> but keep only **one** environment, pyenv shims otherwise shadow `.venv/bin`.
+
+* Build the frontend (requires Node.js)
+
+```bash
+cd web
+npm install
+npm run build
+```
+
+* Run it
+
+```bash
+benchmarkit           # serves the API + UI on http://127.0.0.1:8000
+```
+
+### Develop with hot reload
+
+Terminal 1 (API):
+
+```bash
+uvicorn src.api.server:app --reload
+```
+
+Terminal 2 (frontend dev server on :5173, proxies `/api` to :8000):
+
+```bash
+cd web && npm run dev
 ```
 
 ## Running tests

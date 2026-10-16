@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.models import EndpointsConfig, SamplingParams, VerifierAgent
+from src.core.models import EndpointsConfig, SamplingParams, VerifierAgent
 
 
 class TestVerifierAgent:

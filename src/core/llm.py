@@ -1,15 +1,13 @@
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
-import streamlit as st
 from litellm import completion
-from streamlit.delta_generator import DeltaGenerator
 
-from src.models import EndpointsConfig, VerifierAgent
-from src.state import add_result_to_state, get_answered_time
-from src.ui import render_chronometer, render_checking
-from src.utils import LLMResult
+from src.core.models import VerifierAgent
+from src.core.utils import LLMResult
+
+Emit = Callable[[Dict[str, Any]], None]
 
 
 def safe_get_choice_content(chunk: Any) -> str:
@@ -47,10 +45,10 @@ def call_llm_and_stream(
     model_name: str,
     server_url: str,
     question: Dict,
-    slot: DeltaGenerator,
+    emit: Emit,
     sampling: Optional[Dict] = None,
 ) -> LLMResult:
-    """Make LLM call, stream the answer into ``slot``, return results."""
+    """Make LLM call, stream the answer as ``token`` events, return results."""
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": question["question"]},
@@ -78,7 +76,7 @@ def call_llm_and_stream(
             **sampling_kwargs,
         )
     except Exception as exc:
-        st.error(f"LLM call failed: {exc}", icon=":material/error:")
+        emit({"event": "run_error", "message": f"LLM call failed: {exc}"})
         return "", time.time() - start_time, 0
 
     tokens_used = 0
@@ -91,10 +89,9 @@ def call_llm_and_stream(
                 continue
 
             buffer += content
-            slot.markdown(buffer)
-            time.sleep(0.05)  # Allow UI to update
+            emit({"event": "token", "text": content})
     except Exception as exc:
-        st.error(f"Stream error: {exc}", icon=":material/error:")
+        emit({"event": "run_error", "message": f"Stream error: {exc}"})
         buffer = ""
 
     return buffer, time.time() - start_time, tokens_used
@@ -104,12 +101,15 @@ def verify_response(
     verifier: Optional[VerifierAgent],
     question: Dict,
     response_text: str,
+    emit: Emit,
 ) -> bool:
     """Verify LLM response against expected answer."""
     if not verifier or not verifier.endpoint:
-        st.error(
-            "No verifier agent configured in the endpoints config",
-            icon=":material/error:",
+        emit(
+            {
+                "event": "run_error",
+                "message": "No verifier agent configured in the endpoints config",
+            }
         )
         return False
     try:
@@ -147,49 +147,5 @@ def verify_response(
 
         return content.strip().lower() == "true" if content else False
     except Exception as exc:
-        st.error(f"Verifier failed: {exc}", icon=":material/error:")
+        emit({"event": "run_error", "message": f"Verifier failed: {exc}"})
         return False
-
-
-def process_question(
-    model: str,
-    question: Dict,
-    number: int,
-    config: EndpointsConfig,
-    ui: Any,
-) -> None:
-    """Process single question for a model inside the stream container."""
-    with ui.stream.container(border=True):
-        st.caption(f"Question {number} · `{model}`")
-        st.markdown(f"**{question['question']}**")
-
-        response_slot = st.empty()
-
-        # Elapsed time is the cumulative answer time only. Tick live from the
-        # answered-so-far baseline while the LLM streams this answer.
-        answered_before = get_answered_time()
-        render_chronometer(ui.clock, answered_before, time.time())
-        response_text, took, tokens_used = call_llm_and_stream(
-            model, config.serverUrl, question, response_slot, config.to_kwargs()
-        )
-
-        # Freeze the clock at the new cumulative value and show a static
-        # "Checking" indicator so verifier time is never counted.
-        render_checking(ui.clock)
-        succeeded = verify_response(config.verifierAgent, question, response_text)
-        render_chronometer(ui.clock, answered_before + took)
-
-        if succeeded:
-            st.badge("Correct", icon=":material/check_circle:", color="green")
-        else:
-            st.badge("Incorrect", icon=":material/error:", color="red")
-        st.caption(f"{took:.1f}s · {tokens_used:,} tokens")
-
-    add_result_to_state(
-        model=model,
-        question_uuid=question["uuid"],
-        succeeded=succeeded,
-        response_text=response_text,
-        took=took,
-        tokens=tokens_used,
-    )
