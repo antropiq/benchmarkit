@@ -8,3 +8,5 @@ results.json
 .env
 node_modules
 web/dist
+.playwright-mcp/
+.kilo/plans/
