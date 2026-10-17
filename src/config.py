@@ -15,11 +15,6 @@ ENV_PATH = PROJECT_ROOT / ".env"
 RESOURCES_DIR = PROJECT_ROOT / "resources"
 
 QUESTION_SET_DEFAULT = "legacy"
-QUESTION_SET_LABELS: Dict[str, str] = {
-    "legacy": "Legacy",
-    "78qcm": "78QCM",
-    "30hardmath": "30 Hard Math",
-}
 
 # Managed .env keys, in the order they are written to the file.
 SETTING_KEYS: Tuple[str, ...] = (
@@ -76,7 +71,7 @@ def list_question_sets() -> List[Dict[str, Any]]:
         sets.append(
             {
                 "id": path.stem,
-                "label": QUESTION_SET_LABELS.get(path.stem, path.stem.capitalize()),
+                "label": path.stem.capitalize(),
                 "count": len(questions),
             }
         )
