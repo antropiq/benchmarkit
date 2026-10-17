@@ -1,0 +1,214 @@
+{
+  "questions": [
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f01",
+      "question": "Evaluate the Gaussian integral: integral from -infinity to +infinity of e^(-x^2) dx.\n\nA] sqrt(pi)\nB] pi\nC] 2*pi\nD] pi/2\nE] 1/sqrt(2*pi)",
+      "expected": "A",
+      "category": "advanced_mathematics",
+      "subcategory": "integration"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f02",
+      "question": "What is the rank of the Mordell-Weil group E(Q) of the elliptic curve y^2 = x^3 - x?\n\nA] 1\nB] 0\nC] 2\nD] 3\nE] 4",
+      "expected": "B",
+      "category": "advanced_mathematics",
+      "subcategory": "elliptic_curves"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f03",
+      "question": "What is the residue of f(z) = pi*cot(pi*z)/z^2 at z = 0?\n\nA] pi^2/6\nB] -pi^2/6\nC] pi^2/3\nD] -pi^2/3\nE] 0",
+      "expected": "D",
+      "category": "advanced_mathematics",
+      "subcategory": "complex_analysis"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f04",
+      "question": "What is the exact value of the Riemann zeta function zeta(4)?\n\nA] pi^4/45\nB] pi^2/6\nC] pi^4/90\nD] pi^4/30\nE] pi^4/96",
+      "expected": "C",
+      "category": "advanced_mathematics",
+      "subcategory": "zeta_functions"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f05",
+      "question": "How many Sylow 2-subgroups does the alternating group A4 have?\n\nA] 3\nB] 4\nC] 1\nD] 6\nE] 12",
+      "expected": "C",
+      "category": "advanced_mathematics",
+      "subcategory": "group_theory"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f06",
+      "question": "Evaluate the series sum over n >= 1 of 1/(2n-1)^2 (sum of reciprocals of odd squares).\n\nA] pi^2/8\nB] pi^2/6\nC] pi^2/12\nD] pi^2/4\nE] 3*pi^2/8",
+      "expected": "A",
+      "category": "advanced_mathematics",
+      "subcategory": "series"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f07",
+      "question": "How many Sylow 5-subgroups does the symmetric group S5 have?\n\nA] 1\nB] 12\nC] 24\nD] 6\nE] 10",
+      "expected": "D",
+      "category": "advanced_mathematics",
+      "subcategory": "group_theory"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f08",
+      "question": "Evaluate the definite integral: integral from 0 to 1 of dx / sqrt(1 - x^2).\n\nA] 1\nB] pi\nC] 2\nD] pi/2\nE] pi/4",
+      "expected": "D",
+      "category": "advanced_mathematics",
+      "subcategory": "integration"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f09",
+      "question": "Evaluate the infinite sum: sum over n >= 1 of 1/(n*(n+1)).\n\nA] 2\nB] 1\nC] 1/2\nD] e - 1\nE] pi^2/6",
+      "expected": "B",
+      "category": "advanced_mathematics",
+      "subcategory": "series"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f0a",
+      "question": "What are the eigenvalues of the 3x3 permutation matrix of the cycle (1 2 3)?\n\nA] {1, 1, 1}\nB] {1, e^(2*pi*i/3), e^(4*pi*i/3)}\nC] {-1, -1, -1}\nD] {1, -1, 1}\nE] {1, i, -1}",
+      "expected": "B",
+      "category": "advanced_mathematics",
+      "subcategory": "linear_algebra"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f0b",
+      "question": "How many groups of order 8 are there up to isomorphism?\n\nA] 5\nB] 3\nC] 4\nD] 6\nE] 14",
+      "expected": "A",
+      "category": "advanced_mathematics",
+      "subcategory": "group_theory"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f0c",
+      "question": "Evaluate the alternating harmonic series: sum over n >= 1 of (-1)^(n+1)/n.\n\nA] pi^2/12\nB] 1\nC] ln(2)\nD] the Euler-Mascheroni constant gamma\nE] 2*ln(2)",
+      "expected": "C",
+      "category": "advanced_mathematics",
+      "subcategory": "series"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f0d",
+      "question": "Using the Euler reflection formula, what is the exact value of Gamma(1/4)*Gamma(3/4)?\n\nA] pi\nB] pi*sqrt(2)\nC] 2*pi\nD] pi*sqrt(3)\nE] pi/sqrt(2)",
+      "expected": "B",
+      "category": "advanced_mathematics",
+      "subcategory": "special_functions"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f0e",
+      "question": "How many derangements of 6 elements are there (permutations with no fixed points)?\n\nA] 120\nB] 87\nC] 53\nD] 265\nE] 720",
+      "expected": "D",
+      "category": "advanced_mathematics",
+      "subcategory": "combinatorics"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f0f",
+      "question": "For an odd prime p, what is the sum of the Legendre symbols (a/p) over all residues a = 0, 1, ..., p-1?\n\nA] 1\nB] p - 1\nC] 0\nD] -1\nE] (p-1)/2",
+      "expected": "C",
+      "category": "advanced_mathematics",
+      "subcategory": "number_theory"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f10",
+      "question": "Evaluate the Planck-type integral: integral from 0 to infinity of x^3/(e^x - 1) dx.\n\nA] pi^4/15\nB] pi^4/90\nC] pi^4/45\nD] pi^4/30\nE] 7*pi^4/720",
+      "expected": "A",
+      "category": "advanced_mathematics",
+      "subcategory": "special_integrals"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f11",
+      "question": "How many solutions does the congruence x^2 = 1 (mod 15) have?\n\nA] 1\nB] 4\nC] 2\nD] 8\nE] 15",
+      "expected": "B",
+      "category": "advanced_mathematics",
+      "subcategory": "finite_rings"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f12",
+      "question": "How many monic irreducible polynomials of degree 2 are there over the finite field F_3?\n\nA] 2\nB] 6\nC] 9\nD] 3\nE] 4",
+      "expected": "D",
+      "category": "advanced_mathematics",
+      "subcategory": "finite_fields"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f13",
+      "question": "The series sum over k >= 1 of (-1)^(k-1)/(2k-1)^2 = 1 - 1/9 + 1/25 - 1/49 + ... converges to:\n\nA] Catalan's constant G\nB] pi^2/8\nC] ln(2)\nD] pi/4\nE] pi^2/16",
+      "expected": "A",
+      "category": "advanced_mathematics",
+      "subcategory": "special_series"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f14",
+      "question": "What is the order of the general linear group GL(2, F_2) of invertible 2x2 matrices over F_2?\n\nA] 4\nB] 6\nC] 8\nD] 16\nE] 24",
+      "expected": "B",
+      "category": "advanced_mathematics",
+      "subcategory": "matrix_groups"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f15",
+      "question": "With the generating function convention t/(e^t - 1) = sum of B_n t^n/n!, what is the Bernoulli number B_4?\n\nA] -1/30\nB] 1/30\nC] -1/42\nD] 1/6\nE] 0",
+      "expected": "A",
+      "category": "advanced_mathematics",
+      "subcategory": "bernoulli_numbers"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f16",
+      "question": "Over the finite field F_q, how many roots does the polynomial x^q - x have in F_q?\n\nA] q - 1\nB] q - 2\nC] q\nD] q^2\nE] (q-1)/2",
+      "expected": "C",
+      "category": "advanced_mathematics",
+      "subcategory": "finite_fields"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f17",
+      "question": "What is the partition number p(10), the number of unordered ways to write 10 as a sum of positive integers?\n\nA] 30\nB] 26\nC] 46\nD] 385\nE] 42",
+      "expected": "E",
+      "category": "advanced_mathematics",
+      "subcategory": "partitions"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f18",
+      "question": "Evaluate the definite integral: integral from 0 to 2*pi of sin^4(x) dx.\n\nA] pi/4\nB] pi/2\nC] 3*pi/8\nD] 3*pi/4\nE] pi",
+      "expected": "D",
+      "category": "advanced_mathematics",
+      "subcategory": "integration"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f19",
+      "question": "The Riemann Hypothesis states that every non-trivial zero of the Riemann zeta function lies on which line?\n\nA] Re(s) = 1\nB] Re(s) = 0\nC] Re(s) = 1/2\nD] Im(s) = 1/2\nE] Re(s) = -1/2",
+      "expected": "C",
+      "category": "advanced_mathematics",
+      "subcategory": "zeta_functions"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f1a",
+      "question": "How many elements of order exactly 2 does the symmetric group S4 have?\n\nA] 6\nB] 3\nC] 4\nD] 12\nE] 9",
+      "expected": "E",
+      "category": "advanced_mathematics",
+      "subcategory": "group_theory"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f1b",
+      "question": "How many abelian groups of order 144 = 2^4 * 3^2 are there up to isomorphism?\n\nA] 8\nB] 12\nC] 5\nD] 2\nE] 10",
+      "expected": "E",
+      "category": "advanced_mathematics",
+      "subcategory": "group_theory"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f1c",
+      "question": "Which of the following Mersenne numbers is prime?\n\nA] 2^59 - 1\nB] 2^63 - 1\nC] 2^67 - 1\nD] 2^71 - 1\nE] 2^61 - 1",
+      "expected": "E",
+      "category": "advanced_mathematics",
+      "subcategory": "mersenne_primes"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f1d",
+      "question": "What is the class number of the quadratic field Q(sqrt(-5))?\n\nA] 1\nB] 3\nC] 4\nD] 6\nE] 2",
+      "expected": "E",
+      "category": "advanced_mathematics",
+      "subcategory": "algebraic_number_theory"
+    },
+    {
+      "uuid": "d4e5f6a7-b8c9-4d0e-9f1a-2b3c4d5e6f1e",
+      "question": "Evaluate the log-sine type integral: integral from 0 to 1 of ln(1/x)/(1+x) dx.\n\nA] (ln 2)^2\nB] pi^2/6\nC] pi^2/8\nD] 1\nE] pi^2/12",
+      "expected": "E",
+      "category": "advanced_mathematics",
+      "subcategory": "logarithmic_integrals"
+    }
+  ]
+}

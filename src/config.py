@@ -18,6 +18,7 @@ QUESTION_SET_DEFAULT = "legacy"
 QUESTION_SET_LABELS: Dict[str, str] = {
     "legacy": "Legacy",
     "78qcm": "78QCM",
+    "30hardmath": "30 Hard Math",
 }
 
 # Managed .env keys, in the order they are written to the file.
