@@ -16,6 +16,10 @@ def content_chunk(text):
     return {"choices": [{"delta": {"content": text}}]}
 
 
+def reasoning_chunk(text):
+    return {"choices": [{"delta": {"reasoning_content": text}}]}
+
+
 def usage_chunk(prompt=None, completion=None, total=None):
     usage = {}
     if prompt is not None:
@@ -109,6 +113,36 @@ class TestCallLlmAndStreamTiming:
         result, events = self._run(monkeypatch, chunks, [0.0, 0.1, 0.2, 0.3])
 
         assert [e["text"] for e in events if e["event"] == "token"] == ["he", "llo"]
+
+    def test_reasoning_deltas_anchor_the_generation_window(self, monkeypatch):
+        # Prefill ends, reasoning streams first, then the answer: the decode
+        # window must start at the first reasoning token, not the first
+        # content token, or the rate is inflated by the reasoning wait.
+        chunks = [
+            reasoning_chunk("thinking…"),
+            reasoning_chunk("more…"),
+            content_chunk("4"),
+            content_chunk("2"),
+            usage_chunk(prompt=20, completion=40, total=60),
+        ]
+        result, events = self._run(
+            monkeypatch, chunks, [0.0, 9.9, 11.0, 12.04, 16.5, 100.0]
+        )
+
+        assert result.text == "42"
+        assert result.ttft == 9.9
+        assert result.took == 16.5
+        assert result.gen_duration == 16.5 - 9.9
+        assert result.completion_tokens == 40
+        assert [e["text"] for e in events if e["event"] == "token"] == ["4", "2"]
+
+    def test_reasoning_only_stream_has_zero_answer_text(self, monkeypatch):
+        chunks = [reasoning_chunk("only "), reasoning_chunk("thinking")]
+        result, events = self._run(monkeypatch, chunks, [0.0, 1.0, 2.0, 3.0])
+
+        assert result.text == ""
+        assert result.gen_duration == 1.0
+        assert [e["event"] for e in events if e["event"] == "token"] == []
 
 
 class TestSafeGetChoiceContent:

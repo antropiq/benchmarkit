@@ -67,22 +67,23 @@ class RunJob:
         )
 
     def get_overall_token_rate(self) -> float:
-        """Return overall generation speed: completion tokens / gen duration.
+        """Return the cumulative token rate: average of the per-response rates.
 
-        Matches llama.cpp's ``eval speed (t/s)``: only generated tokens over
-        the decode window, excluding prompt processing and verification time.
-        Responses with no measurable decode window (single-chunk answers) are
-        excluded from both sums.
+        Each response's rate is computed app-side as
+        ``consumedTokens / genDuration`` (elapsed time from the first token
+        received to the response completing, timed with ``time.monotonic()``);
+        the cumulative value is the arithmetic mean of those per-question
+        rates. Responses with no measurable decode window (single-chunk
+        answers) are excluded.
         """
-        measurable = [
-            response
+        rates = [
+            response["consumedTokens"] / response["genDuration"]
             for response in self._responses()
             if response.get("genDuration", 0.0) > 0
         ]
-        gen_time = sum(response["genDuration"] for response in measurable)
-        if not gen_time:
+        if not rates:
             return 0.0
-        return sum(response["consumedTokens"] for response in measurable) / gen_time
+        return sum(rates) / len(rates)
 
     def get_overall_stats(self) -> Tuple[int, int]:
         """Return ``(successes, answered)`` across all models and questions."""

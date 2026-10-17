@@ -108,8 +108,8 @@ class TestGetOverallTokenRate:
     def test_generation_rate_excludes_ttft_and_verification(self, job: RunJob):
         job.add_result("gpt-4", "q1", True, "a", 5.0, 100, ttft=2.0, gen_duration=2.0)
         job.add_result("gpt-4", "q2", False, "b", 3.0, 75, ttft=1.0, gen_duration=1.0)
-        # (100 + 75) / (2.0 + 1.0), ignoring took entirely.
-        assert job.get_overall_token_rate() == 175 / 3
+        # Average of per-response rates: (100/2.0 + 75/1.0) / 2, ignoring took.
+        assert job.get_overall_token_rate() == (50.0 + 75.0) / 2
 
     def test_skips_responses_without_decode_window(self, job: RunJob):
         job.add_result("gpt-4", "q1", True, "a", 5.0, 100, gen_duration=2.0)

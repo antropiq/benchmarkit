@@ -31,6 +31,30 @@ def safe_get_choice_content(chunk: Any) -> str:
     return ""
 
 
+def _extract_reasoning(chunk: Any) -> str:
+    """Safely extract streamed reasoning text (thinking) from a chunk.
+
+    Reasoning-capable servers emit thinking deltas under ``reasoning_content``
+    or ``reasoning`` instead of ``content``; they are generated tokens too,
+    so they must anchor the decode-window timing even though they are not
+    part of the answer text.
+    """
+    if isinstance(chunk, dict):
+        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+        if not isinstance(delta, dict):
+            return ""
+        return str(delta.get("reasoning_content") or delta.get("reasoning") or "")
+    if hasattr(chunk, "choices") and chunk.choices:
+        delta = getattr(chunk.choices[0], "delta", None)
+        if delta is None:
+            return ""
+        for attr in ("reasoning_content", "reasoning"):
+            value = getattr(delta, attr, None)
+            if value:
+                return str(value)
+    return ""
+
+
 def _extract_usage(chunk: Any) -> Optional[Dict[str, Optional[int]]]:
     """Read the usage block from a streamed chunk, when the server sent one.
 
@@ -72,11 +96,12 @@ def call_llm_and_stream(
 ) -> LLMResult:
     """Make LLM call, stream the answer as ``token`` events, return results.
 
-    Timing uses ``time.monotonic()`` and is anchored to *content* chunks:
-    ``took`` runs from request start to the last chunk carrying text (the
-    trailing usage-only chunk is not timed), ``ttft`` to the first content
-    chunk, and ``gen_duration`` covers first-to-last content chunk — the
-    window matching llama.cpp's generation (decode) speed.
+    Timing uses ``time.monotonic()`` and is anchored to *generated* chunks —
+    content or reasoning deltas (the trailing usage-only chunk is not timed):
+    ``took`` runs from request start to the last generated chunk, ``ttft`` to
+    the first generated chunk, and ``gen_duration`` covers first-to-last
+    generated chunk — the window matching llama.cpp's generation (decode)
+    speed, since reasoning deltas are part of ``completion_tokens``.
     """
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -128,16 +153,21 @@ def call_llm_and_stream(
                 if usage["prompt_tokens"]:
                     prompt_tokens = usage["prompt_tokens"]
             content = safe_get_choice_content(chunk)
+            reasoning = _extract_reasoning(chunk)
 
-            if not content:
+            if not content and not reasoning:
                 continue
 
-            # Time the last content chunk, not the stream drain: with
+            # Time the last generated chunk, not the stream drain: with
             # include_usage the server appends a usage-only chunk afterwards.
+            # Reasoning deltas open/extend the window (they are decoded
+            # tokens counted in completion_tokens) but are not answer text.
             arrival = time.monotonic()
             if t_first is None:
                 t_first = arrival
             t_last = arrival
+            if not content:
+                continue
             buffer += content
             emit({"event": "token", "text": content})
     except RunCancelled:
