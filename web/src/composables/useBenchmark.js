@@ -438,16 +438,21 @@ export function useBenchmark() {
     },
   }
 
-  async function fetchModels(kind) {
+  async function fetchModels(kind, resetSelection = false) {
     const fields = MODEL_FIELDS[kind]
     if (!fields || !state.settings || state[fields.loading]) return
     state[fields.error] = null
+    // User-initiated refresh: the current selection belongs to the previous
+    // listing and is dropped immediately, before the new list is fetched.
+    if (resetSelection) fields.setCurrent('')
     const serverUrl = (fields.serverUrl() || '').trim()
     if (!serverUrl) {
       state[fields.models] = []
       return
     }
     state[fields.loading] = true
+    // Wipe the previous server's models so a refresh never shows stale options.
+    state[fields.models] = []
     try {
       const res = await fetch(`/api/models?serverUrl=${encodeURIComponent(serverUrl)}`)
       const body = await res.json().catch(() => null)
@@ -458,9 +463,13 @@ export function useBenchmark() {
         )
         return
       }
-      state[fields.models] = body.models || []
-      if (!fields.current()) {
-        fields.setCurrent(state[fields.models][0] || '')
+      const models = body.models || []
+      state[fields.models] = models
+      // Keep the selection consistent with the listed models: a saved model
+      // from a previous server would otherwise stay bound invisibly and be
+      // saved again for a server that does not offer it.
+      if (!models.includes(fields.current())) {
+        fields.setCurrent(models[0] || '')
       }
     } catch (exc) {
       state[fields.error] = `Could not reach the API: ${exc}`
