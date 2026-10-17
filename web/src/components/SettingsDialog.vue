@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useBenchmark } from '../composables/useBenchmark'
 
-const { state, closeSettings, saveSettings, fetchModels } = useBenchmark()
+const { state, closeSettings, saveSettings, fetchModels, loadQuestionSets } = useBenchmark()
 
 const dialogEl = ref(null)
 
@@ -78,7 +78,33 @@ function onNativeClose() {
       {{ state.settingsError }}
     </p>
 
+    <p v-if="state.questionSetsError" class="alert-error" role="alert">
+      {{ state.questionSetsError }}
+    </p>
+
     <form method="dialog" class="settings-form" @submit.prevent="saveSettings">
+      <fieldset>
+        <legend>Question set</legend>
+        <label>
+          Source
+          <select
+            v-model="state.settings.questionSet"
+            :disabled="state.questionSetsLoading"
+          >
+            <option
+              v-for="set in state.questionSets"
+              :key="set.id"
+              :value="set.id"
+            >
+              {{ set.label }} ({{ set.count }} questions)
+            </option>
+            <option v-if="!state.questionSets.length" value="" disabled>
+              {{ state.questionSetsLoading ? 'Loading question sets…' : 'No question sets available' }}
+            </option>
+          </select>
+        </label>
+      </fieldset>
+
       <fieldset>
         <legend>Benchmark LLM</legend>
         <label>

@@ -1,0 +1,550 @@
+{
+  "questions": [
+    {
+      "uuid": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "question": "What is the capital of Australia?\n\nA] Sydney\nB] Melbourne\nC] Canberra\nD] Brisbane",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "geography"
+    },
+    {
+      "uuid": "7c9e6679-7425-40cd-9824-998d3c7f7f4b",
+      "question": "Which planet is known as the Red Planet?\n\nA] Venus\nB] Mars\nC] Jupiter\nD] Mercury",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "astronomy"
+    },
+    {
+      "uuid": "3b894105-9389-4d4d-bf3b-7f1c1e6d0a5f",
+      "question": "Who wrote '1984'?\n\nA] Aldous Huxley\nB] George Orwell\nC] Ray Bradbury\nD] H.G. Wells",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "literature"
+    },
+    {
+      "uuid": "a3bb1481-b7f6-4d3c-9d2a-1c9b3f1e6d0a",
+      "question": "What is the chemical symbol for gold?\n\nA] Ag\nB] Go\nC] Au\nD] Gd",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "chemistry"
+    },
+    {
+      "uuid": "2f5e3c1d-8b4a-4d2e-9c1f-6a3b8e7d0f2a",
+      "question": "In what year did the Berlin Wall fall?\n\nA] 1987\nB] 1989\nC] 1991\nD] 1993",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "history"
+    },
+    {
+      "uuid": "9d2f4e1a-7c3b-4f6e-8a1d-0b5c3e7f2a4d",
+      "question": "What is the largest organ in the human body?\n\nA] Liver\nB] Brain\nC] Skin\nD] Lungs",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "biology"
+    },
+    {
+      "uuid": "1e6b3c8d-5a2f-4e9d-b7c1-8f4a0d2b6e3c",
+      "question": "Which language has the most native speakers worldwide?\n\nA] English\nB] Spanish\nC] Mandarin Chinese\nD] Hindi",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "linguistics"
+    },
+    {
+      "uuid": "4c8d1e2f-6a3b-4f7d-9e2c-5b1a8d3f0c6e",
+      "question": "What is the speed of light approximately in km/s?\n\nA] 150,000\nB] 300,000\nC] 450,000\nD] 600,000",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "physics"
+    },
+    {
+      "uuid": "8a1d3f2c-5e7b-4c9a-6d1f-0b4e8c2a5d7f",
+      "question": "Which country invented paper?\n\nA] Japan\nB] China\nC] Egypt\nD] India",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "history"
+    },
+    {
+      "uuid": "3f6c8a2d-9b1e-4d7f-2c5a-8e1b4f0d3c9a",
+      "question": "What is the boiling point of water at sea level in Celsius?\n\nA] 90\u00b0C\nB] 100\u00b0C\nC] 110\u00b0C\nD] 120\u00b0C",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "science"
+    },
+    {
+      "uuid": "7b2e4d1a-3c9f-4a6b-8d2e-5f1c0a3b9d7e",
+      "question": "Who painted the Mona Lisa?\n\nA] Michelangelo\nB] Raphael\nC] Leonardo da Vinci\nD] Donatello",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "art"
+    },
+    {
+      "uuid": "2d5f8c1e-4b7a-4e3d-9f1c-6a2b0d8e5c3f",
+      "question": "What is the smallest prime number?\n\nA] 0\nB] 1\nC] 2\nD] 3",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "mathematics"
+    },
+    {
+      "uuid": "6a1c3e8f-2d4b-4f9a-7c1e-0b5d8a2f4c6b",
+      "question": "Which element has the atomic number 1?\n\nA] Helium\nB] Hydrogen\nC] Lithium\nD] Carbon",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "chemistry"
+    },
+    {
+      "uuid": "0d3f6a2c-9e1b-4c8d-5a7f-3b0e4d9c1a2f",
+      "question": "What is the currency of Japan?\n\nA] Yuan\nB] Won\nC] Yen\nD] Ringgit",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "geography"
+    },
+    {
+      "uuid": "5c8e1f3a-7d2b-4a6c-9e1d-4b0f7c2a8e5d",
+      "question": "In which field did Alan Turing make his foundational contributions?\n\nA] Biology\nB] Mathematics and Computer Science\nC] Medicine\nD] Astronomy",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "computer_science_history"
+    },
+    {
+      "uuid": "b4e2a7c1-9d3f-4b8a-6c1e-2f5d0a8b3c7e",
+      "question": "A byte is composed of how many bits?\n\nA] 4\nB] 8\nC] 16\nD] 32",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "computer_science"
+    },
+    {
+      "uuid": "1a9c4f2e-6d8b-4e3a-7c1f-0d5b8a2e4c9f",
+      "question": "How many zeros are in the factorial of 10 (10!)?\n\nA] 1\nB] 2\nC] 3\nD] 4",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "number_theory"
+    },
+    {
+      "uuid": "8e2c5a1d-3f7b-4d9a-0c1e-6b4f8a2d1c3e",
+      "question": "What is 15% of 240?\n\nA] 32\nB] 36\nC] 40\nD] 44",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "arithmetic"
+    },
+    {
+      "uuid": "4d7f1c3a-9b2e-4f8c-5a1d-6c0e3b7a2d9f",
+      "question": "What is the derivative of x^3 with respect to x?\n\nA] x^2\nB] 3x^2\nC] 2x^3\nD] 3x^3",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "calculus"
+    },
+    {
+      "uuid": "7f1c4a8e-2d6b-4c9a-3e1f-5b0d8c2a4e7b",
+      "question": "Solve for x: 2x + 5 = 17. What is x?\n\nA] 4\nB] 5\nC] 6\nD] 7",
+      "expected": "C",
+      "category": "mathematics",
+      "subcategory": "algebra"
+    },
+    {
+      "uuid": "3c9a1e5f-8d2b-4a7c-6f1d-0b4e8c2a5d3f",
+      "question": "What is the area of a circle with radius 5 (use \u03c0\u22483.14)?\n\nA] 15.7\nB] 31.4\nC] 78.5\nD] 157",
+      "expected": "C",
+      "category": "mathematics",
+      "subcategory": "geometry"
+    },
+    {
+      "uuid": "6b1d3e7a-2c4f-4d8a-9e1c-5f0b4a8d2c6e",
+      "question": "What is log base 10 of 1000?\n\nA] 2\nB] 3\nC] 10\nD] 100",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "logarithms"
+    },
+    {
+      "uuid": "9f2c5a1e-4d7b-4c3a-8e1d-0b6f4c2a7e5d",
+      "question": "How many combinations of 3 items can be chosen from a set of 5?\n\nA] 5\nB] 10\nC] 15\nD] 20",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "combinatorics"
+    },
+    {
+      "uuid": "2e8a1c4f-6d3b-4f9a-1c2e-7b0d5a8c4e3f",
+      "question": "What is the next number in the sequence: 2, 6, 12, 20, 30, ?\n\nA] 40\nB] 42\nC] 44\nD] 46",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "sequences"
+    },
+    {
+      "uuid": "5a1d8c3f-7e2b-4c9a-3f1e-6b0c4d2a8f7e",
+      "question": "If a train travels 120 km in 1.5 hours, what is its average speed in km/h?\n\nA] 60\nB] 72\nC] 80\nD] 90",
+      "expected": "C",
+      "category": "mathematics",
+      "subcategory": "word_problem"
+    },
+    {
+      "uuid": "8c3e1a5f-2d4b-4e7a-9c1f-0b6d2a8c4e3f",
+      "question": "What is the value of 7 factorial (7!)?\n\nA] 2520\nB] 5040\nC] 10080\nD] 25200",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "factorials"
+    },
+    {
+      "uuid": "1d5f8a2c-4e3b-4c7a-6d1f-9b0e4c8a2f5d",
+      "question": "What is the greatest common divisor (GCD) of 48 and 36?\n\nA] 6\nB] 12\nC] 18\nD] 24",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "number_theory"
+    },
+    {
+      "uuid": "7e2a4c8f-3d1b-4a9c-5f2e-6c0d8b1a4e7c",
+      "question": "In a standard 52-card deck, what is the probability of drawing a red card?\n\nA] 1/4\nB] 1/2\nC] 13/51\nD] 26/51",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "probability"
+    },
+    {
+      "uuid": "4a9c1e3f-8d2b-4f7a-1c5e-0b3d6a8c2f4e",
+      "question": "What is the sum of the interior angles of a triangle?\n\nA] 90 degrees\nB] 120 degrees\nC] 180 degrees\nD] 360 degrees",
+      "expected": "C",
+      "category": "mathematics",
+      "subcategory": "geometry"
+    },
+    {
+      "uuid": "3e7a1c4d-9f2b-4a8c-6d1e-5b0c8f2a4d7e",
+      "question": "Solve: if f(x) = 3x + 7, what is f(4)?\n\nA] 11\nB] 19\nC] 25\nD] 28",
+      "expected": "B",
+      "category": "mathematics",
+      "subcategory": "functions"
+    },
+    {
+      "uuid": "8b1d4f2a-6c3e-4a9c-7d1b-0e5c8a4f3d2e",
+      "question": "A rectangular field is 30m by 20m. What is its perimeter?\n\nA] 50m\nB] 600m\nC] 100m\nD] 120m",
+      "expected": "C",
+      "category": "mathematics",
+      "subcategory": "geometry"
+    },
+    {
+      "uuid": "2c5a8f1e-4d7b-4e3a-9c1d-6b0f2a8c4e5d",
+      "question": "What is 3/4 expressed as a decimal?\n\nA] 0.25\nB] 0.33\nC] 0.75\nD] 0.80",
+      "expected": "C",
+      "category": "mathematics",
+      "subcategory": "arithmetic"
+    },
+    {
+      "uuid": "6f1c4e8a-2d3b-4a7c-9e1f-5b0d8c2a4e7b",
+      "question": "In BPE tokenization, what is the first token generated when training on 'the cat sat on the mat' with vocab size 1?\n\nA] 'the'\nB] 't'\nC] ' '\nD] 'cat'",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "bpe"
+    },
+    {
+      "uuid": "1a4c8e2f-7d3b-4a9c-5f1e-0b6d2c8a4e3f",
+      "question": "What does BPE stand for in NLP?\n\nA] Binary Prefix Encoding\nB] Byte Pair Encoding\nC] Base Probability Estimation\nD] Balanced Pattern Extraction",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "definitions"
+    },
+    {
+      "uuid": "5d2e8a1c-9f4b-4c7a-3e1d-6b0c4f8a2d5e",
+      "question": "In SentencePiece tokenization, what is the special token '\u2581' (U+2581) used for?\n\nA] End of document\nB] Word beginning marker\nC] Whitespace replacement\nD] Vocabulary boundary",
+      "expected": "C",
+      "category": "tokenization",
+      "subcategory": "sentencepiece"
+    },
+    {
+      "uuid": "3c8f1a4d-6e2b-4a9c-7d1f-0b5c8e2a4d6b",
+      "question": "How does a WordPiece tokenizer handle out-of-vocabulary words?\n\nA] Skips them entirely\nB] Replaces with [UNK]\nC] Splits into sub-word pieces\nD] Errors out",
+      "expected": "C",
+      "category": "tokenization",
+      "subcategory": "wordpiece"
+    },
+    {
+      "uuid": "9a1c4e7f-2d5b-4c8a-6f1e-3b0d5a8c2f4e",
+      "question": "In a byte-level tokenizer, how many base tokens exist before any merging?\n\nA] 128\nB] 256\nC] 1024\nD] 65536",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "byte_level"
+    },
+    {
+      "uuid": "4e7a1c3f-8d2b-4a9c-5e1d-6b0c8f2a4d7e",
+      "question": "What is the typical vocabulary size of GPT-4's tokenizer (cl100k_base)?\n\nA] 10,000\nB] 50,257\nC] 100,257\nD] 200,000",
+      "expected": "C",
+      "category": "tokenization",
+      "subcategory": "gpt_tokenizer"
+    },
+    {
+      "uuid": "7f2c5a8e-1d3b-4a7c-9e1f-0b4d6c8a2e5d",
+      "question": "In tokenization, what is a 'subword' unit?\n\nA] Always a complete morpheme\nB] A unit smaller than a word used for rare words\nC] A synonym replacement\nD] A grammatical tense marker",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "concepts"
+    },
+    {
+      "uuid": "2b8e1c4a-6d3f-4a9c-1e2d-7c0b5a8f4d3e",
+      "question": "How many tokens approximately does 'unbelievable' split into with standard BPE (GPT-2)?\n\nA] 1\nB] 2\nC] 3\nD] 4",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "bpe"
+    },
+    {
+      "uuid": "6c1d4f8a-2e3b-4a7c-9d1e-5b0c8a2f4e6d",
+      "question": "What is the purpose of the special token [CLS] in BERT tokenization?\n\nA] Marks the end of sequence\nB] Marks the beginning of a classification sentence\nC] Separates two sentences\nD] Indicates padding",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "bert"
+    },
+    {
+      "uuid": "8d2a5f1c-4e3b-4a7c-6c1d-9b0e4a8f2d5c",
+      "question": "In tokenization terminology, what does 'EOS' stand for?\n\nA] End Of Sequence\nB] End Of String\nC] Extended Output Set\nD] Empty Output Space",
+      "expected": "A",
+      "category": "tokenization",
+      "subcategory": "terminology"
+    },
+    {
+      "uuid": "1e4c8a2f-6d3b-4a9c-5f1e-0b7d2c8a4e3d",
+      "question": "What is the primary advantage of subword tokenization over word-level tokenization?\n\nA] Faster training\nB] Handles out-of-vocabulary words and reduces vocabulary size\nC] Better grammar parsing\nD] Lower memory usage only",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "concepts"
+    },
+    {
+      "uuid": "5a2c8e1f-3d4b-4a7c-9e1d-6b0f4c8a2d5e",
+      "question": "How many tokens does the word 'antidisestablishmentarianism' typically produce in a standard LLM tokenizer?\n\nA] 2-3\nB] 5-7\nC] 12-15\nD] 1",
+      "expected": "B",
+      "category": "tokenization",
+      "subcategory": "tokenization_behavior"
+    },
+    {
+      "uuid": "3f7a1c4d-8e2b-4a9c-6d1f-0b5c8e2a4d7e",
+      "question": "Which Python function converts a string into tokens using a HuggingFace tokenizer?\n\nA] tokenizer.encode()\nB] tokenizer.tokenize(), Response C) tokenizer.split()\nD] tokenizer.parse()",
+      "expected": "A",
+      "category": "tokenization",
+      "subcategory": "huggingface_api"
+    },
+    {
+      "uuid": "9c2e5a8f-1d3b-4a7c-6e1d-0b4c8a2f5d3e",
+      "question": "What will print('Hello'[1:4]) output in Python?\n\nA] Hello\nB] ell\nC] ello\nD] Hell",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_slicing"
+    },
+    {
+      "uuid": "4d1a7e3c-8f2b-4a9c-5e1d-6c0b4a8f2d5e",
+      "question": "What is the output of [x*2 for x in range(5)] in Python?\n\nA] [0, 2, 4, 6, 8]\nB] [0, 1, 2, 3, 4]\nC] [1, 2, 3, 4, 5]\nD] [2, 4, 6, 8, 10]",
+      "expected": "A",
+      "category": "coding",
+      "subcategory": "python_list_comprehension"
+    },
+    {
+      "uuid": "7e1c4a8d-2f3b-4a9c-6d1e-5b0c8a2f4d7e",
+      "question": "What does the Python expression type(1.0) return?\n\nA] int\nB] float\nC] complex\nD] Decimal",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_types"
+    },
+    {
+      "uuid": "2a5c8e1f-4d3b-4a7c-9e1d-6b0f4a8c2d5e",
+      "question": "In Python, what is 7 // 2?\n\nA] 3.5\nB] 3\nC] 4\nD] 3.0",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_arithmetic"
+    },
+    {
+      "uuid": "8c1d4e7a-2f3b-4a9c-5e1d-6b0c8a2f4d7e",
+      "question": "Which keyword is used to define a function in Python?\n\nA] func\nB] def\nC] function\nD] fn",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_syntax"
+    },
+    {
+      "uuid": "5f2a8c1e-3d4b-4a7c-9e1d-6b0c4f8a2d5e",
+      "question": "What is the output of len({1, 1, 2, 3, 3}) in Python?\n\nA] 5\nB] 4\nC] 3\nD] 2",
+      "expected": "C",
+      "category": "coding",
+      "subcategory": "python_sets"
+    },
+    {
+      "uuid": "1c4e8a2d-6f3b-4a7c-9e1d-5b0c8a2f4d7e",
+      "question": "In Python, what does 'is' test for?\n\nA] Value equality\nB] Object identity (same reference)\nC] Type equality\nD] Hash equality",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_identity"
+    },
+    {
+      "uuid": "9d2f5a1c-4e3b-4a7c-6e1d-0b8c4a2f5d3e",
+      "question": "What is the time complexity of finding an element in a balanced binary search tree?\n\nA] O(n)\nB] O(log n)\nC] O(1)\nD] O(n log n)",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "algorithms"
+    },
+    {
+      "uuid": "3e7a1c4f-8d2b-4a9c-5f1e-6b0c8a2d4e7c",
+      "question": "Which data structure uses FIFO (First In, First Out) ordering?\n\nA] Stack\nB] Queue\nC] Heap\nD] Tree",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "data_structures"
+    },
+    {
+      "uuid": "6a1c4e8f-2d3b-4a7c-9e1d-5b0c8a2f4d7e",
+      "question": "In Python, what is the output of bool([]) ?\n\nA] True\nB] False\nC] None\nD] TypeError",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_truthiness"
+    },
+    {
+      "uuid": "8f2c5a1d-4e3b-4a7c-6d1e-0b8c4a2f5d3e",
+      "question": "What does the 'yield' keyword do in Python?\n\nA] Terminates a loop\nB] Turns a function into a generator\nC] Creates a coroutine\nD] Imports a module",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_generators"
+    },
+    {
+      "uuid": "2d5a8c1f-6e3b-4a7c-9d1e-5b0c4a8f2d5e",
+      "question": "In a binary tree traversal, what order does 'in-order' produce?\n\nA] Root, Left, Right\nB] Left, Root, Right\nC] Left, Right, Root\nD] Root, Right, Left",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "tree_traversal"
+    },
+    {
+      "uuid": "7c1e4a8f-3d2b-4a9c-6e1d-5b0c8a2f4d7e",
+      "question": "What is the output of 2 ** 3 ** 2 in Python?\n\nA] 64\nB] 512\nC] 36\nD] 12",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_operators"
+    },
+    {
+      "uuid": "4a8c1e5f-2d3b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "Which sorting algorithm has O(n log n) worst-case time complexity?\n\nA] Quick sort\nB] Merge sort\nC] Bubble sort\nD] Selection sort",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "sorting_algorithms"
+    },
+    {
+      "uuid": "1e5a8c2f-4d3b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "In Python, what is the result of 'a' in 'hello'?\n\nA] True\nB] False\nC] IndexError\nD] 0",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_operators"
+    },
+    {
+      "uuid": "9c2e1a4f-7d3b-4a7c-6e1d-5b0c8a2f4d7e",
+      "question": "What is a decorator in Python?\n\nA] A comment marker\nB] A function that modifies or extends another function\nC] A class attribute\nD] A type annotation",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_decorators"
+    },
+    {
+      "uuid": "3f6a1c8e-4d2b-4a7c-9e1d-5b0c4a8f2d5e",
+      "question": "If you apply softmax to [1, 1, 1], what is the result?\n\nA] [0, 0, 0]\nB] [0.333, 0.333, 0.333]\nC] [1, 1, 1]\nD] [0.5, 0.25, 0.25]",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "ml_concepts"
+    },
+    {
+      "uuid": "8e1c4a2f-6d3b-4a7c-9e1d-5b0c4a8f2d5e",
+      "question": "A matrix of shape (3, 4) is multiplied with a vector of shape (4, 1). What is the output shape?\n\nA] (3, 1)\nB] (4, 1)\nC] (3, 4)\nD] (4, 4)",
+      "expected": "A",
+      "category": "coding",
+      "subcategory": "linear_algebra"
+    },
+    {
+      "uuid": "5c2a8e1f-3d4b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "What is the output of print(list(zip([1,2,3], ['a','b','c','d']))) in Python?\n\nA] [(1,'a'),(2,'b'),(3,'c'),(None,'d')]\nB] [(1,'a'),(2,'b'),(3,'c')]\nC] Error\nD] [(1,'a'),(2,'b'),(3,'c'),(3,'d')]",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_builtins"
+    },
+    {
+      "uuid": "2a4c8e1f-6d3b-4a7c-9e1d-5b0c4a8f2d5e",
+      "question": "In Python, what is the default value of a function parameter defined as def f(x=10)?\n\nA] None\nB] 0\nC] 10\nD] x",
+      "expected": "C",
+      "category": "coding",
+      "subcategory": "python_functions"
+    },
+    {
+      "uuid": "7d1e4a8f-3c2b-4a9c-6e1d-5b0c8a2f4d7e",
+      "question": "What does the Python walrus operator (:=) do?\n\nA] Compares two values\nB] Assigns and returns a value in an expression\nC] Performs modulo\nD] Creates a slice",
+      "expected": "B",
+      "category": "coding",
+      "subcategory": "python_syntax"
+    },
+    {
+      "uuid": "4e8a1c2f-7d3b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "All men are mammals. Some mammals are pets. Therefore:\n\nA] All men are pets\nB] Some men are pets\nC] No valid conclusion about men and pets can be drawn\nD] All pets are men",
+      "expected": "C",
+      "category": "reasoning",
+      "subcategory": "syllogism"
+    },
+    {
+      "uuid": "1c4a8e2f-6d3b-4a7c-9e1d-5b0c4a8f2d5e",
+      "question": "A is taller than B. B is taller than C. Who is the shortest?\n\nA] A\nB] B\nC] C\nD] Cannot determine",
+      "expected": "C",
+      "category": "reasoning",
+      "subcategory": "transitive_logic"
+    },
+    {
+      "uuid": "9e2c5a8f-4d1b-4a7c-6e1d-5b0c8a2f4d7e",
+      "question": "If all roses are flowers and some flowers fade quickly, which statement is necessarily true?\n\nA] Some roses fade quickly\nB] All flowers are roses\nC] Some flowers are roses\nD] No roses fade quickly",
+      "expected": "C",
+      "category": "reasoning",
+      "subcategory": "syllogism"
+    },
+    {
+      "uuid": "3a8c1e4f-7d2b-4a9c-6e1d-5b0c8a2f4d7e",
+      "question": "You have 3 switches labeled 1, 2, 3 in a dark room and 3 lightbulbs in another room. You can flip any switch as many times but enter the bulb room only once. Which switch is connected to which bulb if: Switch 1 was ON for 5 minutes then turned OFF, Switch 2 is turned ON, then you enter?\n\nA] The hot bulb is switch 1, the lit bulb is switch 2, the cold dark bulb is switch 3\nB] The lit bulb is switch 1, the hot dark bulb is switch 2\nC] Cannot be determined\nD] All switches control the same bulb",
+      "expected": "A",
+      "category": "reasoning",
+      "subcategory": "lateral_thinking"
+    },
+    {
+      "uuid": "6f1c4a8e-2d3b-4a7c-9e1d-5b0c4a8f2d5e",
+      "question": "In a race, Alice finished before Bob. Bob finished before Charlie. Who finished last?\n\nA] Alice\nB] Bob\nC] Charlie\nD] Cannot determine",
+      "expected": "C",
+      "category": "reasoning",
+      "subcategory": "ordering"
+    },
+    {
+      "uuid": "8c2e1a4f-3d5b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "A farmer has 17 sheep. All but 9 die. How many are left?\n\nA] 0\nB] 8\nC] 9\nD] 17",
+      "expected": "C",
+      "category": "reasoning",
+      "subcategory": "trick_question"
+    },
+    {
+      "uuid": "5a1c4e8f-2d3b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "If today is Wednesday, what day was it 200 days ago?\n\nA] Monday\nB] Saturday\nC] Tuesday\nD] Thursday",
+      "expected": "B",
+      "category": "reasoning",
+      "subcategory": "modular_arithmetic"
+    },
+    {
+      "uuid": "2d8a1c4f-6e3b-4a7c-9e1d-5b0c4a8f2d5e",
+      "question": "Which transformer component enables the model to weigh the importance of different tokens in a sequence?\n\nA] Feed-forward layer, Response B) Layer normalization, Response C) Self-attention mechanism\nD] Residual connection",
+      "expected": "C",
+      "category": "knowledge",
+      "subcategory": "transformer_architecture"
+    },
+    {
+      "uuid": "7e1a4c8f-3d2b-4a9c-6e1d-5b0c8a2f4d7e",
+      "question": "What is the primary purpose of positional encoding in a Transformer?\n\nA] To increase model parameters\nB] To inject order information since attention is permutation-equivariant\nC] To reduce training time\nD] To enable convolution",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "transformer_architecture"
+    },
+    {
+      "uuid": "4c8a1e2f-7d3b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "In a GPT model, what does 'GPT' stand for?\n\nA] General Purpose Transformer\nB] Generative Pre-trained Transformer, Response C) Gradient-Powered Tensor\nD] Graph Processing Tool",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "terminology"
+    },
+    {
+      "uuid": "1a5c8e2f-4d3b-4a7c-9e1d-6b0c4a8f2d5e",
+      "question": "What temperature setting in LLM generation makes outputs more deterministic?\n\nA] Higher temperature\nB] Lower temperature (e.g., 0.1)\nC] Top-k = 100\nD] Max tokens = 4096",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "llm_inference"
+    },
+    {
+      "uuid": "9e4a1c8f-2d3b-4a7c-6e1d-5b0c4a8f2d5e",
+      "question": "What is the 'context window' of a language model?\n\nA] The physical memory of the GPU\nB] The maximum number of tokens the model can process in a single inference\nC] The training data size\nD] The number of attention heads",
+      "expected": "B",
+      "category": "knowledge",
+      "subcategory": "llm_concepts"
+    }
+  ]
+}

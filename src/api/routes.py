@@ -15,11 +15,13 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from src.api.events import EventBus, sse_format
 from src.config import (
+    QUESTION_SET_DEFAULT,
+    list_question_sets,
     load_endpoints_config,
     load_questions,
     load_settings,
     save_settings,
-    QUESTIONS_PATH,
+    questions_path,
 )
 from src.core.bench import run_benchmark
 from src.core.job import RunJob
@@ -69,6 +71,7 @@ class SettingsIn(SettingsFieldsMixin):
     repeatPenalty: str = ""
     presencePenalty: str = ""
     reasoning: str = ""
+    questionSet: str = ""
     verifier: VerifierSettingsIn = VerifierSettingsIn()
 
     @field_validator("verifier", mode="before")
@@ -76,6 +79,12 @@ class SettingsIn(SettingsFieldsMixin):
     def _empty_verifier(cls, value: Any) -> Any:
         # Accept "verifier": null / "" / {} as "all verifier fields unset".
         return value or VerifierSettingsIn()
+
+
+class QuestionSetIn(SettingsFieldsMixin):
+    """Question set selection as sent by the settings dialog."""
+
+    questionSet: str = ""
 
 
 # Dialog field -> .env key, used for both directions of the settings API.
@@ -102,6 +111,7 @@ def _settings_json(values: Dict[str, str]) -> Dict[str, Any]:
     data: Dict[str, Any] = {
         field: values.get(key, "") for field, key in SETTINGS_ENV_KEYS.items()
     }
+    data["questionSet"] = values.get("QUESTION_SET", "")
     data["verifier"] = {
         field: values.get(key, "") for field, key in VERIFIER_ENV_KEYS.items()
     }
@@ -143,6 +153,9 @@ def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
     verifier = payload.get("verifier") or {}
     for field, key in VERIFIER_ENV_KEYS.items():
         values[key] = (verifier.get(field) or "").strip()
+    question_set = (payload.get("questionSet") or "").strip()
+    if question_set:
+        values["QUESTION_SET"] = question_set
     return values
 
 
@@ -185,7 +198,7 @@ def build_router(state: RunState) -> APIRouter:
             questions = load_questions()
         except Exception as exc:
             raise HTTPException(
-                status_code=500, detail=f"Could not load {QUESTIONS_PATH}: {exc}"
+                status_code=500, detail=f"Could not load {questions_path()}: {exc}"
             ) from exc
         models = config.model_list()
         sampling = config.to_kwargs()
@@ -232,6 +245,47 @@ def build_router(state: RunState) -> APIRouter:
         # template, so custom comments in .env are not preserved.
         save_settings(env_values)
         return _settings_json(load_settings())
+
+    @router.get("/question-sets")
+    def get_question_sets() -> Dict[str, Any]:
+        """List available question sets and the currently selected one."""
+        return {
+            "questionSets": list_question_sets(),
+            "current": os.environ.get("QUESTION_SET", QUESTION_SET_DEFAULT),
+        }
+
+    @router.post("/question-sets")
+    def post_question_set(body: QuestionSetIn) -> Dict[str, Any]:
+        """Select the active question set source.
+
+        Persists the choice to ``.env`` via ``save_settings`` so the next run
+        uses the selected file. Rejected with 409 while a run is in progress
+        and 422 for an unknown question set id.
+        """
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change question set while a benchmark run is in progress",
+            )
+        selected = (body.questionSet or "").strip()
+        available = [s["id"] for s in list_question_sets()]
+        if not selected:
+            raise HTTPException(
+                status_code=422, detail="No question set selected"
+            )
+        if selected not in available:
+            raise HTTPException(
+                status_code=422, detail=f"Unknown question set: {selected}"
+            )
+        # Merge with current settings so unrelated keys are preserved.
+        current = load_settings()
+        merged = dict(current)
+        merged["QUESTION_SET"] = selected
+        save_settings(merged)
+        return {
+            "questionSets": list_question_sets(),
+            "current": os.environ.get("QUESTION_SET", QUESTION_SET_DEFAULT),
+        }
 
     @router.get("/models")
     async def get_models(serverUrl: str = "") -> Dict[str, Any]:

@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import RunState, build_router
-from src.config import ENV_PATH, load_dotenv_once, PROJECT_ROOT, QUESTIONS_PATH
+from src.config import ENV_PATH, load_dotenv_once, PROJECT_ROOT, questions_path
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
 
@@ -23,7 +23,7 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "env": ENV_PATH.is_file(),
-            "questions": QUESTIONS_PATH.is_file(),
+            "questions": questions_path().is_file(),
         }
 
     if WEB_DIST.is_dir():

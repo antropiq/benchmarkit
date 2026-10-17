@@ -27,6 +27,9 @@ const state = reactive({
   settingsLoading: false,
   settingsSaving: false,
   settingsError: null,
+  questionSets: [],
+  questionSetsLoading: false,
+  questionSetsError: null,
   benchmarkModels: [],
   benchmarkModelsLoading: false,
   benchmarkModelsError: null,
@@ -103,6 +106,7 @@ function applyEvent(event) {
         number: event.number,
         model: event.model,
         question: event.question,
+        questionHtml: renderMarkdown(event.question),
         raw: '',
         html: '',
         streaming: true,
@@ -376,7 +380,11 @@ export function useBenchmark() {
       state.verifierModels = []
       state.benchmarkModelsError = null
       state.verifierModelsError = null
+      state.questionSets = []
+      state.questionSetsLoading = false
+      state.questionSetsError = null
       refreshModelLists()
+      loadQuestionSets()
     } catch (exc) {
       state.settingsError = `Could not reach the API: ${exc}`
     } finally {
@@ -479,6 +487,30 @@ export function useBenchmark() {
     }
   }
 
+  async function loadQuestionSets() {
+    state.questionSetsLoading = true
+    state.questionSetsError = null
+    try {
+      const res = await fetch('/api/question-sets')
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.questionSetsError = describeError(
+          body,
+          `Could not load question sets (${res.status})`,
+        )
+        return
+      }
+      state.questionSets = body.questionSets || []
+      if (!state.settings?.questionSet && body.current) {
+        state.settings.questionSet = body.current
+      }
+    } catch (exc) {
+      state.questionSetsError = `Could not reach the API: ${exc}`
+    } finally {
+      state.questionSetsLoading = false
+    }
+  }
+
   return {
     state,
     loadConfig,
@@ -489,6 +521,7 @@ export function useBenchmark() {
     openSettings,
     closeSettings,
     saveSettings,
+    loadQuestionSets,
     fetchModels,
   }
 }

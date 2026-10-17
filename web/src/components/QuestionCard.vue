@@ -46,7 +46,7 @@ const footer = computed(
 <template>
   <article class="question-card">
     <p class="caption mono question-meta">{{ caption }}</p>
-    <p class="question-text">{{ entry.question }}</p>
+    <p class="question-text" v-html="entry.questionHtml"></p>
     <div class="answer" v-html="entry.html"></div>
     <template v-if="!entry.streaming">
       <p class="question-verdict">

@@ -11,8 +11,14 @@ from pydantic import ValidationError
 from src.core.models import EndpointsConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-QUESTIONS_PATH = PROJECT_ROOT / "resources" / "questions.json"
 ENV_PATH = PROJECT_ROOT / ".env"
+RESOURCES_DIR = PROJECT_ROOT / "resources"
+
+QUESTION_SET_DEFAULT = "legacy"
+QUESTION_SET_LABELS: Dict[str, str] = {
+    "legacy": "Legacy",
+    "78qcm": "78QCM",
+}
 
 # Managed .env keys, in the order they are written to the file.
 SETTING_KEYS: Tuple[str, ...] = (
@@ -25,6 +31,7 @@ SETTING_KEYS: Tuple[str, ...] = (
     "REPEAT_PENALTY",
     "PRESENCE_PENALTY",
     "REASONING",
+    "QUESTION_SET",
     "VERIFIER_AGENT_SYSPROMPT",
     "VERIFIER_AGENT_SERVERURL",
     "VERIFIER_AGENT_ENDPOINT",
@@ -40,8 +47,45 @@ def load_dotenv_once() -> None:
         load_dotenv(ENV_PATH)
 
 
-def load_questions(path: Path = QUESTIONS_PATH) -> List[Dict[str, Any]]:
-    """Load the benchmark questions from disk."""
+def questions_path() -> Path:
+    """Resolve the questions file path from the QUESTION_SET env var.
+
+    Defaults to ``legacy`` which reads ``resources/legacy.json``.
+    Resolved at call time so ``.env`` (loaded at app startup) takes effect.
+    """
+    name = os.environ.get("QUESTION_SET", QUESTION_SET_DEFAULT)
+    return RESOURCES_DIR / f"{name}.json"
+
+
+def list_question_sets() -> List[Dict[str, Any]]:
+    """Discover available question sets in ``resources/``.
+
+    Each ``*.json`` file must contain a ``"questions"`` key. Returns a list of
+    ``{id, label, count}`` dicts sorted by filename.
+    """
+    sets: List[Dict[str, Any]] = []
+    for path in sorted(RESOURCES_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            questions = data.get("questions", [])
+            if not isinstance(questions, list):
+                continue
+        except (json.JSONDecodeError, OSError, ValueError):
+            continue
+        sets.append(
+            {
+                "id": path.stem,
+                "label": QUESTION_SET_LABELS.get(path.stem, path.stem.capitalize()),
+                "count": len(questions),
+            }
+        )
+    return sets
+
+
+def load_questions(path: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Load the benchmark questions from the configured question set."""
+    if path is None:
+        path = questions_path()
     data: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data.get("questions", [])
 
@@ -63,8 +107,12 @@ def load_settings() -> Dict[str, str]:
 
     ``os.environ`` already reflects the .env file loaded at startup (real
     environment variables keep precedence) and is refreshed on every save.
+    ``QUESTION_SET`` always resolves to ``QUESTION_SET_DEFAULT`` when unset.
     """
-    return {key: os.environ.get(key, "") for key in SETTING_KEYS}
+    return {
+        key: os.environ.get(key, QUESTION_SET_DEFAULT if key == "QUESTION_SET" else "")
+        for key in SETTING_KEYS
+    }
 
 
 def save_settings(values: Dict[str, str]) -> None:
@@ -72,11 +120,16 @@ def save_settings(values: Dict[str, str]) -> None:
 
     Empty optional values are written as commented-out lines and removed from
     the environment; required keys are always written. The file is regenerated
-    from a fixed template mirroring ``.env.example``.
+    from a fixed template mirroring ``.env.example``. ``QUESTION_SET`` always
+    resolves to ``QUESTION_SET_DEFAULT`` when unset, so it is never written
+    as a commented-out line.
     """
     clean: Dict[str, str] = {
         key: (values.get(key) or "").strip() for key in SETTING_KEYS
     }
+    # QUESTION_SET always has a value; default to "legacy" when unset.
+    if not clean["QUESTION_SET"]:
+        clean["QUESTION_SET"] = QUESTION_SET_DEFAULT
     ENV_PATH.write_text(_render_env(clean), encoding="utf-8")
     for key in SETTING_KEYS:
         if clean[key]:
@@ -112,6 +165,7 @@ def _render_env(values: Dict[str, str]) -> str:
         line("REPEAT_PENALTY"),
         line("PRESENCE_PENALTY"),
         line("REASONING"),
+        line("QUESTION_SET"),
         "",
         "# Verifier agent (optional)",
         line("VERIFIER_AGENT_SYSPROMPT"),
