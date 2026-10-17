@@ -3,7 +3,112 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.core.llm import _extract_total_tokens, safe_get_choice_content, warmup_model
+from src.core.llm import (
+    _extract_total_tokens,
+    _extract_usage,
+    call_llm_and_stream,
+    safe_get_choice_content,
+    warmup_model,
+)
+
+
+def content_chunk(text):
+    return {"choices": [{"delta": {"content": text}}]}
+
+
+def usage_chunk(prompt=None, completion=None, total=None):
+    usage = {}
+    if prompt is not None:
+        usage["prompt_tokens"] = prompt
+    if completion is not None:
+        usage["completion_tokens"] = completion
+    if total is not None:
+        usage["total_tokens"] = total
+    return {"choices": [], "usage": usage}
+
+
+class TestCallLlmAndStreamTiming:
+    def _run(self, monkeypatch, chunks, clock_values):
+        clock = list(clock_values)
+
+        def fake_monotonic():
+            return clock.pop(0)
+
+        monkeypatch.setattr("src.core.llm.time.monotonic", fake_monotonic)
+        monkeypatch.setattr(
+            "src.core.llm.completion", lambda **kwargs: iter(chunks)
+        )
+        events = []
+        result = call_llm_and_stream(
+            "m", "http://server:8080/v1",
+            {"uuid": "u", "question": "q", "expected": "e"}, events.append,
+        )
+        assert clock == []  # every monotonic() call consumed a tick
+        return result, events
+
+    def test_usage_chunk_arrival_does_not_extend_timing(self, monkeypatch):
+        # t0, first content, last content, stream-end (never used as took).
+        chunks = [content_chunk("a"), content_chunk("bc"),
+                  usage_chunk(prompt=20, completion=5, total=25)]
+        result, _ = self._run(monkeypatch, chunks, [0.0, 1.0, 3.0, 100.0])
+
+        assert result.text == "abc"
+        assert result.took == 3.0   # t_last - t0, ignoring the 100.0 drain
+        assert result.ttft == 1.0
+        assert result.gen_duration == 2.0
+        assert result.completion_tokens == 5
+        assert result.prompt_tokens == 20
+        assert result.tokens_estimated is False
+
+    def test_missing_usage_estimates_tokens(self, monkeypatch):
+        chunks = [content_chunk("hello world!!!")]  # 14 chars -> 4 tokens
+        result, _ = self._run(monkeypatch, chunks, [0.0, 0.5, 2.0])
+
+        assert result.completion_tokens == 4
+        assert result.tokens_estimated is True
+        assert result.prompt_tokens == 0
+
+    def test_completion_derived_from_total_minus_prompt(self, monkeypatch):
+        chunks = [content_chunk("x"),
+                  usage_chunk(prompt=10, total=18)]
+        result, _ = self._run(monkeypatch, chunks, [0.0, 0.2, 1.0])
+
+        assert result.completion_tokens == 8
+        assert result.tokens_estimated is False
+
+    def test_empty_stream_has_zero_generation_window(self, monkeypatch):
+        result, _ = self._run(monkeypatch, [], [0.0, 5.0])
+
+        assert result.text == ""
+        assert result.took == 5.0
+        assert result.ttft == 0.0
+        assert result.gen_duration == 0.0
+        assert result.completion_tokens == 0
+        assert result.tokens_estimated is False
+
+    def test_call_failure_returns_zeroed_result(self, monkeypatch):
+        def boom(**kwargs):
+            raise RuntimeError("connect failed")
+
+        clock = [0.0, 0.25]
+        monkeypatch.setattr("src.core.llm.time.monotonic", lambda: clock.pop(0))
+        monkeypatch.setattr("src.core.llm.completion", boom)
+        events = []
+        result = call_llm_and_stream(
+            "m", "http://server:8080/v1",
+            {"uuid": "u", "question": "q", "expected": "e"}, events.append,
+        )
+
+        assert result.text == ""
+        assert result.took == 0.25
+        assert result.gen_duration == 0.0
+        assert events[0]["event"] == "run_error"
+
+    def test_emits_token_events_in_order(self, monkeypatch):
+        chunks = [content_chunk("he"), content_chunk("llo")]
+        result, events = self._run(monkeypatch, chunks, [0.0, 0.1, 0.2, 0.3])
+
+        assert [e["text"] for e in events if e["event"] == "token"] == ["he", "llo"]
 
 
 class TestSafeGetChoiceContent:
@@ -61,6 +166,38 @@ class TestExtractTotalTokens:
 
     def test_zero_total_returns_none(self):
         assert _extract_total_tokens({"usage": {"total_tokens": 0}}) is None
+
+
+class TestExtractUsage:
+    def test_dict_chunk_with_full_usage(self):
+        chunk = {"usage": {"prompt_tokens": 10, "completion_tokens": 5,
+                           "total_tokens": 15}}
+        assert _extract_usage(chunk) == {
+            "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
+        }
+
+    def test_object_chunk_with_usage(self):
+        usage = MagicMock()
+        usage.prompt_tokens = 3
+        usage.completion_tokens = 2
+        usage.total_tokens = 5
+        chunk = MagicMock()
+        chunk.usage = usage
+        assert _extract_usage(chunk) == {
+            "prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5,
+        }
+
+    def test_missing_fields_are_none(self):
+        chunk = {"usage": {"completion_tokens": 4}}
+        assert _extract_usage(chunk) == {
+            "prompt_tokens": None, "completion_tokens": 4, "total_tokens": None,
+        }
+
+    def test_chunk_without_usage_returns_none(self):
+        assert _extract_usage({"choices": [{"delta": {"content": "hi"}}]}) is None
+
+    def test_empty_usage_returns_none(self):
+        assert _extract_usage({"usage": {}}) is None
 
 
 class TestWarmupModel:

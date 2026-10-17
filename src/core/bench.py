@@ -44,13 +44,21 @@ def process_question(
     # Elapsed time is the cumulative answer time only. The client live-ticks
     # from question_started until answer_done, then shows "Checking…" while
     # the verifier runs — so verification time is never counted.
-    response_text, took, tokens_used = call_llm_and_stream(
+    result = call_llm_and_stream(
         model, config.serverUrl, question, emit, config.to_kwargs(), cancel_event
     )
     _check_cancelled(cancel_event)
-    emit({"event": "answer_done", "index": index, "took": took, "tokens": tokens_used})
+    timing = {
+        "took": result.took,
+        "ttft": result.ttft,
+        "genTook": result.gen_duration,
+        "tokens": result.completion_tokens,
+        "promptTokens": result.prompt_tokens,
+        "tokensEstimated": result.tokens_estimated,
+    }
+    emit({"event": "answer_done", "index": index, **timing})
 
-    succeeded = verify_response(config.verifierAgent, question, response_text, emit)
+    succeeded = verify_response(config.verifierAgent, question, result.text, emit)
     if not succeeded:
         job.mark_question_failed(number)
 
@@ -58,9 +66,13 @@ def process_question(
         model=model,
         question_uuid=question["uuid"],
         succeeded=succeeded,
-        response_text=response_text,
-        took=took,
-        tokens=tokens_used,
+        response_text=result.text,
+        took=result.took,
+        tokens=result.completion_tokens,
+        ttft=result.ttft,
+        gen_duration=result.gen_duration,
+        prompt_tokens=result.prompt_tokens,
+        tokens_estimated=result.tokens_estimated,
     )
     emit({
         "event": "question_done",
@@ -69,8 +81,7 @@ def process_question(
         "model": model,
         "uuid": question["uuid"],
         "succeeded": succeeded,
-        "took": took,
-        "tokens": tokens_used,
+        **timing,
         "failedLabel": job.failed_label(),
         "stats": _stats_payload(job),
     })

@@ -1,14 +1,45 @@
 import json
+import math
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Tuple
+from typing import TYPE_CHECKING, Any, Dict
 
 if TYPE_CHECKING:
     from src.core.job import RunJob
 
-LLMResult = Tuple[str, float, int]  # (response_text, took, tokens_used)
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 RESULTS_PATH = PROJECT_ROOT / "results.json"
+
+
+@dataclass
+class LLMResult:
+    """Timing and token counts for a single streamed answer.
+
+    All times are measured with ``time.monotonic()``:
+    ``took`` spans request start to the last content chunk (TTFT included),
+    ``ttft`` spans request start to the first content chunk, and
+    ``gen_duration`` spans first to last content chunk — the window used for
+    generation (decode) tokens per second.
+    """
+
+    text: str = ""
+    took: float = 0.0
+    ttft: float = 0.0
+    gen_duration: float = 0.0
+    completion_tokens: int = 0
+    tokens_estimated: bool = False
+    prompt_tokens: int = 0
+
+
+def estimate_completion_tokens(text: str) -> int:
+    """Approximate generated-token count from text when usage is unavailable.
+
+    Heuristic only (~4 chars/token); results using it are flagged as
+    estimated so they are never mistaken for server-reported counts.
+    """
+    if not text:
+        return 0
+    return math.ceil(len(text) / 4)
 
 
 def format_time(seconds: float) -> str:

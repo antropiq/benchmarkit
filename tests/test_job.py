@@ -32,7 +32,31 @@ class TestAddResult:
         assert resp["response"] == "hello"
         assert resp["took"] == 1.5
         assert resp["consumedTokens"] == 100
+        assert resp["completionTokens"] == 100
+        assert resp["promptTokens"] == 0
+        assert resp["ttft"] == 0.0
+        assert resp["genDuration"] == 0.0
+        assert resp["tokensEstimated"] is False
         assert resp["succeeded"] is True
+
+    def test_timing_fields_are_stored(self, job: RunJob):
+        job.add_result(
+            model="gpt-4",
+            question_uuid="q1",
+            succeeded=True,
+            response_text="hello",
+            took=2.0,
+            tokens=30,
+            ttft=0.4,
+            gen_duration=1.5,
+            prompt_tokens=12,
+            tokens_estimated=True,
+        )
+        resp = job.results[0]["responses"][0]
+        assert resp["ttft"] == 0.4
+        assert resp["genDuration"] == 1.5
+        assert resp["promptTokens"] == 12
+        assert resp["tokensEstimated"] is True
 
     def test_second_result_updates_score(self, job: RunJob):
         job.add_result("gpt-4", "q1", True, "a", 1.0, 50)
@@ -77,10 +101,20 @@ class TestGetOverallTokenRate:
     def test_zero_when_nothing_answered(self, job: RunJob):
         assert job.get_overall_token_rate() == 0.0
 
-    def test_tokens_per_answered_second(self, job: RunJob):
+    def test_zero_without_measurable_generation(self, job: RunJob):
         job.add_result("gpt-4", "q1", True, "a", 2.0, 100)
-        job.add_result("gpt-4", "q2", False, "b", 1.0, 75)
+        assert job.get_overall_token_rate() == 0.0
+
+    def test_generation_rate_excludes_ttft_and_verification(self, job: RunJob):
+        job.add_result("gpt-4", "q1", True, "a", 5.0, 100, ttft=2.0, gen_duration=2.0)
+        job.add_result("gpt-4", "q2", False, "b", 3.0, 75, ttft=1.0, gen_duration=1.0)
+        # (100 + 75) / (2.0 + 1.0), ignoring took entirely.
         assert job.get_overall_token_rate() == 175 / 3
+
+    def test_skips_responses_without_decode_window(self, job: RunJob):
+        job.add_result("gpt-4", "q1", True, "a", 5.0, 100, gen_duration=2.0)
+        job.add_result("gpt-4", "q2", True, "b", 9.0, 999, gen_duration=0.0)
+        assert job.get_overall_token_rate() == 50.0
 
 
 class TestFailedQuestions:

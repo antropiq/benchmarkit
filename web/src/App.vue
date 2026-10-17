@@ -42,7 +42,7 @@ const scorePercent = computed(() =>
       </section>
 
       <MetricCard
-        label="⚡ Overall token/s"
+        label="⚡ Generation token/s"
         :value="state.tokenRate.toFixed(1)"
       />
       <MetricCard

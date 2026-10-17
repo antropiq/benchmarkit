@@ -38,8 +38,19 @@ const caption = computed(() => {
   return `${base} - ${elapsed.toFixed(1)}s`
 })
 
-const footer = computed(
-  () => `${props.entry.took.toFixed(1)}s · ${props.entry.tokens.toLocaleString()} tokens`,
+const genRate = computed(() =>
+  props.entry.genTook > 0 ? props.entry.tokens / props.entry.genTook : null,
+)
+
+const footer = computed(() => {
+  const entry = props.entry
+  const tokens = `${entry.tokensEstimated ? '~' : ''}${entry.tokens.toLocaleString()} tokens`
+  const rate = genRate.value === null ? 'n/a' : `${genRate.value.toFixed(1)} tok/s`
+  return `${entry.took.toFixed(1)}s · ${tokens} · ${rate}`
+})
+
+const ttftLabel = computed(() =>
+  props.entry.ttft > 0 ? `first token in ${props.entry.ttft.toFixed(2)}s` : '',
 )
 </script>
 
@@ -54,6 +65,7 @@ const footer = computed(
         <span v-else class="badge red">✗ Incorrect</span>
       </p>
       <p class="caption">{{ footer }}</p>
+      <p v-if="ttftLabel" class="caption">{{ ttftLabel }}</p>
     </template>
   </article>
 </template>

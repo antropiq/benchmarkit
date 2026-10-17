@@ -7,9 +7,10 @@ A FastAPI + Vue 3 app that benchmarks LLM endpoints by streaming questions, coll
 ## Commands
 
 ```bash
-# Setup (creates .venv + installs package in editable mode)
-python -m venv .venv
-source .venv/bin/activate
+# Setup — this project uses a pyenv virtualenv named `benchmarkit`
+# (no .venv directory). If pyenv is configured, `python` already resolves
+# to it; otherwise: pyenv shell benchmarkit
+python --version   # sanity check: should be the benchmarkit env
 pip install -e .
 
 # Frontend build (requires Node.js; output in web/dist, served by FastAPI)
@@ -73,11 +74,13 @@ Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
 
 Events carry an SSE `id:` (sequence number). `run_started` → `model_started` → per question `question_started` / `token` / `answer_done` / `question_done` → `run_finished`; `run_error` for per-question failures. The client clock live-ticks between `question_started` and `answer_done`, shows `Checking…` between `answer_done` and `question_done`, shows `Starting…` between `run_started`/`model_started` and the first `question_started` (the backend warms the model up with a `max_tokens=1` request first, so model-loading time is excluded from elapsed time), and accumulates only `answer_done.took` — verifier time is excluded.
 
+`answer_done` and `question_done` carry the timing payload: `took` (request start → last **content** chunk, TTFT included, `time.monotonic()`), `ttft` (request start → first content chunk), `genTook` (first → last content chunk — the decode window), `tokens` (**completion tokens only**, never `total_tokens`), `promptTokens`, and `tokensEstimated` (true when the server omitted usage and tokens were estimated at ~4 chars/token). `stats.tokenRate` is `Σ tokens / Σ genTook` over questions with a measurable decode window — this matches llama.cpp's `eval speed (t/s)`.
+
 ## Data files
 
 - **`questions.json`** — Array of `{ uuid, question, expected }` objects. UUIDs are sequential (`01234567-0123-0123-0123-0000000000XX`). 30 questions from matchingpennies.com.
 - **`.env`** (project root, gitignored; see `.env.example`) — Platform-independent benchmark configuration. Keys: `SERVER_URL`, `ENDPOINT` (or comma-separated `ENDPOINTS`), `TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING`, and the verifier block `VERIFIER_AGENT_SYSPROMPT`, `VERIFIER_AGENT_SERVERURL`, `VERIFIER_AGENT_ENDPOINT`. Loaded via `python-dotenv` at server startup (real env vars take precedence) and parsed by `EndpointsConfig.from_env()` into the pydantic models; string values are coerced, invalid values raise a `ValidationError` returned as HTTP 422.
-- **`results.json`** — Generated output, gitignored. Saved once at the end of a run (`save_results()` in `core/bench.py`).
+- **`results.json`** — Generated output, gitignored. Saved once at the end of a run (`save_results()` in `core/bench.py`). Each response carries `took`, `ttft`, `genDuration`, `completionTokens` (aliased as `consumedTokens` for older consumers), `promptTokens`, and `tokensEstimated`.
 
 ## Key patterns & conventions
 
@@ -90,7 +93,7 @@ Events carry an SSE `id:` (sequence number). `run_started` → `model_started` �
 ## Gotchas
 
 - The verifier agent and the target LLM can be **different endpoints** — `serverUrl` is the target, `verifierAgent.serverUrl` is the verifier.
-- Token counting relies on `stream_options={"include_usage": True}`: the server reports usage in the final stream chunk, read via `_extract_total_tokens()`. Servers that ignore `include_usage` report 0 tokens.
+- Token counting relies on `stream_options={"include_usage": True}`: the server reports usage in the final stream chunk, read via `_extract_usage()`. The rate uses **`completion_tokens`** only (`total_tokens` = prompt + completion would inflate it); when the server omits it, tokens are derived as `total - prompt` or estimated from text (~4 chars/token) and flagged `tokensEstimated`. Timing is `time.monotonic()` anchored to content chunks, so the trailing usage-only chunk never extends `took`.
 - There is **no `sleep()` throttle** in the streaming loop anymore: token events go straight to SSE, and the client re-renders markdown at most once per animation frame.
 - The chronometer is pure frontend state (`Chronometer.vue`) driven by event boundaries; its source of truth is the cumulative `took` values (LLM answer time only, verifier time excluded).
 - Look & feel is Pico.css + `web/src/styles/theme.css` (colors, Inter/JetBrains Mono, 8px radii, light + dark). Fonts are self-hosted via `@fontsource/*`. `index.html` sets `data-theme` from the saved `benchmarkit:theme` choice, falling back to `prefers-color-scheme`; the `ThemeToggle` in the app bar switches and persists it.

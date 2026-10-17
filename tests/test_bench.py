@@ -7,6 +7,7 @@ from src.core.bench import run_benchmark
 from src.core.job import RunJob
 from src.core.llm import RunCancelled
 from src.core.models import EndpointsConfig
+from src.core.utils import LLMResult
 
 
 @pytest.fixture
@@ -31,7 +32,14 @@ def patch_llm(monkeypatch, events: List[Any], warmup=None):
             warmup()
 
     def fake_call(model, server_url, question, emit, sampling=None, cancel_event=None):
-        return "answer", 1.5, 10
+        return LLMResult(
+            text="answer",
+            took=1.5,
+            ttft=0.3,
+            gen_duration=1.2,
+            completion_tokens=10,
+            prompt_tokens=7,
+        )
 
     def fake_verify(verifier, question, response_text, emit):
         return True
@@ -91,3 +99,33 @@ class TestCancellationDuringWarmup:
         names = [e["event"] for e in events if not isinstance(e, tuple)]
         assert names == ["model_started"]
         assert not job.results
+
+
+class TestTimingEvents:
+    def test_answer_done_carries_generation_timing(
+        self, monkeypatch, job, config, questions
+    ):
+        events: List[Any] = []
+        patch_llm(monkeypatch, events)
+
+        run_benchmark([questions[0]], config, job, events.append)
+
+        done = next(e for e in events if isinstance(e, dict) and e["event"] == "answer_done")
+        assert done["took"] == 1.5
+        assert done["ttft"] == 0.3
+        assert done["genTook"] == 1.2
+        assert done["tokens"] == 10
+        assert done["promptTokens"] == 7
+        assert done["tokensEstimated"] is False
+
+    def test_stats_token_rate_is_generation_based(
+        self, monkeypatch, job, config, questions
+    ):
+        events: List[Any] = []
+        patch_llm(monkeypatch, events)
+
+        run_benchmark([questions[0]], config, job, events.append)
+
+        done = next(e for e in events if isinstance(e, dict) and e["event"] == "question_done")
+        # completion tokens / gen duration, not total_tokens / took.
+        assert done["stats"]["tokenRate"] == pytest.approx(10 / 1.2)

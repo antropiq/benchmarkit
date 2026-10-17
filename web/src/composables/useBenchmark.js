@@ -85,6 +85,15 @@ function resetUi() {
   answeredMsSoFar = 0
 }
 
+function applyTiming(entry, event) {
+  entry.took = event.took
+  entry.tokens = event.tokens
+  entry.ttft = event.ttft ?? 0
+  entry.genTook = event.genTook ?? 0
+  entry.promptTokens = event.promptTokens ?? 0
+  entry.tokensEstimated = !!event.tokensEstimated
+}
+
 function applyEvent(event) {
   switch (event.event) {
     case 'run_started':
@@ -118,6 +127,10 @@ function applyEvent(event) {
         succeeded: null,
         took: 0,
         tokens: 0,
+        ttft: 0,
+        genTook: 0,
+        promptTokens: 0,
+        tokensEstimated: false,
         version: 0,
       }
       state.entries.push(activeQuestion)
@@ -138,8 +151,7 @@ function applyEvent(event) {
       break
     case 'answer_done':
       if (activeQuestion) {
-        activeQuestion.took = event.took
-        activeQuestion.tokens = event.tokens
+        applyTiming(activeQuestion, event)
       }
       answeredMsSoFar += event.took * 1000
       state.clock = { mode: 'checking', baseMs: answeredMsSoFar, startedAt: 0 }
@@ -148,8 +160,7 @@ function applyEvent(event) {
       if (activeQuestion) {
         activeQuestion.streaming = false
         activeQuestion.succeeded = event.succeeded
-        activeQuestion.took = event.took
-        activeQuestion.tokens = event.tokens
+        applyTiming(activeQuestion, event)
         activeQuestion.html = renderMarkdown(activeQuestion.raw)
         activeQuestion = null
       }

@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Optional
 from litellm import completion
 
 from src.core.models import VerifierAgent
-from src.core.utils import LLMResult
+from src.core.utils import LLMResult, estimate_completion_tokens
 
 Emit = Callable[[Dict[str, Any]], None]
 
@@ -31,19 +31,35 @@ def safe_get_choice_content(chunk: Any) -> str:
     return ""
 
 
-def _extract_total_tokens(chunk: Any) -> Optional[int]:
-    """Read total token usage from a streamed chunk, when the server sent one."""
+def _extract_usage(chunk: Any) -> Optional[Dict[str, Optional[int]]]:
+    """Read the usage block from a streamed chunk, when the server sent one.
+
+    Returns ``{prompt_tokens, completion_tokens, total_tokens}`` with ``None``
+    for missing/zero fields, or ``None`` when the chunk carries no usage.
+    """
     usage = (
         chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
     )
-    if usage is None:
+    if not usage:
         return None
-    total = (
-        usage.get("total_tokens")
-        if isinstance(usage, dict)
-        else getattr(usage, "total_tokens", None)
-    )
-    return int(total) if total else None
+
+    def field(name: str) -> Optional[int]:
+        value = (
+            usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
+        )
+        return int(value) if value else None
+
+    return {
+        "prompt_tokens": field("prompt_tokens"),
+        "completion_tokens": field("completion_tokens"),
+        "total_tokens": field("total_tokens"),
+    }
+
+
+def _extract_total_tokens(chunk: Any) -> Optional[int]:
+    """Read total token usage from a streamed chunk, when the server sent one."""
+    usage = _extract_usage(chunk)
+    return usage["total_tokens"] if usage else None
 
 
 def call_llm_and_stream(
@@ -54,12 +70,19 @@ def call_llm_and_stream(
     sampling: Optional[Dict] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> LLMResult:
-    """Make LLM call, stream the answer as ``token`` events, return results."""
+    """Make LLM call, stream the answer as ``token`` events, return results.
+
+    Timing uses ``time.monotonic()`` and is anchored to *content* chunks:
+    ``took`` runs from request start to the last chunk carrying text (the
+    trailing usage-only chunk is not timed), ``ttft`` to the first content
+    chunk, and ``gen_duration`` covers first-to-last content chunk — the
+    window matching llama.cpp's generation (decode) speed.
+    """
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": question["question"]},
     ]
-    start_time = time.time()
+    t0 = time.monotonic()
     buffer = ""
     response_generator: Optional[Any] = None
 
@@ -83,9 +106,13 @@ def call_llm_and_stream(
         )
     except Exception as exc:
         emit({"event": "run_error", "message": f"LLM call failed: {exc}"})
-        return "", time.time() - start_time, 0
+        return LLMResult(took=time.monotonic() - t0)
 
-    tokens_used = 0
+    completion_tokens: Optional[int] = None
+    last_usage: Optional[Dict[str, Optional[int]]] = None
+    prompt_tokens = 0
+    t_first: Optional[float] = None
+    t_last: Optional[float] = None
     try:
         for chunk in response_generator:
             if cancel_event is not None and cancel_event.is_set():
@@ -93,12 +120,24 @@ def call_llm_and_stream(
                 if close:
                     close()
                 raise RunCancelled()
-            tokens_used = _extract_total_tokens(chunk) or tokens_used
+            usage = _extract_usage(chunk)
+            if usage is not None:
+                last_usage = usage
+                if usage["completion_tokens"] is not None:
+                    completion_tokens = usage["completion_tokens"]
+                if usage["prompt_tokens"]:
+                    prompt_tokens = usage["prompt_tokens"]
             content = safe_get_choice_content(chunk)
 
             if not content:
                 continue
 
+            # Time the last content chunk, not the stream drain: with
+            # include_usage the server appends a usage-only chunk afterwards.
+            arrival = time.monotonic()
+            if t_first is None:
+                t_first = arrival
+            t_last = arrival
             buffer += content
             emit({"event": "token", "text": content})
     except RunCancelled:
@@ -107,7 +146,37 @@ def call_llm_and_stream(
         emit({"event": "run_error", "message": f"Stream error: {exc}"})
         buffer = ""
 
-    return buffer, time.time() - start_time, tokens_used
+    t_end = time.monotonic()
+    if t_first is None:
+        took, ttft, gen_duration = t_end - t0, 0.0, 0.0
+    else:
+        took = t_last - t0
+        ttft = t_first - t0
+        # Single-chunk answers have no measurable decode window.
+        gen_duration = t_last - t_first
+
+    tokens_estimated = False
+    if not completion_tokens:
+        # Some servers ignore include_usage or omit completion_tokens; derive
+        # it from total - prompt when possible, else fall back to an estimate.
+        if completion_tokens is None and last_usage is not None:
+            total = last_usage.get("total_tokens")
+            prompt = last_usage.get("prompt_tokens")
+            if total and prompt:
+                completion_tokens = max(total - prompt, 0)
+        if not completion_tokens:
+            completion_tokens = estimate_completion_tokens(buffer)
+            tokens_estimated = completion_tokens > 0
+
+    return LLMResult(
+        text=buffer,
+        took=took,
+        ttft=ttft,
+        gen_duration=gen_duration,
+        completion_tokens=completion_tokens,
+        tokens_estimated=tokens_estimated,
+        prompt_tokens=prompt_tokens,
+    )
 
 
 def warmup_model(
