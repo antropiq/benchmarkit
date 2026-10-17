@@ -8,6 +8,7 @@ import '@fontsource/inter/700.css'
 import '@fontsource/jetbrains-mono/400.css'
 import '@fontsource/jetbrains-mono/500.css'
 import '@picocss/pico/css/pico.min.css'
+import 'katex/dist/katex.min.css'
 import './styles/theme.css'
 
 createApp(App).mount('#app')

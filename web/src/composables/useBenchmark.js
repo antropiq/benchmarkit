@@ -1,8 +1,12 @@
 import { reactive } from 'vue'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
+import markedKatex from 'marked-katex-extension'
+import { katexBrackets } from '../lib/markedKatexBrackets'
 
 marked.setOptions({ breaks: true, gfm: true })
+marked.use(markedKatex({ throwOnError: false, output: 'html' }))
+marked.use(katexBrackets({ throwOnError: false }))
 
 const state = reactive({
   config: null,

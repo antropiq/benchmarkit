@@ -557,6 +557,13 @@ body {
   margin: 0.5rem 0;
 }
 
+.question-card .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  margin: 0.5rem 0;
+  padding: 0.125rem 0;
+}
+
 /* -- badges ------------------------------------------------------------------------ */
 
 .badge {
