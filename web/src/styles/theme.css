@@ -46,6 +46,14 @@
   --bi-info: #2563eb;
   --bi-violet: #7c3aed;
 
+  --bi-hl-keyword: #cf222e;
+  --bi-hl-string: #0a3069;
+  --bi-hl-comment: #6e7781;
+  --bi-hl-number: #0550ae;
+  --bi-hl-function: #8250df;
+  --bi-hl-variable: #953800;
+  --bi-hl-type: #1a7f37;
+
   --bi-surface: #ffffff;
   --bi-surface-2: #f1f5f9;
   --bi-border: #e2e8f0;
@@ -82,6 +90,14 @@
   --bi-warning: #fbbf24;
   --bi-info: #60a5fa;
   --bi-violet: #a78bfa;
+
+  --bi-hl-keyword: #ff7b72;
+  --bi-hl-string: #a5d6ff;
+  --bi-hl-comment: #8b949e;
+  --bi-hl-number: #79c0ff;
+  --bi-hl-function: #d2a8ff;
+  --bi-hl-variable: #ffa657;
+  --bi-hl-type: #7ee787;
 
   --bi-surface: #0f172a;
   --bi-surface-2: #16213a;
@@ -545,14 +561,14 @@ body {
   margin: 0.6rem 0 0.25rem;
 }
 
-.question-card .answer {
+.answer {
   overflow-wrap: break-word;
 }
 
-.question-card .answer :first-child { margin-top: 0; }
-.question-card .answer :last-child { margin-bottom: 0; }
+.answer :first-child { margin-top: 0; }
+.answer :last-child { margin-bottom: 0; }
 
-.question-card .answer pre {
+.answer pre {
   background-color: var(--pico-code-background-color);
   color: var(--pico-code-color);
   padding: 0.5rem 0.75rem;
@@ -560,12 +576,80 @@ body {
   overflow-x: auto;
 }
 
-.question-card .answer code {
+.answer code {
   font-family: var(--pico-font-family-monospace);
   font-size: 0.85em;
 }
 
-.question-card .answer table {
+.answer pre code {
+  background-color: transparent;
+  padding: 0;
+}
+
+.answer pre .hljs-comment,
+.answer pre .hljs-quote {
+  color: var(--bi-hl-comment);
+  font-style: italic;
+}
+
+.answer pre .hljs-keyword,
+.answer pre .hljs-selector-tag,
+.answer pre .hljs-doctag,
+.answer pre .hljs-template-tag,
+.answer pre .hljs-name,
+.answer pre .hljs-section {
+  color: var(--bi-hl-keyword);
+}
+
+.answer pre .hljs-built_in,
+.answer pre .hljs-type,
+.answer pre .hljs-title.class_ {
+  color: var(--bi-hl-type);
+}
+
+.answer pre .hljs-literal,
+.answer pre .hljs-number,
+.answer pre .hljs-symbol,
+.answer pre .hljs-bullet,
+.answer pre .hljs-link {
+  color: var(--bi-hl-number);
+}
+
+.answer pre .hljs-string,
+.answer pre .hljs-regexp,
+.answer pre .hljs-addition,
+.answer pre .hljs-meta .hljs-string {
+  color: var(--bi-hl-string);
+}
+
+.answer pre .hljs-title,
+.answer pre .hljs-title.function_,
+.answer pre .hljs-attr,
+.answer pre .hljs-attribute {
+  color: var(--bi-hl-function);
+}
+
+.answer pre .hljs-variable,
+.answer pre .hljs-template-variable,
+.answer pre .hljs-property,
+.answer pre .hljs-selector-attr,
+.answer pre .hljs-selector-pseudo {
+  color: var(--bi-hl-variable);
+}
+
+.answer pre .hljs-meta,
+.answer pre .hljs-meta .hljs-keyword {
+  color: var(--bi-hl-comment);
+}
+
+.answer pre .hljs-deletion {
+  color: var(--bi-danger);
+}
+
+.answer pre .hljs-emphasis { font-style: italic; }
+.answer pre .hljs-strong { font-weight: 700; }
+
+.answer table {
   font-size: 0.85em;
   margin: 0.5rem 0;
 }
@@ -829,7 +913,6 @@ body {
   border: 1px solid color-mix(in srgb, var(--pico-primary) 35%, transparent);
   border-radius: var(--bi-radius-lg);
   background-color: color-mix(in srgb, var(--pico-primary) 8%, var(--bi-surface));
-  white-space: pre-wrap;
   overflow-wrap: break-word;
 }
 

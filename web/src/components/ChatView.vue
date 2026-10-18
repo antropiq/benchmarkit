@@ -23,7 +23,9 @@ const { onScroll } = useAutoScroll(panel, contentVersion)
       @scroll.passive="onScroll"
     >
       <template v-for="(message, i) in state.messages" :key="i">
-        <p v-if="message.role === 'user'" class="chat-bubble">{{ message.raw }}</p>
+        <div v-if="message.role === 'user'" class="chat-bubble">
+          <MarkdownStream :html="message.html" />
+        </div>
         <article v-else class="question-card">
           <MarkdownStream :html="message.html" />
           <p
