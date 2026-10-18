@@ -1,21 +1,12 @@
 <script setup>
 import { computed } from 'vue'
-import RunControls from './RunControls.vue'
 import ThemeToggle from './ThemeToggle.vue'
 import { useBenchmark } from '../composables/useBenchmark'
-
-defineProps({
-  canStart: { type: Boolean, default: false },
-})
-defineEmits(['start', 'stop'])
 
 const { state, openSettings } = useBenchmark()
 
 const models = computed(() => (state.config?.models ?? []).join(' · '))
 const running = computed(() => state.status === 'running')
-const canStop = computed(() =>
-  ['running', 'finished', 'failed'].includes(state.status),
-)
 </script>
 
 <template>
@@ -37,14 +28,6 @@ const canStop = computed(() =>
       <span class="status-pill" :class="`status-${state.status}`" role="status">
         <span class="status-dot" aria-hidden="true"></span>{{ state.status }}
       </span>
-      <RunControls
-        :can-start="canStart"
-        :running="running"
-        :can-stop="canStop"
-        :stopping="state.stopping"
-        @start="$emit('start')"
-        @stop="$emit('stop')"
-      />
       <button
         class="icon-btn"
         type="button"

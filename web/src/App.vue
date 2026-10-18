@@ -3,6 +3,7 @@ import { computed, onMounted } from 'vue'
 import AppBar from './components/AppBar.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import MetricCard from './components/MetricCard.vue'
+import RunControls from './components/RunControls.vue'
 import Chronometer from './components/Chronometer.vue'
 import StreamPanel from './components/StreamPanel.vue'
 import { useBenchmark } from './composables/useBenchmark'
@@ -13,6 +14,9 @@ onMounted(loadConfig)
 
 const config = computed(() => state.config)
 const running = computed(() => state.status === 'running')
+const canStop = computed(() =>
+  ['running', 'finished', 'failed'].includes(state.status),
+)
 const canStart = computed(() => {
   const cfg = config.value
   return !!cfg && cfg.totalTests > 0 && cfg.models.length > 0 && !running.value
@@ -23,11 +27,7 @@ const scorePercent = computed(() =>
 </script>
 
 <template>
-  <AppBar
-    :can-start="canStart"
-    @start="start"
-    @stop="stop"
-  />
+  <AppBar />
 
   <SettingsDialog />
 
@@ -39,6 +39,14 @@ const scorePercent = computed(() =>
         <p v-if="config" class="caption run-meta">
           {{ config.questionCount }} questions · {{ config.samplingSummary }}
         </p>
+        <RunControls
+          :can-start="canStart"
+          :running="running"
+          :can-stop="canStop"
+          :stopping="state.stopping"
+          @start="start"
+          @stop="stop"
+        />
       </section>
 
       <MetricCard

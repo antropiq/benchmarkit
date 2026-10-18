@@ -55,7 +55,7 @@ Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
 | **`composables/useBenchmark.js`** | Singleton reactive state + EventSource client (SSE event → UI state), snapshot-rebuild reconnect |
 | **`composables/useTheme.js`** | Dark/light theme singleton (persisted to `localStorage`, applied via `data-theme`) |
 | **`App.vue`** | Sticky `AppBar` + grid: sticky stats column (chronometer, metric cards) beside `StreamPanel` and progress bar |
-| **`components/`** | `AppBar` (brand left; status pill, play/stop run controls, settings cog, theme toggle right), `StreamPanel` (autoscroll stream box), `QuestionCard`, `Chronometer` (idle/ticking/checking/frozen), `MetricCard`, `RunControls` (play icon + stop icon, stop only active while running), `SettingsDialog` (native `<dialog>`; edit benchmark + verifier settings via `/api/settings`, opens from the cog, disabled while running), `ThemeToggle` |
+| **`components/`** | `AppBar` (brand left; status pill, settings cog, theme toggle right), `StreamPanel` (autoscroll stream box), `QuestionCard`, `Chronometer` (idle/ticking/checking/frozen), `MetricCard`, `RunControls` (play icon + stop icon, stop only active while running; rendered centered in the run-summary card of the stats column, below the sampling-parameters caption), `SettingsDialog` (native `<dialog>`; edit benchmark + verifier settings via `/api/settings`, opens from the cog, disabled while running), `ThemeToggle` |
 | **`styles/theme.css`** | Pico CSS variable overrides (palette formerly in `.streamlit/config.toml`) + metric card / badge / stream box classes |
 
 ## HTTP API
