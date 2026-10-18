@@ -16,7 +16,8 @@ function scheduleMarkdownRender() {
   renderScheduled = true
   requestAnimationFrame(() => {
     renderScheduled = false
-    if (activeMessage) activeMessage.html = renderMarkdown(activeMessage.raw)
+    if (activeMessage)
+      activeMessage.html = renderMarkdown(activeMessage.raw, { mermaid: true })
   })
 }
 
@@ -73,7 +74,8 @@ function processFrame(frame, assistant) {
 }
 
 function finish(assistant) {
-  if (activeMessage) activeMessage.html = renderMarkdown(activeMessage.raw)
+  if (activeMessage)
+    activeMessage.html = renderMarkdown(activeMessage.raw, { mermaid: true })
   activeMessage = null
   assistant.streaming = false
   state.phase = 'idle'

@@ -586,6 +586,40 @@ body {
   padding: 0;
 }
 
+.answer .mermaid-block {
+  display: block;
+  margin: 0.75rem 0;
+  text-align: center;
+  overflow-x: auto;
+  /* Labels without an explicit color (e.g. state-diagram nodes) inherit
+     the app text color, which is near-invisible on the light diagram
+     plate in dark mode; mermaid's own class rules still override this. */
+  color: #333333;
+}
+
+.answer .mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+  /* Fixed mermaid default theme: keep a light plate so its dark label
+     text stays readable on the dark app background. */
+  background-color: #ffffff;
+  border-radius: var(--pico-border-radius);
+  padding: 0.5rem;
+}
+
+/* Pico colors raw p/div/span elements with the app theme color, which
+   leaks into the HTML labels mermaid renders inside foreignObject (e.g.
+   state-diagram node captions nest the text in a <p>) and makes them
+   near-invisible on the light plate in dark mode. Mermaid's own
+   id-scoped rules keep winning for the elements it styles. */
+.answer .mermaid-block svg :is(p, div, span, li) {
+  color: #333333;
+}
+
+.answer .mermaid-block pre {
+  text-align: left;
+}
+
 .answer pre .hljs-comment,
 .answer pre .hljs-quote {
   color: var(--bi-hl-comment);

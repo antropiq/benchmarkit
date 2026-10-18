@@ -48,7 +48,8 @@ function scheduleMarkdownRender() {
   renderScheduled = true
   requestAnimationFrame(() => {
     renderScheduled = false
-    if (activeQuestion) activeQuestion.html = renderMarkdown(activeQuestion.raw)
+    if (activeQuestion)
+      activeQuestion.html = renderMarkdown(activeQuestion.raw, { mermaid: true })
   })
 }
 
@@ -151,7 +152,9 @@ function applyEvent(event) {
         activeQuestion.streaming = false
         activeQuestion.succeeded = event.succeeded
         applyTiming(activeQuestion, event)
-        activeQuestion.html = renderMarkdown(activeQuestion.raw)
+        activeQuestion.html = renderMarkdown(activeQuestion.raw, {
+          mermaid: true,
+        })
         activeQuestion = null
       }
       state.failedLabel = event.failedLabel

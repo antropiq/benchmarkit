@@ -27,7 +27,7 @@ const { onScroll } = useAutoScroll(panel, contentVersion)
           <MarkdownStream :html="message.html" />
         </div>
         <article v-else class="question-card">
-          <MarkdownStream :html="message.html" />
+          <MarkdownStream :html="message.html" mermaid />
           <p
             v-if="message.streaming && !message.raw"
             class="caption chat-typing"

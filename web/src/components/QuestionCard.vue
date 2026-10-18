@@ -59,7 +59,7 @@ const ttftLabel = computed(() =>
   <article class="question-card">
     <p class="caption mono question-meta">{{ caption }}</p>
     <p class="question-text" v-html="entry.questionHtml"></p>
-    <MarkdownStream :html="entry.html" />
+    <MarkdownStream :html="entry.html" mermaid />
     <template v-if="!entry.streaming">
       <p class="question-verdict">
         <span v-if="entry.succeeded" class="badge green">✓ Correct</span>
