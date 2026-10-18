@@ -866,12 +866,14 @@ body {
 
 .tab-btn.active {
   background-color: var(--bi-surface);
-  color: var(--pico-color);
+  /* --pico-color is redefined to white by Pico's button rules on this
+     element (see .icon-btn note); use the theme token instead. */
+  color: var(--bi-icon);
   box-shadow: var(--bi-shadow-sm);
 }
 
 .tab-btn:not(.active):not(:disabled):hover {
-  color: var(--pico-color);
+  color: var(--bi-icon);
 }
 
 .tab-btn:disabled {

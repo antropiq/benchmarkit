@@ -117,11 +117,11 @@ function onNativeClose() {
         <div class="settings-grid">
           <label>
             Temperature
-            <input v-model="state.settings.temp" type="number" step="any" min="0" placeholder="0.2" />
+            <input v-model="state.settings.temp" type="number" step="0.1" min="0" placeholder="0.2" />
           </label>
           <label>
             Top-p
-            <input v-model="state.settings.topP" type="number" step="any" min="0" max="1" placeholder="0.95" />
+            <input v-model="state.settings.topP" type="number" step="0.1" min="0" max="1" placeholder="0.95" />
           </label>
           <label>
             Top-k
@@ -129,15 +129,15 @@ function onNativeClose() {
           </label>
           <label>
             Min-p
-            <input v-model="state.settings.minP" type="number" step="any" min="0" placeholder="0" />
+            <input v-model="state.settings.minP" type="number" step="0.1" min="0" placeholder="0" />
           </label>
           <label>
             Repeat penalty
-            <input v-model="state.settings.repeatPenalty" type="number" step="any" min="0" placeholder="1.0" />
+            <input v-model="state.settings.repeatPenalty" type="number" step="0.1" min="0" placeholder="1.0" />
           </label>
           <label>
             Presence penalty
-            <input v-model="state.settings.presencePenalty" type="number" step="any" placeholder="0" />
+            <input v-model="state.settings.presencePenalty" type="number" step="0.1" placeholder="0" />
           </label>
         </div>
         <label>
