@@ -108,9 +108,9 @@ body {
   position: sticky;
   top: 0;
   z-index: 10;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: var(--bi-space-3);
   height: var(--bi-appbar-height);
   padding: 0 clamp(1rem, 3vw, 2rem);
@@ -167,6 +167,7 @@ body {
   align-items: center;
   gap: var(--bi-space-2);
   flex: 0 0 auto;
+  justify-self: end;
 }
 
 /* -- status pill ------------------------------------------------------------ */
@@ -215,6 +216,18 @@ body {
 .status-cancelled {
   color: var(--bi-warning);
   border-color: color-mix(in srgb, var(--bi-warning) 40%, transparent);
+}
+
+/* Chat reply in flight (app-bar pill reuses the run-status styles). */
+.status-thinking,
+.status-reasoning {
+  color: var(--bi-violet);
+  border-color: color-mix(in srgb, var(--bi-violet) 40%, transparent);
+}
+
+.status-thinking .status-dot,
+.status-reasoning .status-dot {
+  animation: bi-pulse 1.2s ease-in-out infinite;
 }
 
 @keyframes bi-pulse {
@@ -704,4 +717,122 @@ body {
   .settings-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* -- tab navigation (centered in the application bar) ------------------------- */
+
+.tab-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--bi-border);
+  background-color: var(--bi-surface-2);
+  justify-self: center;
+}
+
+.tab-btn {
+  margin: 0;
+  padding: 0.32rem 1rem;
+  border: none;
+  border-radius: 999px;
+  background-color: transparent;
+  color: var(--pico-muted-color);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tab-btn.active {
+  background-color: var(--bi-surface);
+  color: var(--pico-color);
+  box-shadow: var(--bi-shadow-sm);
+}
+
+.tab-btn:not(.active):not(:disabled):hover {
+  color: var(--pico-color);
+}
+
+.tab-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* -- chat screen ----------------------------------------------------------------- */
+
+.chat-shell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bi-space-2);
+  box-sizing: border-box;
+  width: 100%;
+  height: calc(100vh - var(--bi-appbar-height));
+  padding: var(--bi-space-2) clamp(1rem, 3vw, 2rem) var(--bi-space-3);
+}
+
+/* Output card ~4/5, input row ~1/5 of the space below the app bar. */
+.chat-output {
+  flex: 4 1 0;
+  height: auto;
+  min-height: 0;
+}
+
+.chat-input {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.chat-textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  resize: none;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.chat-send {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  margin: 0;
+}
+
+.chat-send:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.chat-stop,
+.chat-stop:hover {
+  color: var(--bi-danger);
+}
+
+.chat-stop svg {
+  stroke: var(--bi-danger);
+}
+
+.chat-stop rect {
+  fill: var(--bi-danger);
+}
+
+.chat-bubble {
+  align-self: flex-end;
+  max-width: min(75%, 46rem);
+  margin: 0;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--pico-primary) 35%, transparent);
+  border-radius: var(--bi-radius-lg);
+  background-color: color-mix(in srgb, var(--pico-primary) 8%, var(--bi-surface));
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.chat-typing {
+  animation: bi-pulse 1.4s ease-in-out infinite;
 }

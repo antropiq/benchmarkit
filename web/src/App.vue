@@ -6,6 +6,7 @@ import MetricCard from './components/MetricCard.vue'
 import RunControls from './components/RunControls.vue'
 import Chronometer from './components/Chronometer.vue'
 import StreamPanel from './components/StreamPanel.vue'
+import ChatView from './components/ChatView.vue'
 import { useBenchmark } from './composables/useBenchmark'
 
 const { state, loadConfig, start, stop } = useBenchmark()
@@ -13,6 +14,7 @@ const { state, loadConfig, start, stop } = useBenchmark()
 onMounted(loadConfig)
 
 const config = computed(() => state.config)
+const onBenchmarkTab = computed(() => state.activeTab === 'benchmark')
 const running = computed(() => state.status === 'running')
 const canStop = computed(() =>
   ['running', 'finished', 'failed'].includes(state.status),
@@ -31,7 +33,7 @@ const scorePercent = computed(() =>
 
   <SettingsDialog />
 
-  <main class="app-shell">
+  <main v-show="onBenchmarkTab" class="app-shell">
     <aside class="stats-col">
       <section class="panel run-summary" aria-label="Elapsed time">
         <p class="caption">⏱ Elapsed</p>
@@ -100,4 +102,6 @@ const scorePercent = computed(() =>
       </div>
     </section>
   </main>
+
+  <ChatView v-show="state.activeTab === 'chat'" />
 </template>

@@ -1,12 +1,33 @@
 <script setup>
 import { computed } from 'vue'
+import TabNav from './TabNav.vue'
 import ThemeToggle from './ThemeToggle.vue'
 import { useBenchmark } from '../composables/useBenchmark'
+import { useChat } from '../composables/useChat'
 
 const { state, openSettings } = useBenchmark()
+const { state: chat } = useChat()
 
 const models = computed(() => (state.config?.models ?? []).join(' · '))
 const running = computed(() => state.status === 'running')
+
+// One pill for both screens: a running benchmark wins; otherwise a chat
+// reply in flight reports its own phase (including the reasoning flag).
+const chatBusy = computed(() =>
+  ['waiting', 'reasoning', 'answering'].includes(chat.phase),
+)
+const pillLabel = computed(() => {
+  if (!running.value && chatBusy.value) {
+    return chat.phase === 'reasoning' ? 'reasoning...' : 'thinking'
+  }
+  return state.status
+})
+const pillClass = computed(() => {
+  if (!running.value && chatBusy.value) {
+    return chat.phase === 'reasoning' ? 'status-reasoning' : 'status-thinking'
+  }
+  return `status-${state.status}`
+})
 </script>
 
 <template>
@@ -24,9 +45,11 @@ const running = computed(() => state.status === 'running')
       </span>
     </div>
 
+    <TabNav />
+
     <div class="appbar-actions">
-      <span class="status-pill" :class="`status-${state.status}`" role="status">
-        <span class="status-dot" aria-hidden="true"></span>{{ state.status }}
+      <span class="status-pill" :class="pillClass" role="status">
+        <span class="status-dot" aria-hidden="true"></span>{{ pillLabel }}
       </span>
       <button
         class="icon-btn"

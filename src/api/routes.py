@@ -4,7 +4,7 @@ import asyncio
 import json
 import threading
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
 import os
 
@@ -24,6 +24,7 @@ from src.config import (
     questions_path,
 )
 from src.core.bench import run_benchmark
+from src.core.chat import stream_chat
 from src.core.job import RunJob
 from src.core.llm import RunCancelled
 from src.core.models import EndpointsConfig
@@ -85,6 +86,37 @@ class QuestionSetIn(SettingsFieldsMixin):
     """Question set selection as sent by the settings dialog."""
 
     questionSet: str = ""
+
+
+class ChatMessage(BaseModel):
+    """One chat turn as sent by the chat screen."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class ChatIn(BaseModel):
+    """Chat request body: the full conversation history."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    messages: List[ChatMessage]
+
+    @field_validator("messages")
+    @classmethod
+    def _require_turns(cls, value: List[ChatMessage]) -> List[ChatMessage]:
+        if not value:
+            raise ValueError("messages must not be empty")
+        if any(not message.content.strip() for message in value):
+            raise ValueError("message content must not be empty")
+        return value
+
+
+# Strong references to in-flight chat pump tasks (the event loop only keeps
+# weak references to bare tasks).
+_CHAT_TASKS: set = set()
 
 
 # Dialog field -> .env key, used for both directions of the settings API.
@@ -309,6 +341,84 @@ def build_router(state: RunState) -> APIRouter:
                 detail=f"Could not fetch models from {models_url}: {exc}",
             ) from exc
         return {"models": _model_ids(payload)}
+
+    @router.post("/chat")
+    async def post_chat(body: ChatIn, request: Request) -> StreamingResponse:
+        """Stream one chat reply from the benchmark-configured LLM as SSE.
+
+        Sync litellm runs in a worker thread feeding an ``asyncio.Queue``
+        (project convention: sync litellm in a thread + ``emit``); the SSE
+        generator polls the queue and disconnect, closing the upstream
+        stream via ``cancel_event`` when the client goes away.
+        """
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot chat while a benchmark run is in progress",
+            )
+        config = _load_config()
+        models = config.model_list()
+        if not models:
+            raise HTTPException(status_code=400, detail="No models configured (ENDPOINT/ENDPOINTS)")
+
+        messages = [{"role": m.role, "content": m.content} for m in body.messages]
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        cancel_event = threading.Event()
+
+        def emit(event: Any) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+        async def pump() -> None:
+            try:
+                await asyncio.to_thread(
+                    stream_chat,
+                    messages,
+                    models[0],
+                    config.serverUrl,
+                    emit,
+                    config.to_kwargs(),
+                    cancel_event,
+                )
+            except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
+                emit({"event": "error", "message": str(exc)})
+            finally:
+                emit(None)  # sentinel: worker finished
+
+        task = asyncio.create_task(pump())
+        _CHAT_TASKS.add(task)
+        task.add_done_callback(_CHAT_TASKS.discard)
+
+        async def event_stream() -> AsyncIterator[str]:
+            seq = 0
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        return
+                    try:
+                        item = await asyncio.wait_for(queue.get(), timeout=0.25)
+                    except asyncio.TimeoutError:
+                        continue
+                    if item is None:
+                        return
+                    yield sse_format(seq, item)
+                    seq += 1
+                    if item.get("event") in ("done", "error"):
+                        return
+            finally:
+                # Client gone (or terminal event): stop the worker thread,
+                # which closes the upstream litellm stream.
+                cancel_event.set()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     @router.post("/run", status_code=202)
     async def start_run() -> Dict[str, Any]:

@@ -1,29 +1,16 @@
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import QuestionCard from './QuestionCard.vue'
 import { useBenchmark } from '../composables/useBenchmark'
+import { useAutoScroll } from '../composables/useAutoScroll'
 
 const { state } = useBenchmark()
 
 const panel = ref(null)
-const stickToBottom = ref(true)
-
-// Autoscroll while streaming, unless the user scrolled away.
-function onScroll() {
-  const el = panel.value
-  if (!el) return
-  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 48
-}
-
-watch(
-  () => state.entries.map((e) => (e.type === 'question' ? e.version : e.type)).join(''),
-  async () => {
-    if (!stickToBottom.value) return
-    await nextTick()
-    const el = panel.value
-    if (el) el.scrollTop = el.scrollHeight
-  },
+const contentVersion = computed(() =>
+  state.entries.map((e) => (e.type === 'question' ? e.version : e.type)).join(''),
 )
+const { onScroll } = useAutoScroll(panel, contentVersion)
 </script>
 
 <template>

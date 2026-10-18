@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import MarkdownStream from './MarkdownStream.vue'
 
 const props = defineProps({
   entry: { type: Object, required: true },
@@ -58,7 +59,7 @@ const ttftLabel = computed(() =>
   <article class="question-card">
     <p class="caption mono question-meta">{{ caption }}</p>
     <p class="question-text" v-html="entry.questionHtml"></p>
-    <div class="answer" v-html="entry.html"></div>
+    <MarkdownStream :html="entry.html" />
     <template v-if="!entry.streaming">
       <p class="question-verdict">
         <span v-if="entry.succeeded" class="badge green">✓ Correct</span>

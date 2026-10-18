@@ -1,18 +1,12 @@
 import { reactive } from 'vue'
-import DOMPurify from 'dompurify'
-import { marked } from 'marked'
-import markedKatex from 'marked-katex-extension'
-import { katexBrackets } from '../lib/markedKatexBrackets'
-
-marked.setOptions({ breaks: true, gfm: true })
-marked.use(markedKatex({ throwOnError: false, output: 'html' }))
-marked.use(katexBrackets({ throwOnError: false }))
+import { renderMarkdown } from '../lib/markdown'
 
 const state = reactive({
   config: null,
   configError: null,
   startError: null,
   status: 'idle', // idle | running | finished | failed | cancelled
+  activeTab: 'benchmark', // benchmark | chat
   runId: null,
   stopping: false,
   totalTests: 0,
@@ -48,10 +42,6 @@ let answeredMsSoFar = 0
 let renderScheduled = false
 let activeQuestion = null
 let cancelNoticeTimer = null
-
-function renderMarkdown(raw) {
-  return DOMPurify.sanitize(marked.parse(raw || ''))
-}
 
 function scheduleMarkdownRender() {
   if (renderScheduled) return
@@ -374,6 +364,11 @@ export function useBenchmark() {
     return state.status === 'running'
   }
 
+  function setTab(tab) {
+    if (tab === 'chat' && state.status === 'running') return
+    state.activeTab = tab
+  }
+
   function canStop() {
     return ['running', 'finished', 'failed'].includes(state.status)
   }
@@ -541,6 +536,7 @@ export function useBenchmark() {
     start,
     stop,
     running,
+    setTab,
     canStop,
     openSettings,
     closeSettings,
