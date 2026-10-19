@@ -9,6 +9,7 @@ const { state, openSettings } = useBenchmark()
 const { state: chat } = useChat()
 
 const models = computed(() => (state.config?.models ?? []).join(' · '))
+const serverUrl = computed(() => state.config?.serverUrl || '')
 const running = computed(() => state.status === 'running')
 
 // One pill for both screens: a running benchmark wins; otherwise a chat
@@ -42,6 +43,7 @@ const pillClass = computed(() => {
       <span class="brand-text">
         <span class="brand-name">Benchmark'it</span>
         <span v-if="models" class="brand-sub">{{ models }}</span>
+        <span v-if="serverUrl" class="brand-sub">on {{ serverUrl }}</span>
       </span>
     </div>
 

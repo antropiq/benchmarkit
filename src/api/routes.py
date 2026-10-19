@@ -245,6 +245,7 @@ def build_router(state: RunState) -> APIRouter:
         )
         return {
             "models": models,
+            "serverUrl": config.serverUrl,
             "samplingSummary": sampling_summary,
             "questionCount": len(questions),
             "totalTests": len(questions) * len(models),
