@@ -34,6 +34,13 @@ const state = reactive({
   verifierModels: [],
   verifierModelsLoading: false,
   verifierModelsError: null,
+  mcpInstalled: false,
+  mcpConnectors: [],
+  mcpEnabled: [], // connector ids ticked in the dialog, saved via saveMcp()
+  mcpMaxIterations: 25,
+  mcpLoading: false,
+  mcpSaving: false,
+  mcpError: null,
 })
 
 let eventSource = null
@@ -396,8 +403,12 @@ export function useBenchmark() {
       state.questionSets = []
       state.questionSetsLoading = false
       state.questionSetsError = null
+      state.mcpConnectors = []
+      state.mcpEnabled = []
+      state.mcpError = null
       refreshModelLists()
       loadQuestionSets()
+      loadMcp()
     } catch (exc) {
       state.settingsError = `Could not reach the API: ${exc}`
     } finally {
@@ -538,6 +549,71 @@ export function useBenchmark() {
     }
   }
 
+  async function loadMcp() {
+    state.mcpLoading = true
+    state.mcpError = null
+    try {
+      const res = await fetch('/api/mcp')
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.mcpError = describeError(body, `Could not load MCP connectors (${res.status})`)
+        return
+      }
+      state.mcpInstalled = !!body.installed
+      state.mcpConnectors = body.connectors || []
+      state.mcpMaxIterations = body.maxIterations ?? 25
+      state.mcpEnabled = state.mcpConnectors
+        .filter((connector) => connector.active)
+        .map((connector) => connector.id)
+    } catch (exc) {
+      state.mcpError = `Could not reach the API: ${exc}`
+    } finally {
+      state.mcpLoading = false
+    }
+  }
+
+  function toggleMcp(id, checked) {
+    const enabled = new Set(state.mcpEnabled)
+    if (checked) enabled.add(id)
+    else enabled.delete(id)
+    // Keep discovery order so the saved list stays stable.
+    state.mcpEnabled = state.mcpConnectors
+      .map((connector) => connector.id)
+      .filter((connectorId) => enabled.has(connectorId))
+  }
+
+  async function saveMcp() {
+    if (state.mcpSaving) return
+    state.mcpError = null
+    state.mcpSaving = true
+    try {
+      const res = await fetch('/api/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: state.mcpEnabled,
+          maxIterations: Number(state.mcpMaxIterations) || 25,
+        }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.mcpError = describeError(body, `Could not save MCP settings (${res.status})`)
+        return
+      }
+      state.mcpInstalled = !!body.installed
+      state.mcpConnectors = body.connectors || []
+      state.mcpMaxIterations = body.maxIterations ?? 25
+      state.mcpEnabled = state.mcpConnectors
+        .filter((connector) => connector.active)
+        .map((connector) => connector.id)
+      state.settingsOpen = false
+    } catch (exc) {
+      state.mcpError = `Could not reach the API: ${exc}`
+    } finally {
+      state.mcpSaving = false
+    }
+  }
+
   return {
     state,
     loadConfig,
@@ -551,5 +627,8 @@ export function useBenchmark() {
     saveSettings,
     loadQuestionSets,
     fetchModels,
+    loadMcp,
+    toggleMcp,
+    saveMcp,
   }
 }

@@ -11,7 +11,7 @@ import os
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from src.api.events import EventBus, sse_format
 from src.config import (
@@ -20,9 +20,12 @@ from src.config import (
     load_endpoints_config,
     load_questions,
     load_settings,
+    mcp_enabled_ids,
+    max_mcp_iteration,
     save_settings,
     questions_path,
 )
+from src.core.mcp_hub import discover_connectors
 from src.core.bench import run_benchmark
 from src.core.chat import stream_chat
 from src.core.job import RunJob
@@ -89,6 +92,15 @@ class QuestionSetIn(SettingsFieldsMixin):
     """Question set selection as sent by the settings dialog."""
 
     questionSet: str = ""
+
+
+class McpIn(BaseModel):
+    """MCP connector activation as sent by the settings dialog."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: List[str] = []
+    maxIterations: int = Field(default=25, ge=1, le=500)
 
 
 class ChatMessage(BaseModel):
@@ -215,6 +227,33 @@ class RunState:
         self.cancel_event = threading.Event()
 
 
+def _mcp_tool_kwargs(request: Request) -> Dict[str, Any]:
+    """Extra ``stream_chat`` kwargs when MCP connectors are active for chat.
+
+    Returns ``{}`` when nothing is active so the no-MCP call shape (and the
+    existing chat tests that stub ``stream_chat``) stays untouched.
+    """
+    manager = getattr(request.app.state, "mcp", None)
+    if manager is None:
+        return {}
+    try:
+        tools, tool_to_server = manager.active_tool_defs(mcp_enabled_ids())
+    except Exception:  # noqa: BLE001 — never block chat because of the hub
+        return {}
+    if not tools:
+        return {}
+
+    def tool_executor(name: str, arguments: Dict[str, Any]) -> str:
+        return manager.call_tool_sync(tool_to_server[name], name, arguments)
+
+    return {
+        "tools": tools,
+        "tool_executor": tool_executor,
+        "tool_servers": tool_to_server,
+        "max_tool_iterations": max_mcp_iteration(),
+    }
+
+
 def build_router(state: RunState) -> APIRouter:
     """Create the API router bound to a run-state instance."""
     router = APIRouter(prefix="/api")
@@ -268,6 +307,9 @@ def build_router(state: RunState) -> APIRouter:
                 detail="Cannot change settings while a benchmark run is in progress",
             )
         env_values = _settings_env_values(settings)
+        # Settings keys not covered by this dialog (question set, MCP) are
+        # merged from the current values so saving here never drops them.
+        env_values = {**load_settings(), **env_values}
         merged = {
             key: value
             for key, value in os.environ.items()
@@ -326,6 +368,58 @@ def build_router(state: RunState) -> APIRouter:
             "current": os.environ.get("QUESTION_SET", QUESTION_SET_DEFAULT),
         }
 
+    def _mcp_payload(request: Request) -> Dict[str, Any]:
+        """Connector list (live folder scan) merged with manager status."""
+        manager = getattr(request.app.state, "mcp", None)
+        statuses = {s["id"]: s for s in (manager.status() if manager else [])}
+        active = set(mcp_enabled_ids())
+        connectors = [
+            {
+                **connector,
+                "active": connector["id"] in active,
+                "status": statuses.get(connector["id"], {}).get("status", "stopped"),
+                "error": statuses.get(connector["id"], {}).get("error"),
+            }
+            for connector in discover_connectors()
+        ]
+        return {
+            "installed": bool(manager and manager.installed),
+            "connectors": connectors,
+            "maxIterations": max_mcp_iteration(),
+        }
+
+    @router.get("/mcp")
+    def get_mcp(request: Request) -> Dict[str, Any]:
+        """List the MCP connectors found in ``mcp_connectors/`` with live status."""
+        return _mcp_payload(request)
+
+    @router.post("/mcp")
+    def post_mcp(body: McpIn, request: Request) -> Dict[str, Any]:
+        """Activate MCP connectors for the Chat tab and set the iteration cap.
+
+        Persists ``MCP_ENABLED`` / ``MAX_MCP_ITERATION`` to ``.env``. The
+        connector processes themselves always run with the app; this only
+        controls which tools chat may use.
+        """
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change MCP settings while a benchmark run is in progress",
+            )
+        requested = [item.strip() for item in body.enabled if item.strip()]
+        available = {connector["id"] for connector in discover_connectors()}
+        unknown = [item for item in requested if item not in available]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown MCP connectors: {', '.join(unknown)}",
+            )
+        merged = dict(load_settings())
+        merged["MCP_ENABLED"] = ",".join(dict.fromkeys(requested))
+        merged["MAX_MCP_ITERATION"] = str(body.maxIterations)
+        save_settings(merged)
+        return _mcp_payload(request)
+
     @router.get("/models")
     async def get_models(serverUrl: str = "", apiKey: str = "") -> Dict[str, Any]:
         """List models exposed by an OpenAI-compatible server URL."""
@@ -375,6 +469,7 @@ def build_router(state: RunState) -> APIRouter:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         cancel_event = threading.Event()
+        tool_kwargs = _mcp_tool_kwargs(request)
 
         def emit(event: Any) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, event)
@@ -391,6 +486,7 @@ def build_router(state: RunState) -> APIRouter:
                     cancel_event,
                     config.apiKey or "none",
                     config.sysprompt,
+                    **tool_kwargs,
                 )
             except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
                 emit({"event": "error", "message": str(exc)})

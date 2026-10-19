@@ -66,6 +66,23 @@ function applyEvent(name, data, assistant) {
       assistant.ttft = data.ttft ?? 0
       assistant.tokensEstimated = !!data.tokensEstimated
       break
+    case 'tool_call':
+      assistant.tools.push({
+        id: data.id ?? `${data.tool}-${assistant.tools.length}`,
+        tool: data.tool ?? 'tool',
+        server: data.server ?? '',
+        preview: data.argsPreview ?? '',
+        state: 'running',
+      })
+      break
+    case 'tool_result': {
+      const tool = assistant.tools.find((item) => item.id === data.id)
+      if (tool) {
+        tool.state = data.ok ? 'ok' : 'error'
+        tool.resultPreview = data.preview ?? ''
+      }
+      break
+    }
     case 'reasoning':
       // Never downgrade to reasoning once answer text started.
       if (state.phase === 'waiting' || state.phase === 'reasoning') {
@@ -151,6 +168,7 @@ export function useChat() {
       raw: '',
       html: '',
       streaming: true,
+      tools: [], // MCP tool calls: { id, tool, server, preview, state, resultPreview }
       tokens: 0,
       took: 0,
       ttft: 0,

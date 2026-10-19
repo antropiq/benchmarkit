@@ -23,6 +23,10 @@ benchmarkit
 # Frontend dev server (hot reload on :5173, proxies /api to :8000)
 cd web && npm run dev
 
+# Optional MCP tools for the Chat tab (mcp SDK + playwright + browser binaries)
+pip install -e ".[mcp]"
+playwright install chromium   # once, downloads Chromium
+
 # Install test dependencies
 pip install -e ".[test]"
 
@@ -43,7 +47,8 @@ Python package layout under `src/`, split into a UI-free core and the API:
 | **`api/events.py`** | `EventBus`: seq-numbered in-memory event buffer, thread-safe publish, async subscribe with replay; `sse_format()` |
 | **`core/bench.py`** | `run_benchmark()`, `process_question()` — pure loop + event emission |
 | **`core/llm.py`** | `call_llm_and_stream()`, `verify_response()` — take an `emit` callable, no UI code |
-| **`core/chat.py`** | `stream_chat()` — one streamed chat reply, emits `token` / `reasoning` / `done` / `error`; reuses `_extract_usage`/`_extract_reasoning` from `core/llm.py` |
+| **`core/chat.py`** | `stream_chat()` — one streamed chat reply, emits `token` / `reasoning` / `done` / `error` (+ `tool_call` / `tool_result` in the MCP tool loop, and a `TOOL_NOTICE` appended to the system prompt only while tools are active); reuses `_extract_usage`/`_extract_reasoning` from `core/llm.py` |
+| **`core/mcp_hub.py`** | `discover_connectors()` (docstring scan of `mcp_connectors/*_mcp.py`), OpenAI tool-format helpers, `McpManager`: spawns one subprocess per connector for the app's lifetime and bridges sync chat threads to persistent MCP clients on a private asyncio thread |
 | **`core/job.py`** | `RunJob` class: results, failed questions, score/token/time aggregates |
 | **`core/models.py`** | Pydantic models for the benchmark config, built from env vars via `EndpointsConfig.from_env()` |
 | **`core/utils.py`** | `format_time()`, `save_results(job, path)` |
@@ -60,7 +65,7 @@ Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
 | **`composables/useSplitter.js`** | Draggable horizontal separator in Chat (output ↔ input row): pointer + keyboard resize, clamped, persisted to `localStorage`, double-click resets to the default 4:1 ratio |
 | **`lib/markdown.js`** | Shared markdown renderer: `marked` + `DOMPurify` + `marked-katex-extension` (KaTeX) + `marked-highlight` (highlight.js, `lib/hljs.js`) + optional Mermaid fences (`lib/mermaid.js`) |
 | **`App.vue`** | Sticky `AppBar` + tab views: benchmark grid (sticky stats column: chronometer, metric cards) beside `StreamPanel`, and `ChatView` (`v-show` on `state.activeTab`) |
-| **`components/`** | `AppBar` (brand left; centered `TabNav` — Benchmark/Chat — then status pill, settings cog, theme toggle right), `StreamPanel` (autoscroll stream box), `ChatView` + `ChatInput` (chat transcript + composer, send/stop), `MarkdownStream` (renders a live markdown message), `QuestionCard`, `Chronometer` (idle/ticking/checking/frozen), `MetricCard`, `RunControls` (play icon + stop icon, stop only active while running; rendered centered in the run-summary card of the stats column, below the sampling-parameters caption), `SettingsDialog` (native `<dialog>`; edit benchmark + verifier + question-set settings via `/api/settings` and `/api/question-sets`, opens from the cog, disabled while running), `ThemeToggle` |
+| **`components/`** | `AppBar` (brand left; centered `TabNav` — Benchmark/Chat — then status pill, settings cog, theme toggle right), `StreamPanel` (autoscroll stream box), `ChatView` + `ChatInput` (chat transcript + composer, send/stop), `MarkdownStream` (renders a live markdown message), `QuestionCard`, `Chronometer` (idle/ticking/checking/frozen), `MetricCard`, `RunControls` (play icon + stop icon, stop only active while running; rendered centered in the run-summary card of the stats column, below the sampling-parameters caption), `SettingsDialog` (native `<dialog>`; edit benchmark + verifier + question-set + MCP-connector settings via `/api/settings`, `/api/question-sets` and `/api/mcp`, opens from the cog, disabled while running), `ThemeToggle` |
 | **`styles/theme.css`** | Pico CSS variable overrides (palette formerly in `.streamlit/config.toml`) + metric card / badge / stream box classes |
 
 ## HTTP API
@@ -68,6 +73,8 @@ Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
 - `GET /api/config` — models, sampling summary, question count, `runStatus`, `hasResults`
 - `GET /api/settings` — raw `.env` values for the settings dialog (empty strings when unset)
 - `POST /api/settings` — save settings: rewrites `.env` (regenerated from a fixed template, empty optional keys commented out) and refreshes `os.environ` so the next run uses them (409 while running; 422 with pydantic detail on invalid values). Real process env vars set before startup keep precedence until restart.
+- `GET /api/mcp` — connectors scanned from `mcp_connectors/` (`{id, label, description, port, endpoint, active, status, error}`) + `installed` flag + `maxIterations`
+- `POST /api/mcp` — activate connectors for the Chat tab and set the iteration cap (persists `MCP_ENABLED` / `MAX_MCP_ITERATION` to `.env`; 409 while running; 422 unknown id)
 - `GET /api/question-sets` — available question sets (`{id, label, count}` per `resources/*.json`) + `current` selection
 - `POST /api/question-sets` — select the active question set (persists `QUESTION_SET` to `.env`; 409 while running; 422 unknown id)
 - `GET /api/models?serverUrl=&apiKey=` — list model ids from an OpenAI-compatible `/models` endpoint (used by the settings dialog when the server URL or API key changes; the optional `apiKey` is sent as `Authorization: Bearer`; 502 on fetch failure)
@@ -85,12 +92,12 @@ Events carry an SSE `id:` (sequence number). `run_started` → `model_started` �
 
 `answer_done` and `question_done` carry the timing payload: `took` (request start → last **generated** chunk, TTFT included, `time.monotonic()`), `ttft` (request start → first generated chunk), `genTook` (first → last generated chunk — the decode window; **reasoning/thinking deltas open and extend this window** even though they are not answer text, because `completion_tokens` counts them), `tokens` (**completion tokens only**, never `total_tokens`), `promptTokens`, and `tokensEstimated` (true when the server omitted usage and tokens were estimated at ~4 chars/token). `stats.tokenRate` is the **average of the per-question rates** (`tokens / genTook`) over questions with a measurable decode window — computed entirely app-side from `time.monotonic()` chunk arrivals; only the token count comes from the server's usage chunk.
 
-Chat SSE (`/api/chat`) is a separate, simpler contract: `token` (answer text delta) / `reasoning` (emitted once, the first time reasoning deltas appear — reasoning text itself is never sent) → exactly one terminal `done` (`took`, `ttft`, `tokens`, `tokensEstimated`) or `error`. Nothing is emitted when the client disconnected (cancelled).
+Chat SSE (`/api/chat`) is a separate, simpler contract: `token` (answer text delta) / `reasoning` (emitted once, the first time reasoning deltas appear — reasoning text itself is never sent) → exactly one terminal `done` (`took`, `ttft`, `tokens`, `tokensEstimated`) or `error`. When MCP connectors are active for Chat, `tool_call` (`id`, `server`, `tool`, `argsPreview`) and `tool_result` (`id`, `ok`, `preview`) frames appear per executed tool call before the terminal event. Nothing is emitted when the client disconnected (cancelled).
 
 ## Data files
 
 - **`resources/*.json`** — question sets, one file per set (file stem = set id): `legacy.json` (30 questions from matchingpennies.com, the default), `78qcm.json`, `122qcm.json`, `30hardmath.json`. Each file is `{"questions": [{ uuid, question, expected, ... }]}`; extra keys like `category`/`subcategory` are allowed. UUIDs in `legacy` are sequential (`01234567-0123-0123-0123-0000000000XX`). The active set is chosen by `QUESTION_SET` (default `legacy`).
-- **`.env`** (project root, gitignored; see `.env.example`) — Platform-independent benchmark configuration. Keys: `SERVER_URL`, `SERVER_URL_API_KEY`, `ENDPOINT` (or comma-separated `ENDPOINTS`), `LLM_SYSPROMPT` (system prompt for benchmark + chat, defaults to `You are a helpful assistant.`), `TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING`, `QUESTION_SET`, and the verifier block `VERIFIER_AGENT_SYSPROMPT`, `VERIFIER_AGENT_SERVERURL`, `VERIFIER_AGENT_SERVERURL_API_KEY`, `VERIFIER_AGENT_ENDPOINT`. API keys are optional (empty → litellm sends `"none"`, like keyless llama.cpp servers) and are forwarded as the `api_key` of every `completion()` call. Loaded via `python-dotenv` at server startup (real env vars take precedence) and parsed by `EndpointsConfig.from_env()` into the pydantic models; string values are coerced, invalid values raise a `ValidationError` returned as HTTP 422.
+- **`.env`** (project root, gitignored; see `.env.example`) — Platform-independent benchmark configuration. Keys: `SERVER_URL`, `SERVER_URL_API_KEY`, `ENDPOINT` (or comma-separated `ENDPOINTS`), `LLM_SYSPROMPT` (system prompt for benchmark + chat, defaults to `You are a helpful assistant.`), `TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING`, `QUESTION_SET`, the MCP block `MCP_ENABLED` (comma-separated connector ids activated for Chat) and `MAX_MCP_ITERATION` (default 25), and the verifier block `VERIFIER_AGENT_SYSPROMPT`, `VERIFIER_AGENT_SERVERURL`, `VERIFIER_AGENT_SERVERURL_API_KEY`, `VERIFIER_AGENT_ENDPOINT`. API keys are optional (empty → litellm sends `"none"`, like keyless llama.cpp servers) and are forwarded as the `api_key` of every `completion()` call. Loaded via `python-dotenv` at server startup (real env vars take precedence) and parsed by `EndpointsConfig.from_env()` into the pydantic models; string values are coerced, invalid values raise a `ValidationError` returned as HTTP 422.
 - **`results.json`** — Generated output, gitignored. Saved once at the end of a run (`save_results()` in `core/bench.py`). Each response carries `took`, `ttft`, `genDuration`, `completionTokens` (aliased as `consumedTokens` for older consumers), `promptTokens`, and `tokensEstimated`.
 
 ## Key patterns & conventions
@@ -110,6 +117,7 @@ Chat SSE (`/api/chat`) is a separate, simpler contract: `token` (answer text del
 - Look & feel is Pico.css + `web/src/styles/theme.css` (colors, Inter/JetBrains Mono, 8px radii, light + dark). Fonts are self-hosted via `@fontsource/*`. `index.html` sets `data-theme` from the saved `benchmarkit:theme` choice, falling back to `prefers-color-scheme`; the `ThemeToggle` in the app bar switches and persists it.
 - Rendered answers can contain LaTeX (`marked-katex-extension`), fenced code highlighted by highlight.js, and ` ```mermaid ` fences rendered by Mermaid — all through the single `lib/markdown.js` renderer.
 - The app reuses the same `SERVER_URL` for both the target LLM and the verifier's `api_base` unless `VERIFIER_AGENT_SERVERURL` is set.
+- MCP connector processes start/stop with the app via the FastAPI **lifespan** (`server.py`) — ports are fixed (`console_mcp` 9999, `playwright_mcp` 8934, registry `CONNECTOR_PORTS` in `core/mcp_hub.py`), logs in `logs/mcp/`. `BENCHMARKIT_DISABLE_MCP=1` skips spawning (set by the test-suite autouse fixture). The `mcp` package is imported lazily so the app runs fine without the extra.
 - `web/dist` must exist (or `npm run build` run) for FastAPI to serve the UI; the API works without it. In dev use the Vite server instead — it proxies `/api`.
 
 ## Adding questions

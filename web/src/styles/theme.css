@@ -1164,3 +1164,73 @@ body {
 .chat-typing {
   animation: bi-pulse 1.4s ease-in-out infinite;
 }
+
+/* Compact MCP tool badges shown above a streaming chat answer. */
+.chat-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 999px;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+}
+
+.chat-tool.running .chat-tool-state {
+  animation: bi-pulse 1.4s ease-in-out infinite;
+}
+
+.chat-tool.ok .chat-tool-state {
+  color: var(--bi-success);
+}
+
+.chat-tool.error .chat-tool-state {
+  color: var(--bi-danger);
+}
+
+/* -- MCP connectors in the settings dialog ------------------------------------ */
+.mcp-panel {
+  margin: 0.75rem 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: var(--bi-radius-lg);
+}
+
+.mcp-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.mcp-panel-header label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.mcp-panel-header input[type='checkbox'] {
+  width: auto;
+  margin: 0;
+}
+
+.mcp-description {
+  margin: 0.4rem 0 0;
+}
+
+.mcp-iterations {
+  max-width: 12rem;
+  margin-top: 1rem;
+}

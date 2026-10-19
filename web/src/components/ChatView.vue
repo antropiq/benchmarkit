@@ -41,6 +41,24 @@ const {
           <MarkdownStream :html="message.html" />
         </div>
         <article v-else class="question-card">
+          <ul
+            v-if="message.tools && message.tools.length"
+            class="chat-tools"
+            aria-label="MCP tool calls"
+          >
+            <li
+              v-for="tool in message.tools"
+              :key="tool.id"
+              class="chat-tool"
+              :class="tool.state"
+              :title="`${tool.server ? tool.server + ' · ' : ''}${tool.preview}${tool.resultPreview ? '\n→ ' + tool.resultPreview : ''}`"
+            >
+              <span class="chat-tool-state" aria-hidden="true">
+                {{ tool.state === 'running' ? '…' : tool.state === 'ok' ? '✓' : '✗' }}
+              </span>
+              <span class="chat-tool-name">{{ tool.tool }}</span>
+            </li>
+          </ul>
           <MarkdownStream :html="message.html" mermaid />
           <p
             v-if="message.streaming && !message.raw"

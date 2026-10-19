@@ -3,7 +3,15 @@ import { nextTick, ref, watch } from 'vue'
 import ApiKeyField from './ApiKeyField.vue'
 import { useBenchmark } from '../composables/useBenchmark'
 
-const { state, closeSettings, saveSettings, fetchModels, loadQuestionSets } = useBenchmark()
+const {
+  state,
+  closeSettings,
+  saveSettings,
+  fetchModels,
+  loadQuestionSets,
+  toggleMcp,
+  saveMcp,
+} = useBenchmark()
 
 const dialogEl = ref(null)
 const activeSection = ref('question-set')
@@ -13,7 +21,15 @@ const SECTIONS = [
   { id: 'llm', label: 'LLM' },
   { id: 'sampling', label: 'Sampling params' },
   { id: 'verifier', label: 'Verifier LLM' },
+  { id: 'mcp', label: 'MCP' },
 ]
+
+const MCP_STATUS_CLASS = {
+  running: 'green',
+  starting: 'violet',
+  error: 'red',
+  stopped: 'gray',
+}
 
 const REASONING_OPTIONS = [
   { value: '', label: 'None' },
@@ -236,6 +252,58 @@ function onNativeClose() {
               ></textarea>
             </label>
           </section>
+
+          <section v-show="activeSection === 'mcp'">
+            <h3 class="settings-section-title">MCP connectors</h3>
+            <p class="caption">
+              Connector servers start with the app and stop when it quits.
+              Activated connectors add their tools to the Chat tab only —
+              benchmark runs never use them.
+            </p>
+            <p v-if="!state.mcpInstalled" class="caption alert-error" role="alert">
+              The mcp package is not installed. Run
+              <code>pip install -e ".[mcp]"</code> (then
+              <code>playwright install chromium</code>) and restart the app.
+            </p>
+            <p v-if="state.mcpLoading" class="caption">Loading connectors…</p>
+            <p v-else-if="!state.mcpConnectors.length" class="caption">
+              No connectors found in <code>mcp_connectors/</code> (expected
+              <code>*_mcp.py</code> modules).
+            </p>
+            <div v-for="connector in state.mcpConnectors" :key="connector.id" class="mcp-panel">
+              <div class="mcp-panel-header">
+                <label class="mcp-activate">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    :checked="state.mcpEnabled.includes(connector.id)"
+                    :disabled="state.mcpLoading"
+                    @change="toggleMcp(connector.id, $event.target.checked)"
+                  />
+                  {{ connector.label }}
+                </label>
+                <span class="badge" :class="MCP_STATUS_CLASS[connector.status]">
+                  {{ connector.status }}
+                </span>
+              </div>
+              <p class="caption mcp-description">{{ connector.description }}</p>
+              <p v-if="connector.error" class="caption alert-error">{{ connector.error }}</p>
+            </div>
+            <label class="mcp-iterations">
+              Max tool iterations
+              <input
+                v-model="state.mcpMaxIterations"
+                type="number"
+                min="1"
+                max="500"
+                placeholder="25"
+              />
+            </label>
+            <p class="caption">
+              Cap on the tool-calling loop of a single chat reply.
+              Shared by all connectors.
+            </p>
+          </section>
         </div>
       </div>
 
@@ -243,7 +311,15 @@ function onNativeClose() {
         <button class="secondary contrast" type="button" :disabled="state.settingsSaving" @click="closeSettings">
           Cancel
         </button>
-        <button type="button" :disabled="state.settingsSaving || state.settingsLoading" @click="saveSettings">
+        <button
+          v-if="activeSection === 'mcp'"
+          type="button"
+          :disabled="state.mcpSaving || state.mcpLoading"
+          @click="saveMcp"
+        >
+          {{ state.mcpSaving ? 'Saving…' : 'Save' }}
+        </button>
+        <button v-else type="button" :disabled="state.settingsSaving || state.settingsLoading" @click="saveSettings">
           {{ state.settingsSaving ? 'Saving…' : 'Save' }}
         </button>
       </footer>

@@ -26,6 +26,9 @@ same configured model interactively.
   warm-up request so model loading never pollutes the numbers.
 - **Chat tab** — interactive streaming chat with the benchmark-configured
   model, including a "thinking" indicator while the model emits reasoning.
+- **Optional MCP tools in Chat** — activate the bundled browser and console
+  MCP connectors so the chat model can browse the web and run whitelisted
+  shell commands; tool calls appear as badges in the transcript.
 - **Rich rendering** — answers render as Markdown with KaTeX math,
   syntax-highlighted code blocks, and Mermaid diagrams.
 - **In-app settings** — a dialog to edit endpoint, sampling parameters,
@@ -59,6 +62,27 @@ pip install -e .
 
 > If you use the venv approach while pyenv is installed, make sure only **one**
 > environment is active — pyenv shims otherwise shadow `.venv/bin`.
+
+#### MCP connectors (Chat tab, optional)
+
+To let the Chat model use the bundled MCP connectors
+(`mcp_connectors/`), install the optional `mcp` extra and the Chromium
+binaries the browser connector needs:
+
+```bash
+pip install -e ".[mcp]"          # adds the mcp SDK + playwright
+playwright install chromium      # Linux: playwright install --with-deps chromium
+```
+
+Both connector servers — `console_mcp` on `http://127.0.0.1:9999/mcp` and
+`playwright_mcp` on `http://127.0.0.1:8934/mcp` — start when the app starts
+and stop when it quits. Nothing is exposed to the model until you tick a
+connector in **Settings → MCP** (persisted as `MCP_ENABLED` in `.env`);
+benchmark runs never use tools. The **Max tool iterations** field
+(`MAX_MCP_ITERATION`, default 25) caps the tool-calling loop of a single
+chat reply and is shared by all connectors. Connector stdout/stderr is
+captured in `logs/mcp/`. Without the extra installed everything keeps
+working — the MCP settings panel just shows an install hint.
 
 ### 2. Build the frontend
 
@@ -134,3 +158,7 @@ If you have good questions to add please share them! 🙏
   Markdown always passes through DOMPurify.
 - **Single run.** One benchmark run at a time, state in memory; the run and
   the chat share the configured endpoint and refuse to overlap.
+- **MCP lifecycle.** Connector servers live inside the app lifespan
+  (`src/core/mcp_hub.py`): one subprocess each, one persistent MCP client
+  per connector on a private asyncio thread that chat worker threads call
+  through synchronously; everything is terminated on shutdown.

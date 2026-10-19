@@ -16,6 +16,9 @@ RESOURCES_DIR = PROJECT_ROOT / "resources"
 
 QUESTION_SET_DEFAULT = "legacy"
 
+# Cap on tool-calling iterations for one chat reply; shared by all connectors.
+DEFAULT_MAX_MCP_ITERATION = 25
+
 # Managed .env keys, in the order they are written to the file.
 SETTING_KEYS: Tuple[str, ...] = (
     "SERVER_URL",
@@ -34,6 +37,8 @@ SETTING_KEYS: Tuple[str, ...] = (
     "VERIFIER_AGENT_SERVERURL",
     "VERIFIER_AGENT_SERVERURL_API_KEY",
     "VERIFIER_AGENT_ENDPOINT",
+    "MCP_ENABLED",
+    "MAX_MCP_ITERATION",
 )
 
 # Keys always written to .env; the others are commented out when empty.
@@ -111,6 +116,7 @@ def load_settings() -> Dict[str, str]:
     defaults = {
         "QUESTION_SET": QUESTION_SET_DEFAULT,
         "LLM_SYSPROMPT": DEFAULT_LLM_SYSPROMPT,
+        "MAX_MCP_ITERATION": str(DEFAULT_MAX_MCP_ITERATION),
     }
     return {
         key: os.environ.get(key) or defaults.get(key, "")
@@ -178,8 +184,37 @@ def _render_env(values: Dict[str, str]) -> str:
         line("VERIFIER_AGENT_SERVERURL_API_KEY"),
         line("VERIFIER_AGENT_ENDPOINT"),
         "",
+        "# MCP connectors (Chat tab only)",
+        line("MCP_ENABLED"),
+        line("MAX_MCP_ITERATION"),
+        "",
     ]
     return "\n".join(lines)
+
+
+def mcp_enabled_ids() -> List[str]:
+    """Connector ids activated for the Chat tab from ``MCP_ENABLED``.
+
+    Comma-separated, deduplicated, order-preserving; empty entries ignored.
+    """
+    ids: List[str] = []
+    for part in os.environ.get("MCP_ENABLED", "").split(","):
+        part = part.strip()
+        if part and part not in ids:
+            ids.append(part)
+    return ids
+
+
+def max_mcp_iteration() -> int:
+    """Tool-iteration cap for one chat reply; invalid or unset values fall
+    back to ``DEFAULT_MAX_MCP_ITERATION``."""
+    raw = os.environ.get("MAX_MCP_ITERATION", "").strip()
+    if not raw:
+        return DEFAULT_MAX_MCP_ITERATION
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_MCP_ITERATION
 
 
 def _encode_value(value: str) -> str:
