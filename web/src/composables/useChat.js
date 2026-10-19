@@ -21,6 +21,19 @@ function scheduleMarkdownRender() {
   })
 }
 
+// Client-side mirror of the backend's estimate_completion_tokens() heuristic
+// (~4 chars/token), used for the live badges and abort fallbacks.
+export function estimateCompletionTokens(text) {
+  return Math.ceil(text.length / 4)
+}
+
+export function conversationMarkdown(messages) {
+  return messages
+    .filter((m) => m.raw.trim())
+    .map((m) => `## ${m.role}\n\n${m.raw}`)
+    .join('\n\n')
+}
+
 function describeError(body, fallback) {
   const detail = body?.detail
   if (typeof detail === 'string' && detail) return detail
@@ -38,16 +51,29 @@ function describeError(body, fallback) {
 
 function applyEvent(name, data, assistant) {
   switch (name) {
-    case 'token':
+    case 'token': {
       if (state.phase !== 'answering') state.phase = 'answering'
       assistant.raw += data.text ?? ''
+      const now = Date.now()
+      if (!assistant.firstTokenAt) assistant.firstTokenAt = now
+      assistant.lastTokenAt = now
       scheduleMarkdownRender()
+      break
+    }
+    case 'done':
+      assistant.tokens = data.tokens ?? 0
+      assistant.took = data.took ?? 0
+      assistant.ttft = data.ttft ?? 0
+      assistant.tokensEstimated = !!data.tokensEstimated
       break
     case 'reasoning':
       // Never downgrade to reasoning once answer text started.
       if (state.phase === 'waiting' || state.phase === 'reasoning') {
         state.phase = 'reasoning'
       }
+      // Reasoning opens the decode window, like the benchmark does — the
+      // live tok/s estimate must count the thinking time from its start.
+      if (!assistant.firstTokenAt) assistant.firstTokenAt = Date.now()
       break
     case 'error':
       state.error = data.message || 'Chat request failed.'
@@ -77,6 +103,13 @@ function finish(assistant) {
   if (activeMessage)
     activeMessage.html = renderMarkdown(activeMessage.raw, { mermaid: true })
   activeMessage = null
+  // Stream ended without an exact usage report (stop/abort/error): keep the
+  // conversation totals stable with the same ~4 chars/token heuristic the
+  // backend uses, flagged as estimated.
+  if (!assistant.tokens && assistant.raw) {
+    assistant.tokens = estimateCompletionTokens(assistant.raw)
+    assistant.tokensEstimated = true
+  }
   assistant.streaming = false
   state.phase = 'idle'
   controller = null
@@ -113,7 +146,18 @@ export function useChat() {
       streaming: false,
     })
     const history = state.messages.map(({ role, raw }) => ({ role, content: raw }))
-    state.messages.push({ role: 'assistant', raw: '', html: '', streaming: true })
+    state.messages.push({
+      role: 'assistant',
+      raw: '',
+      html: '',
+      streaming: true,
+      tokens: 0,
+      took: 0,
+      ttft: 0,
+      tokensEstimated: false,
+      firstTokenAt: 0,
+      lastTokenAt: 0,
+    })
     // Keep the reactive proxy so token mutations re-render.
     const assistant = state.messages[state.messages.length - 1]
     activeMessage = assistant
@@ -151,5 +195,11 @@ export function useChat() {
     if (controller) controller.abort()
   }
 
-  return { state, send, stop }
+  function reset() {
+    if (controller) controller.abort()
+    state.messages = []
+    state.error = null
+  }
+
+  return { state, send, stop, reset }
 }

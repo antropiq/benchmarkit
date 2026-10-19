@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import ChatSidePanel from './ChatSidePanel.vue'
 import { useChat } from '../composables/useChat'
 
 const { state, send, stop } = useChat()
@@ -26,6 +27,7 @@ function onKeydown(event) {
 
 <template>
   <div class="chat-input">
+    <ChatSidePanel />
     <textarea
       v-model="text"
       class="chat-textarea"

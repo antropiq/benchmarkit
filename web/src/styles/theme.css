@@ -928,6 +928,32 @@ body {
   cursor: default;
 }
 
+/* Stats/actions panel left of the chat textarea, same height (stretch).
+   The panel itself adds no width: its size comes entirely from the badges,
+   which share one fixed width. */
+.chat-side-panel {
+  flex: 0 0 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.chat-side-panel .badge {
+  width: 7rem;
+  justify-content: center;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.chat-side-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .chat-stop,
 .chat-stop:hover {
   color: var(--bi-danger);

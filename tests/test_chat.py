@@ -68,6 +68,29 @@ class TestStreamChat:
         assert done["tokens"] == 7
         assert done["tokensEstimated"] is False
 
+    def test_reasoning_deltas_open_and_extend_decode_window(self, monkeypatch):
+        # t0, reasoning, reasoning, content — the usage-only chunk is not
+        # timed. The window must start at the first reasoning delta, like in
+        # the benchmark loop, so tok/s does not pretend thinking was free.
+        clock = [0.0, 1.0, 2.0, 6.0]
+        monkeypatch.setattr(
+            "src.core.chat.time.monotonic", lambda: clock.pop(0)
+        )
+        events = self._run(
+            monkeypatch,
+            [
+                reasoning_chunk("thinking"),
+                reasoning_chunk(" more"),
+                content_chunk("Hi"),
+                usage_chunk(prompt=5, completion=9, total=14),
+            ],
+        )
+        done = events[-1]
+        assert clock == []
+        assert done["ttft"] == 1.0  # first generated delta was reasoning
+        assert done["took"] == 6.0
+        assert done["tokens"] == 9  # completion usage counts reasoning tokens
+
     def test_prepends_system_prompt(self, monkeypatch):
         captured = {}
 

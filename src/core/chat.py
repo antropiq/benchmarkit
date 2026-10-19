@@ -79,12 +79,17 @@ def stream_chat(
             if reasoning and not reasoning_emitted:
                 reasoning_emitted = True
                 emit({"event": "reasoning"})
-            if not content:
+            # Reasoning deltas open and extend the decode window (like the
+            # benchmark loop in core/llm.py): they are generated tokens too,
+            # so tok/s must not pretend the thinking phase was free.
+            if not content and not reasoning:
                 continue
             arrival = time.monotonic()
             if t_first is None:
                 t_first = arrival
             t_last = arrival
+            if not content:
+                continue
             buffer += content
             emit({"event": "token", "text": content})
     except Exception as exc:
