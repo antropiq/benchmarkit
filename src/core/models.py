@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ReasoningEffort = Literal["off", "low", "medium", "high", "xhigh"]
 
+DEFAULT_LLM_SYSPROMPT = "You are a helpful assistant."
+
 SAMPLING_FIELDS = (
     "temperature",
     "top_p",
@@ -67,6 +69,7 @@ class EndpointsConfig(SamplingParams):
     apiKey: str = ""
     endpoint: Optional[Union[str, List[str]]] = None
     endpoints: Optional[Union[str, List[str]]] = None
+    sysprompt: str = DEFAULT_LLM_SYSPROMPT
     verifierAgent: Optional[VerifierAgent] = None
 
     @field_validator("endpoint", "endpoints", mode="before")
@@ -84,10 +87,11 @@ class EndpointsConfig(SamplingParams):
         """Build the configuration from environment variables.
 
         Recognized keys: ``SERVER_URL``, ``SERVER_URL_API_KEY``,
-        ``ENDPOINT``, ``ENDPOINTS`` (comma-separated), ``TEMP``, ``TOP_P``,
-        ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``, ``PRESENCE_PENALTY``,
-        ``REASONING`` and the ``VERIFIER_AGENT_*`` block (``SYSPROMPT``,
-        ``SERVERURL``, ``SERVERURL_API_KEY``, ``ENDPOINT``).
+        ``ENDPOINT``, ``ENDPOINTS`` (comma-separated), ``LLM_SYSPROMPT``,
+        ``TEMP``, ``TOP_P``, ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``,
+        ``PRESENCE_PENALTY``, ``REASONING`` and the ``VERIFIER_AGENT_*``
+        block (``SYSPROMPT``, ``SERVERURL``, ``SERVERURL_API_KEY``,
+        ``ENDPOINT``).
         """
         source: Mapping[str, str] = os.environ if env is None else env
 
@@ -103,6 +107,7 @@ class EndpointsConfig(SamplingParams):
             "apiKey": get("SERVER_URL_API_KEY") or "",
             "endpoint": get("ENDPOINT"),
             "endpoints": [e.strip() for e in endpoints.split(",")] if endpoints else None,
+            "sysprompt": get("LLM_SYSPROMPT") or DEFAULT_LLM_SYSPROMPT,
             "temp": get("TEMP"),
             "top-p": get("TOP_P"),
             "top-k": get("TOP_K"),

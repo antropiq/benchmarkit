@@ -1,12 +1,19 @@
 <script setup>
 import { nextTick, ref, watch } from 'vue'
+import ApiKeyField from './ApiKeyField.vue'
 import { useBenchmark } from '../composables/useBenchmark'
 
 const { state, closeSettings, saveSettings, fetchModels, loadQuestionSets } = useBenchmark()
 
 const dialogEl = ref(null)
-const showBenchmarkKey = ref(false)
-const showVerifierKey = ref(false)
+const activeSection = ref('question-set')
+
+const SECTIONS = [
+  { id: 'question-set', label: 'Question set' },
+  { id: 'llm', label: 'LLM' },
+  { id: 'sampling', label: 'Sampling params' },
+  { id: 'verifier', label: 'Verifier LLM' },
+]
 
 const REASONING_OPTIONS = [
   { value: '', label: 'None' },
@@ -69,229 +76,168 @@ function onNativeClose() {
     </p>
 
     <form class="settings-form" @submit.prevent>
-      <fieldset>
-        <legend>Question set</legend>
-        <label>
-          Source
-          <select
-            v-model="state.settings.questionSet"
-            :disabled="state.questionSetsLoading"
-          >
-            <option
-              v-for="set in state.questionSets"
-              :key="set.id"
-              :value="set.id"
-            >
-              {{ set.label }} ({{ set.count }} questions)
-            </option>
-            <option v-if="!state.questionSets.length" value="" disabled>
-              {{ state.questionSetsLoading ? 'Loading question sets…' : 'No question sets available' }}
-            </option>
-          </select>
-        </label>
-      </fieldset>
+      <div class="settings-body">
+        <nav class="settings-nav" aria-label="Settings sections">
+          <ul>
+            <li v-for="section in SECTIONS" :key="section.id">
+              <button
+                type="button"
+                :class="{ active: activeSection === section.id }"
+                :aria-current="activeSection === section.id ? 'true' : undefined"
+                @click="activeSection = section.id"
+              >
+                {{ section.label }}
+              </button>
+            </li>
+          </ul>
+        </nav>
 
-      <fieldset>
-        <legend>Benchmark LLM</legend>
-        <label>
-          Server URL
-          <input
-            v-model="state.settings.serverUrl"
-            type="url"
-            placeholder="http://127.0.0.1:8080/v1"
-            @change="fetchModels('benchmark', true)"
-          />
-        </label>
-        <label>
-          API key
-          <span class="password-field">
-            <input
-              v-model="state.settings.apiKey"
-              :type="showBenchmarkKey ? 'text' : 'password'"
-              placeholder="not-needed"
-              autocomplete="off"
-              spellcheck="false"
-              @change="fetchModels('benchmark', true)"
-            />
-            <button
-              class="password-toggle"
-              type="button"
-              :aria-label="showBenchmarkKey ? 'Hide API key' : 'Show API key'"
-              :aria-pressed="showBenchmarkKey"
-              @click.prevent="showBenchmarkKey = !showBenchmarkKey"
-            >
-              <svg
-                v-if="showBenchmarkKey"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
+        <div class="settings-editor">
+          <section v-show="activeSection === 'question-set'">
+            <h3 class="settings-section-title">Question set</h3>
+            <label>
+              Source
+              <select
+                v-model="state.settings.questionSet"
+                :disabled="state.questionSetsLoading"
               >
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
-                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
-                <line x1="1" y1="1" x2="23" y2="23" />
-              </svg>
-              <svg
-                v-else
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </button>
-          </span>
-        </label>
-        <label>
-          Model
-          <select v-model="state.settings.endpoint">
-            <option v-if="!state.benchmarkModels.length" value="" disabled>
-              {{ state.benchmarkModelsLoading ? 'Loading models…' : 'No models available' }}
-            </option>
-            <option v-for="model in state.benchmarkModels" :key="model" :value="model">
-              {{ model }}
-            </option>
-          </select>
-        </label>
-        <p v-if="state.benchmarkModelsError" class="caption alert-error" role="alert">
-          {{ state.benchmarkModelsError }}
-        </p>
-        <div class="settings-grid">
-          <label>
-            Temperature
-            <input v-model="state.settings.temp" type="number" step="0.1" min="0" placeholder="0.2" />
-          </label>
-          <label>
-            Top-p
-            <input v-model="state.settings.topP" type="number" step="0.1" min="0" max="1" placeholder="0.95" />
-          </label>
-          <label>
-            Top-k
-            <input v-model="state.settings.topK" type="number" step="1" min="0" placeholder="20" />
-          </label>
-          <label>
-            Min-p
-            <input v-model="state.settings.minP" type="number" step="0.1" min="0" placeholder="0" />
-          </label>
-          <label>
-            Repeat penalty
-            <input v-model="state.settings.repeatPenalty" type="number" step="0.1" min="0" placeholder="1.0" />
-          </label>
-          <label>
-            Presence penalty
-            <input v-model="state.settings.presencePenalty" type="number" step="0.1" placeholder="0" />
-          </label>
+                <option
+                  v-for="set in state.questionSets"
+                  :key="set.id"
+                  :value="set.id"
+                >
+                  {{ set.label }} ({{ set.count }} questions)
+                </option>
+                <option v-if="!state.questionSets.length" value="" disabled>
+                  {{ state.questionSetsLoading ? 'Loading question sets…' : 'No question sets available' }}
+                </option>
+              </select>
+            </label>
+          </section>
+
+          <section v-show="activeSection === 'llm'">
+            <h3 class="settings-section-title">LLM</h3>
+            <label>
+              Server URL
+              <input
+                v-model="state.settings.serverUrl"
+                type="url"
+                placeholder="http://127.0.0.1:8080/v1"
+                @change="fetchModels('benchmark', true)"
+              />
+            </label>
+            <label>
+              API key
+              <ApiKeyField
+                v-model="state.settings.apiKey"
+                @change="fetchModels('benchmark', true)"
+              />
+            </label>
+            <label>
+              Model
+              <select v-model="state.settings.endpoint">
+                <option v-if="!state.benchmarkModels.length" value="" disabled>
+                  {{ state.benchmarkModelsLoading ? 'Loading models…' : 'No models available' }}
+                </option>
+                <option v-for="model in state.benchmarkModels" :key="model" :value="model">
+                  {{ model }}
+                </option>
+              </select>
+            </label>
+            <p v-if="state.benchmarkModelsError" class="caption alert-error" role="alert">
+              {{ state.benchmarkModelsError }}
+            </p>
+            <label>
+              System prompt
+              <textarea
+                v-model="state.settings.sysprompt"
+                rows="4"
+                placeholder="You are a helpful assistant."
+              ></textarea>
+            </label>
+          </section>
+
+          <section v-show="activeSection === 'sampling'">
+            <h3 class="settings-section-title">Sampling params</h3>
+            <div class="settings-grid">
+              <label>
+                Temperature
+                <input v-model="state.settings.temp" type="number" step="0.1" min="0" placeholder="0.2" />
+              </label>
+              <label>
+                Top-p
+                <input v-model="state.settings.topP" type="number" step="0.1" min="0" max="1" placeholder="0.95" />
+              </label>
+              <label>
+                Top-k
+                <input v-model="state.settings.topK" type="number" step="1" min="0" placeholder="20" />
+              </label>
+              <label>
+                Min-p
+                <input v-model="state.settings.minP" type="number" step="0.1" min="0" placeholder="0" />
+              </label>
+              <label>
+                Repeat penalty
+                <input v-model="state.settings.repeatPenalty" type="number" step="0.1" min="0" placeholder="1.0" />
+              </label>
+              <label>
+                Presence penalty
+                <input v-model="state.settings.presencePenalty" type="number" step="0.1" placeholder="0" />
+              </label>
+            </div>
+            <label>
+              Reasoning level
+              <select v-model="state.settings.reasoning">
+                <option v-for="option in REASONING_OPTIONS" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+          </section>
+
+          <section v-show="activeSection === 'verifier'">
+            <h3 class="settings-section-title">Verifier LLM</h3>
+            <label>
+              Server URL
+              <input
+                v-model="state.settings.verifier.serverUrl"
+                type="url"
+                placeholder="http://127.0.0.1:8080/v1"
+                @change="fetchModels('verifier', true)"
+              />
+            </label>
+            <label>
+              API key
+              <ApiKeyField
+                v-model="state.settings.verifier.apiKey"
+                @change="fetchModels('verifier', true)"
+              />
+            </label>
+            <label>
+              Model
+              <select v-model="state.settings.verifier.endpoint">
+                <option v-if="!state.verifierModels.length" value="" disabled>
+                  {{ state.verifierModelsLoading ? 'Loading models…' : 'No models available' }}
+                </option>
+                <option v-for="model in state.verifierModels" :key="model" :value="model">
+                  {{ model }}
+                </option>
+              </select>
+            </label>
+            <p v-if="state.verifierModelsError" class="caption alert-error" role="alert">
+              {{ state.verifierModelsError }}
+            </p>
+            <label>
+              System prompt
+              <textarea
+                v-model="state.settings.verifier.sysprompt"
+                rows="4"
+                placeholder="You are a response expert analyser…"
+              ></textarea>
+            </label>
+          </section>
         </div>
-        <label>
-          Reasoning level
-          <select v-model="state.settings.reasoning">
-            <option v-for="option in REASONING_OPTIONS" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
-        </label>
-      </fieldset>
-
-      <fieldset>
-        <legend>Verifier</legend>
-        <label>
-          Server URL
-          <input
-            v-model="state.settings.verifier.serverUrl"
-            type="url"
-            placeholder="http://127.0.0.1:8080/v1"
-            @change="fetchModels('verifier', true)"
-          />
-        </label>
-        <label>
-          API key
-          <span class="password-field">
-            <input
-              v-model="state.settings.verifier.apiKey"
-              :type="showVerifierKey ? 'text' : 'password'"
-              placeholder="not-needed"
-              autocomplete="off"
-              spellcheck="false"
-              @change="fetchModels('verifier', true)"
-            />
-            <button
-              class="password-toggle"
-              type="button"
-              :aria-label="showVerifierKey ? 'Hide API key' : 'Show API key'"
-              :aria-pressed="showVerifierKey"
-              @click.prevent="showVerifierKey = !showVerifierKey"
-            >
-              <svg
-                v-if="showVerifierKey"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
-                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
-                <line x1="1" y1="1" x2="23" y2="23" />
-              </svg>
-              <svg
-                v-else
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                <circle cx="12" cy="12" r="3" />
-              </svg>
-            </button>
-          </span>
-        </label>
-        <label>
-          Model
-          <select v-model="state.settings.verifier.endpoint">
-            <option v-if="!state.verifierModels.length" value="" disabled>
-              {{ state.verifierModelsLoading ? 'Loading models…' : 'No models available' }}
-            </option>
-            <option v-for="model in state.verifierModels" :key="model" :value="model">
-              {{ model }}
-            </option>
-          </select>
-        </label>
-        <p v-if="state.verifierModelsError" class="caption alert-error" role="alert">
-          {{ state.verifierModelsError }}
-        </p>
-        <label>
-          System prompt
-          <textarea
-            v-model="state.settings.verifier.sysprompt"
-            rows="5"
-            placeholder="You are a response expert analyser…"
-          ></textarea>
-        </label>
-      </fieldset>
+      </div>
 
       <footer class="settings-actions">
         <button class="secondary contrast" type="button" :disabled="state.settingsSaving" @click="closeSettings">
@@ -305,4 +251,3 @@ function onNativeClose() {
     </article>
   </dialog>
 </template>
-

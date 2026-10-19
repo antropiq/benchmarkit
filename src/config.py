@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-from src.core.models import EndpointsConfig
+from src.core.models import DEFAULT_LLM_SYSPROMPT, EndpointsConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
@@ -21,6 +21,7 @@ SETTING_KEYS: Tuple[str, ...] = (
     "SERVER_URL",
     "SERVER_URL_API_KEY",
     "ENDPOINT",
+    "LLM_SYSPROMPT",
     "TEMP",
     "TOP_P",
     "TOP_K",
@@ -105,10 +106,14 @@ def load_settings() -> Dict[str, str]:
 
     ``os.environ`` already reflects the .env file loaded at startup (real
     environment variables keep precedence) and is refreshed on every save.
-    ``QUESTION_SET`` always resolves to ``QUESTION_SET_DEFAULT`` when unset.
+    ``QUESTION_SET`` and ``LLM_SYSPROMPT`` resolve to their defaults when unset.
     """
+    defaults = {
+        "QUESTION_SET": QUESTION_SET_DEFAULT,
+        "LLM_SYSPROMPT": DEFAULT_LLM_SYSPROMPT,
+    }
     return {
-        key: os.environ.get(key, QUESTION_SET_DEFAULT if key == "QUESTION_SET" else "")
+        key: os.environ.get(key) or defaults.get(key, "")
         for key in SETTING_KEYS
     }
 
@@ -155,6 +160,7 @@ def _render_env(values: Dict[str, str]) -> str:
         line("ENDPOINT"),
         "# Optional comma-separated list of models (ENDPOINT takes precedence)",
         "#ENDPOINTS=model-a,model-b",
+        line("LLM_SYSPROMPT"),
         "",
         "# Sampling parameters (optional)",
         line("TEMP"),

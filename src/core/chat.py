@@ -13,9 +13,8 @@ from typing import Any, Dict, List, Optional
 from litellm import completion
 
 from src.core.llm import Emit, _extract_reasoning, _extract_usage, safe_get_choice_content
+from src.core.models import DEFAULT_LLM_SYSPROMPT
 from src.core.utils import estimate_completion_tokens
-
-CHAT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 
 def stream_chat(
@@ -26,6 +25,7 @@ def stream_chat(
     sampling: Optional[Dict[str, Any]] = None,
     cancel_event: Optional[threading.Event] = None,
     api_key: str = "none",
+    sysprompt: Optional[str] = None,
 ) -> None:
     """Stream one chat reply, emitting ``token`` / ``reasoning`` / ``done``.
 
@@ -33,7 +33,10 @@ def stream_chat(
     was cancelled — then the client is gone and nothing is emitted).
     """
     if not messages or messages[0].get("role") != "system":
-        messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT}, *messages]
+        messages = [
+            {"role": "system", "content": sysprompt or DEFAULT_LLM_SYSPROMPT},
+            *messages,
+        ]
 
     t0 = time.monotonic()
     sampling_kwargs: Dict[str, Any] = dict(sampling or {})

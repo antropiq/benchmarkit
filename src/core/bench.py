@@ -52,6 +52,7 @@ def process_question(
         config.to_kwargs(),
         cancel_event,
         api_key=config.apiKey or "none",
+        sysprompt=config.sysprompt,
     )
     _check_cancelled(cancel_event)
     timing = {

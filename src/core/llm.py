@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, Optional
 
 from litellm import completion
 
-from src.core.models import VerifierAgent
+from src.core.models import DEFAULT_LLM_SYSPROMPT, VerifierAgent
 from src.core.utils import LLMResult, estimate_completion_tokens
 
 Emit = Callable[[Dict[str, Any]], None]
@@ -94,6 +94,7 @@ def call_llm_and_stream(
     sampling: Optional[Dict] = None,
     cancel_event: Optional[threading.Event] = None,
     api_key: str = "none",
+    sysprompt: Optional[str] = None,
 ) -> LLMResult:
     """Make LLM call, stream the answer as ``token`` events, return results.
 
@@ -105,7 +106,7 @@ def call_llm_and_stream(
     speed, since reasoning deltas are part of ``completion_tokens``.
     """
     messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "system", "content": sysprompt or DEFAULT_LLM_SYSPROMPT},
         {"role": "user", "content": question["question"]},
     ]
     t0 = time.monotonic()

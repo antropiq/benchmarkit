@@ -213,6 +213,7 @@ class TestSettingsEndpoint:
             "serverUrl": "http://target:8080/v1",
             "apiKey": "secret-key",
             "endpoint": "model-a",
+            "sysprompt": "Answer briefly.",
             "temp": "0.2",
             "topP": "",
             "topK": "",
@@ -233,19 +234,25 @@ class TestSettingsEndpoint:
     def test_get_returns_env_values(self, client, monkeypatch):
         monkeypatch.setenv("SERVER_URL", "http://x/v1")
         monkeypatch.setenv("SERVER_URL_API_KEY", "sk-target")
+        monkeypatch.setenv("LLM_SYSPROMPT", "Answer concisely.")
         monkeypatch.setenv("VERIFIER_AGENT_SYSPROMPT", "verify!")
         monkeypatch.setenv("VERIFIER_AGENT_SERVERURL_API_KEY", "sk-judge")
         body = client.get("/api/settings").json()
         assert body["serverUrl"] == "http://x/v1"
         assert body["apiKey"] == "sk-target"
         assert body["endpoint"] == ""
+        assert body["sysprompt"] == "Answer concisely."
         assert body["verifier"]["sysprompt"] == "verify!"
         assert body["verifier"]["apiKey"] == "sk-judge"
 
     def test_get_empty_when_nothing_set(self, client):
+        from src.core.models import DEFAULT_LLM_SYSPROMPT
+
         body = client.get("/api/settings").json()
         assert body["serverUrl"] == ""
         assert body["apiKey"] == ""
+        # Unset LLM_SYSPROMPT resolves to the built-in default, like QUESTION_SET.
+        assert body["sysprompt"] == DEFAULT_LLM_SYSPROMPT
         assert body["verifier"] == {
             "serverUrl": "",
             "apiKey": "",
@@ -266,6 +273,7 @@ class TestSettingsEndpoint:
 
         assert os.environ["SERVER_URL"] == "http://target:8080/v1"
         assert os.environ["SERVER_URL_API_KEY"] == "secret-key"
+        assert os.environ["LLM_SYSPROMPT"] == "Answer briefly."
         assert os.environ["VERIFIER_AGENT_SERVERURL_API_KEY"] == "judge-key"
         assert os.environ["REASONING"] == "low"
         assert "TOP_P" not in os.environ
@@ -273,6 +281,7 @@ class TestSettingsEndpoint:
         file_values = dotenv_values(config_module.ENV_PATH)
         assert file_values["SERVER_URL"] == "http://target:8080/v1"
         assert file_values["SERVER_URL_API_KEY"] == "secret-key"
+        assert file_values["LLM_SYSPROMPT"] == "Answer briefly."
         assert file_values["VERIFIER_AGENT_SERVERURL_API_KEY"] == "judge-key"
         # The quoted sysprompt must survive the .env round-trip verbatim.
         assert file_values["VERIFIER_AGENT_SYSPROMPT"] == 'Say "true" or "false" only.'
@@ -291,6 +300,21 @@ class TestSettingsEndpoint:
         assert "TEMP" not in os.environ
         text = config_module.ENV_PATH.read_text(encoding="utf-8")
         assert "#TEMP=" in text
+
+    def test_save_emptied_llm_sysprompt_falls_back_to_default(self, client, monkeypatch):
+        from src import config as config_module
+        from src.core.models import DEFAULT_LLM_SYSPROMPT
+
+        assert client.post("/api/settings", json=self._payload()).status_code == 200
+        response = client.post("/api/settings", json=self._payload(sysprompt=""))
+        assert response.status_code == 200
+        import os
+
+        assert "LLM_SYSPROMPT" not in os.environ
+        text = config_module.ENV_PATH.read_text(encoding="utf-8")
+        assert "#LLM_SYSPROMPT=" in text
+        # An unset LLM_SYSPROMPT is reported back as the built-in default.
+        assert response.json()["sysprompt"] == DEFAULT_LLM_SYSPROMPT
 
     def test_save_invalid_value_returns_422(self, client):
         from src import config as config_module

@@ -92,6 +92,8 @@ class TestStreamChat:
         assert done["tokens"] == 9  # completion usage counts reasoning tokens
 
     def test_prepends_system_prompt(self, monkeypatch):
+        from src.core.models import DEFAULT_LLM_SYSPROMPT
+
         captured = {}
 
         def fake_completion(**kwargs):
@@ -104,7 +106,24 @@ class TestStreamChat:
         )
         assert captured["messages"][0] == {
             "role": "system",
-            "content": chat_core.CHAT_SYSTEM_PROMPT,
+            "content": DEFAULT_LLM_SYSPROMPT,
+        }
+
+    def test_configured_sysprompt_is_prepended(self, monkeypatch):
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return iter([])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
+            sysprompt="Answer concisely.",
+        )
+        assert captured["messages"][0] == {
+            "role": "system",
+            "content": "Answer concisely.",
         }
 
     def test_existing_system_prompt_kept(self, monkeypatch):
@@ -198,7 +217,7 @@ def _events(body: str):
 class TestChatEndpoint:
     def test_happy_path_streams_frames(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none"):
+                 api_key="none", sysprompt=None):
             emit({"event": "token", "text": "Hel"})
             emit({"event": "token", "text": "lo"})
             emit({"event": "done", "took": 1.0, "ttft": 0.1, "tokens": 3,
@@ -217,7 +236,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none"):
+                 api_key="none", sysprompt=None):
             seen["model"] = model
             seen["server_url"] = server_url
             seen["messages"] = messages
@@ -241,7 +260,7 @@ class TestChatEndpoint:
 
     def test_forwards_configured_api_key(self, monkeypatch, tmp_path):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none"):
+                 api_key="none", sysprompt=None):
             emit({"api_key_seen": api_key, "event": "done", "took": 0.0,
                   "ttft": 0.0, "tokens": 0, "tokensEstimated": False})
 
@@ -267,7 +286,7 @@ class TestChatEndpoint:
 
     def test_error_event_terminates_stream(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none"):
+                 api_key="none", sysprompt=None):
             emit({"event": "error", "message": "boom"})
 
         monkeypatch.setattr(routes, "stream_chat", fake)

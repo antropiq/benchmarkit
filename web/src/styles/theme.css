@@ -789,7 +789,14 @@ body {
    inner <article> (already centered, capped at calc(100vh - 2rem), scrollable).
    Only nudge Pico's defaults here — never size the dialog element itself. */
 .settings-dialog > article {
-  max-width: 640px;
+  /* Fixed card size so switching sections never resizes the dialog; the
+     editor column scrolls instead. Clamped to the viewport on small screens. */
+  width: 900px;
+  height: 600px;
+  max-width: 94vw;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--bi-border);
   border-radius: var(--bi-radius-lg);
   background-color: var(--bi-surface);
@@ -805,11 +812,88 @@ body {
   margin-bottom: var(--bi-space-2);
 }
 
-.settings-form fieldset {
-  border: 1px solid var(--bi-border);
-  border-radius: var(--bi-radius-lg);
-  padding: 0.75rem var(--bi-space-2) var(--bi-space-1);
+/* Two-column body: section list (1/4) beside the section editor (3/4).
+   Fills the fixed card height; the editor scrolls, the nav stays put. */
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.settings-body {
+  display: grid;
+  grid-template-columns: 1fr 3fr;
+  gap: var(--bi-space-3);
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
   margin-bottom: var(--bi-space-2);
+}
+
+.settings-nav {
+  align-self: start;
+}
+
+.settings-editor {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.settings-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  text-align: left;
+}
+
+.settings-nav li {
+  width: 100%;
+}
+
+.settings-nav button {
+  width: 100%;
+  margin: 0;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--pico-border-radius);
+  background-color: transparent;
+  /* Pico's button rules redefine --pico-color on buttons (see .tab-btn
+     note); use the theme token instead. */
+  color: var(--bi-icon);
+  font-size: 0.9rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav button:hover {
+  background-color: var(--bi-surface-2);
+}
+
+.settings-nav button.active {
+  background-color: var(--bi-surface-2);
+  border-color: var(--bi-border);
+  color: var(--pico-primary);
+  font-weight: 600;
+}
+
+.settings-editor > section > label:first-of-type,
+.settings-editor > section > .settings-grid {
+  margin-top: 0;
+}
+
+.settings-section-title {
+  margin: 0 0 var(--bi-space-1);
+  font-size: 1rem;
+}
+
+.settings-editor textarea {
+  resize: vertical;
+  min-height: 5rem;
 }
 
 .settings-grid {
@@ -867,6 +951,21 @@ body {
   width: auto;
   margin: 0;
   padding-inline: 1.25rem;
+}
+
+@media (max-width: 640px) {
+  .settings-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-nav ul {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .settings-nav button {
+    width: auto;
+  }
 }
 
 @media (max-width: 560px) {

@@ -39,6 +39,7 @@ def patch_llm(monkeypatch, events: List[Any], warmup=None):
         sampling=None,
         cancel_event=None,
         api_key="none",
+        sysprompt=None,
     ):
         return LLMResult(
             text="answer",

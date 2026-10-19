@@ -67,6 +67,7 @@ class SettingsIn(SettingsFieldsMixin):
     serverUrl: str = ""
     apiKey: str = ""
     endpoint: str = ""
+    sysprompt: str = ""
     temp: str = ""
     topP: str = ""
     topK: str = ""
@@ -126,6 +127,7 @@ SETTINGS_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "SERVER_URL",
     "apiKey": "SERVER_URL_API_KEY",
     "endpoint": "ENDPOINT",
+    "sysprompt": "LLM_SYSPROMPT",
     "temp": "TEMP",
     "topP": "TOP_P",
     "topK": "TOP_K",
@@ -387,6 +389,7 @@ def build_router(state: RunState) -> APIRouter:
                     config.to_kwargs(),
                     cancel_event,
                     config.apiKey or "none",
+                    config.sysprompt,
                 )
             except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
                 emit({"event": "error", "message": str(exc)})

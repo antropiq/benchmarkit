@@ -227,3 +227,13 @@ class TestFromEnv:
     def test_api_keys_default_to_empty(self):
         cfg = EndpointsConfig.from_env({"ENDPOINT": "m"})
         assert cfg.apiKey == ""
+
+    def test_llm_sysprompt_read_from_env(self):
+        cfg = EndpointsConfig.from_env({"LLM_SYSPROMPT": "Answer concisely."})
+        assert cfg.sysprompt == "Answer concisely."
+
+    def test_llm_sysprompt_defaults_when_unset_or_blank(self):
+        from src.core.models import DEFAULT_LLM_SYSPROMPT
+
+        assert EndpointsConfig.from_env({"ENDPOINT": "m"}).sysprompt == DEFAULT_LLM_SYSPROMPT
+        assert EndpointsConfig.from_env({"LLM_SYSPROMPT": "  "}).sysprompt == DEFAULT_LLM_SYSPROMPT
