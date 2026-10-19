@@ -93,6 +93,7 @@ def call_llm_and_stream(
     emit: Emit,
     sampling: Optional[Dict] = None,
     cancel_event: Optional[threading.Event] = None,
+    api_key: str = "none",
 ) -> LLMResult:
     """Make LLM call, stream the answer as ``token`` events, return results.
 
@@ -120,7 +121,7 @@ def call_llm_and_stream(
         )
         response_generator = completion(
             model=f"openai/{model_name}",
-            api_key="none",
+            api_key=api_key,
             messages=messages,
             api_base=server_url,
             stream=True,
@@ -213,6 +214,7 @@ def warmup_model(
     model_name: str,
     server_url: str,
     cancel_event: Optional[threading.Event] = None,
+    api_key: str = "none",
 ) -> None:
     """Best-effort request that forces the server to load ``model_name``.
 
@@ -225,7 +227,7 @@ def warmup_model(
     try:
         completion(
             model=f"openai/{model_name}",
-            api_key="none",
+            api_key=api_key,
             messages=[{"role": "user", "content": "ping"}],
             api_base=server_url,
             max_tokens=1,
@@ -263,7 +265,7 @@ def verify_response(
         ]
         v_resp = completion(
             model=f"openai/{verifier.endpoint}",
-            api_key="none",
+            api_key=verifier.apiKey or "none",
             messages=messages,
             api_base=verifier.serverUrl,
         )

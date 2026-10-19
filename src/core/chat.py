@@ -25,6 +25,7 @@ def stream_chat(
     emit: Emit,
     sampling: Optional[Dict[str, Any]] = None,
     cancel_event: Optional[threading.Event] = None,
+    api_key: str = "none",
 ) -> None:
     """Stream one chat reply, emitting ``token`` / ``reasoning`` / ``done``.
 
@@ -44,7 +45,7 @@ def stream_chat(
     try:
         response_generator = completion(
             model=f"openai/{model_name}",
-            api_key="none",
+            api_key=api_key,
             messages=messages,
             api_base=server_url,
             stream=True,

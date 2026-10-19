@@ -24,6 +24,7 @@ class VerifierAgent(BaseModel):
     sysprompt: str = ""
     serverUrl: str = ""
     endpoint: str = ""
+    apiKey: str = ""
 
 
 class SamplingParams(BaseModel):
@@ -63,6 +64,7 @@ class EndpointsConfig(SamplingParams):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     serverUrl: str = ""
+    apiKey: str = ""
     endpoint: Optional[Union[str, List[str]]] = None
     endpoints: Optional[Union[str, List[str]]] = None
     verifierAgent: Optional[VerifierAgent] = None
@@ -81,11 +83,11 @@ class EndpointsConfig(SamplingParams):
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "EndpointsConfig":
         """Build the configuration from environment variables.
 
-        Recognized keys: ``SERVER_URL``, ``ENDPOINT``, ``ENDPOINTS``
-        (comma-separated), ``TEMP``, ``TOP_P``, ``TOP_K``, ``MIN_P``,
-        ``REPEAT_PENALTY``, ``PRESENCE_PENALTY``, ``REASONING`` and the
-        ``VERIFIER_AGENT_*`` block (``SYSPROMPT``, ``SERVERURL``,
-        ``ENDPOINT``).
+        Recognized keys: ``SERVER_URL``, ``SERVER_URL_API_KEY``,
+        ``ENDPOINT``, ``ENDPOINTS`` (comma-separated), ``TEMP``, ``TOP_P``,
+        ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``, ``PRESENCE_PENALTY``,
+        ``REASONING`` and the ``VERIFIER_AGENT_*`` block (``SYSPROMPT``,
+        ``SERVERURL``, ``SERVERURL_API_KEY``, ``ENDPOINT``).
         """
         source: Mapping[str, str] = os.environ if env is None else env
 
@@ -98,6 +100,7 @@ class EndpointsConfig(SamplingParams):
         endpoints = get("ENDPOINTS")
         data: Dict[str, Any] = {
             "serverUrl": get("SERVER_URL") or "",
+            "apiKey": get("SERVER_URL_API_KEY") or "",
             "endpoint": get("ENDPOINT"),
             "endpoints": [e.strip() for e in endpoints.split(",")] if endpoints else None,
             "temp": get("TEMP"),
@@ -111,6 +114,7 @@ class EndpointsConfig(SamplingParams):
         verifier = {
             "sysprompt": get("VERIFIER_AGENT_SYSPROMPT") or "",
             "serverUrl": get("VERIFIER_AGENT_SERVERURL") or "",
+            "apiKey": get("VERIFIER_AGENT_SERVERURL_API_KEY") or "",
             "endpoint": get("VERIFIER_AGENT_ENDPOINT") or "",
         }
         if any(verifier.values()):

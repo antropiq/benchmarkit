@@ -234,6 +234,57 @@ class TestExtractUsage:
         assert _extract_usage({"usage": {}}) is None
 
 
+class TestCallLlmApiKey:
+    def _captured_kwargs(self, monkeypatch, **call_kwargs):
+        calls = []
+        monkeypatch.setattr(
+            "src.core.llm.completion",
+            lambda **kwargs: calls.append(kwargs) or iter([]),
+        )
+        events = []
+        call_llm_and_stream(
+            "m", "http://server:8080/v1",
+            {"uuid": "u", "question": "q", "expected": "e"}, events.append,
+            **call_kwargs,
+        )
+        assert len(calls) == 1
+        return calls[0]
+
+    def test_defaults_to_none_api_key(self, monkeypatch):
+        assert self._captured_kwargs(monkeypatch)["api_key"] == "none"
+
+    def test_uses_configured_api_key(self, monkeypatch):
+        kwargs = self._captured_kwargs(monkeypatch, api_key="sk-42")
+        assert kwargs["api_key"] == "sk-42"
+
+
+class TestVerifyResponseApiKey:
+    def _verify(self, monkeypatch, api_key):
+        from src.core.llm import verify_response
+        from src.core.models import VerifierAgent
+
+        calls = []
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            return {"choices": [{"message": {"content": "true"}}]}
+
+        monkeypatch.setattr("src.core.llm.completion", fake_completion)
+        verifier = VerifierAgent(endpoint="judge", serverUrl="http://v:8080/v1",
+                                 apiKey=api_key)
+        events = []
+        ok = verify_response(verifier, {"question": "q", "expected": "e"}, "a",
+                             events.append)
+        assert ok is True
+        return calls[0]
+
+    def test_uses_verifier_api_key(self, monkeypatch):
+        assert self._verify(monkeypatch, "sk-judge")["api_key"] == "sk-judge"
+
+    def test_falls_back_to_none_api_key(self, monkeypatch):
+        assert self._verify(monkeypatch, "")["api_key"] == "none"
+
+
 class TestWarmupModel:
     def test_sends_minimal_non_streaming_request(self, monkeypatch):
         calls = []
@@ -252,6 +303,22 @@ class TestWarmupModel:
         assert kwargs["max_tokens"] == 1
         assert "stream" not in kwargs
         assert "stream_options" not in kwargs
+
+    def test_uses_none_api_key_by_default(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "src.core.llm.completion", lambda **kwargs: calls.append(kwargs)
+        )
+        warmup_model("my-model", "http://server:8080/v1")
+        assert calls[0]["api_key"] == "none"
+
+    def test_passes_configured_api_key(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "src.core.llm.completion", lambda **kwargs: calls.append(kwargs)
+        )
+        warmup_model("my-model", "http://server:8080/v1", api_key="sk-42")
+        assert calls[0]["api_key"] == "sk-42"
 
     def test_swallows_errors(self, monkeypatch):
         def boom(**kwargs):

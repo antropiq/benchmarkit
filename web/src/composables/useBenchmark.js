@@ -413,6 +413,7 @@ export function useBenchmark() {
   const MODEL_FIELDS = {
     benchmark: {
       serverUrl: () => state.settings?.serverUrl,
+      apiKey: () => state.settings?.apiKey,
       current: () => state.settings?.endpoint,
       setCurrent: (value) => {
         state.settings.endpoint = value
@@ -426,6 +427,7 @@ export function useBenchmark() {
       // benchmark server URL.
       serverUrl: () =>
         state.settings?.verifier?.serverUrl || state.settings?.serverUrl,
+      apiKey: () => state.settings?.verifier?.apiKey,
       current: () => state.settings?.verifier?.endpoint,
       setCurrent: (value) => {
         state.settings.verifier.endpoint = value
@@ -452,7 +454,10 @@ export function useBenchmark() {
     // Wipe the previous server's models so a refresh never shows stale options.
     state[fields.models] = []
     try {
-      const res = await fetch(`/api/models?serverUrl=${encodeURIComponent(serverUrl)}`)
+      let url = `/api/models?serverUrl=${encodeURIComponent(serverUrl)}`
+      const apiKey = (fields.apiKey() || '').trim()
+      if (apiKey) url += `&apiKey=${encodeURIComponent(apiKey)}`
+      const res = await fetch(url)
       const body = await res.json().catch(() => null)
       if (!res.ok) {
         state[fields.error] = describeError(

@@ -197,7 +197,8 @@ def _events(body: str):
 
 class TestChatEndpoint:
     def test_happy_path_streams_frames(self, client, monkeypatch):
-        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None):
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none"):
             emit({"event": "token", "text": "Hel"})
             emit({"event": "token", "text": "lo"})
             emit({"event": "done", "took": 1.0, "ttft": 0.1, "tokens": 3,
@@ -215,10 +216,12 @@ class TestChatEndpoint:
     def test_uses_first_configured_model_and_server(self, client, monkeypatch):
         seen = {}
 
-        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None):
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none"):
             seen["model"] = model
             seen["server_url"] = server_url
             seen["messages"] = messages
+            seen["api_key"] = api_key
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
 
@@ -233,10 +236,38 @@ class TestChatEndpoint:
         )
         assert seen["model"] == "model-a"
         assert seen["server_url"] == "http://localhost:8080/v1"
+        assert seen["api_key"] == "none"
         assert [m["role"] for m in seen["messages"]] == ["user", "assistant", "user"]
 
+    def test_forwards_configured_api_key(self, monkeypatch, tmp_path):
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none"):
+            emit({"api_key_seen": api_key, "event": "done", "took": 0.0,
+                  "ttft": 0.0, "tokens": 0, "tokensEstimated": False})
+
+        app = create_app()
+        monkeypatch.setattr(
+            routes,
+            "load_endpoints_config",
+            lambda: (
+                EndpointsConfig(
+                    serverUrl="http://localhost:8080/v1",
+                    apiKey="sk-42",
+                    endpoint="model-a",
+                ),
+                None,
+            ),
+        )
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        with TestClient(app) as test_client:
+            response = test_client.post(
+                "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
+            )
+        assert '"api_key_seen": "sk-42"' in response.text
+
     def test_error_event_terminates_stream(self, client, monkeypatch):
-        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None):
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none"):
             emit({"event": "error", "message": "boom"})
 
         monkeypatch.setattr(routes, "stream_chat", fake)

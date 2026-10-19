@@ -45,7 +45,13 @@ def process_question(
     # from question_started until answer_done, then shows "Checking…" while
     # the verifier runs — so verification time is never counted.
     result = call_llm_and_stream(
-        model, config.serverUrl, question, emit, config.to_kwargs(), cancel_event
+        model,
+        config.serverUrl,
+        question,
+        emit,
+        config.to_kwargs(),
+        cancel_event,
+        api_key=config.apiKey or "none",
     )
     _check_cancelled(cancel_event)
     timing = {
@@ -121,7 +127,7 @@ def run_benchmark(
         # Load the model before the first question so neither the chronometer
         # (which shows "Starting…" until question_started) nor the first
         # question's ``took`` includes model-loading wait.
-        warmup_model(model, config.serverUrl, cancel_event)
+        warmup_model(model, config.serverUrl, cancel_event, api_key=config.apiKey or "none")
         _check_cancelled(cancel_event)
         for idx, question in enumerate(questions, 1):
             job.current_index += 1

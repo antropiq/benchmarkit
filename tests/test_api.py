@@ -211,6 +211,7 @@ class TestSettingsEndpoint:
     def _payload(**overrides):
         payload = {
             "serverUrl": "http://target:8080/v1",
+            "apiKey": "secret-key",
             "endpoint": "model-a",
             "temp": "0.2",
             "topP": "",
@@ -221,6 +222,7 @@ class TestSettingsEndpoint:
             "reasoning": "low",
             "verifier": {
                 "serverUrl": "http://judge:8080/v1",
+                "apiKey": "judge-key",
                 "endpoint": "judge",
                 "sysprompt": 'Say "true" or "false" only.',
             },
@@ -230,16 +232,26 @@ class TestSettingsEndpoint:
 
     def test_get_returns_env_values(self, client, monkeypatch):
         monkeypatch.setenv("SERVER_URL", "http://x/v1")
+        monkeypatch.setenv("SERVER_URL_API_KEY", "sk-target")
         monkeypatch.setenv("VERIFIER_AGENT_SYSPROMPT", "verify!")
+        monkeypatch.setenv("VERIFIER_AGENT_SERVERURL_API_KEY", "sk-judge")
         body = client.get("/api/settings").json()
         assert body["serverUrl"] == "http://x/v1"
+        assert body["apiKey"] == "sk-target"
         assert body["endpoint"] == ""
         assert body["verifier"]["sysprompt"] == "verify!"
+        assert body["verifier"]["apiKey"] == "sk-judge"
 
     def test_get_empty_when_nothing_set(self, client):
         body = client.get("/api/settings").json()
         assert body["serverUrl"] == ""
-        assert body["verifier"] == {"serverUrl": "", "endpoint": "", "sysprompt": ""}
+        assert body["apiKey"] == ""
+        assert body["verifier"] == {
+            "serverUrl": "",
+            "apiKey": "",
+            "endpoint": "",
+            "sysprompt": "",
+        }
 
     def test_save_writes_file_and_environ(self, client):
         from dotenv import dotenv_values
@@ -253,11 +265,15 @@ class TestSettingsEndpoint:
         import os
 
         assert os.environ["SERVER_URL"] == "http://target:8080/v1"
+        assert os.environ["SERVER_URL_API_KEY"] == "secret-key"
+        assert os.environ["VERIFIER_AGENT_SERVERURL_API_KEY"] == "judge-key"
         assert os.environ["REASONING"] == "low"
         assert "TOP_P" not in os.environ
 
         file_values = dotenv_values(config_module.ENV_PATH)
         assert file_values["SERVER_URL"] == "http://target:8080/v1"
+        assert file_values["SERVER_URL_API_KEY"] == "secret-key"
+        assert file_values["VERIFIER_AGENT_SERVERURL_API_KEY"] == "judge-key"
         # The quoted sysprompt must survive the .env round-trip verbatim.
         assert file_values["VERIFIER_AGENT_SYSPROMPT"] == 'Say "true" or "false" only.'
         assert file_values.get("TOP_P") is None
@@ -359,8 +375,9 @@ class TestModelsEndpoint:
         async def __aexit__(self, *exc):
             return False
 
-        async def get(self, url):
+        async def get(self, url, headers=None):
             self.captured["url"] = url
+            self.captured["headers"] = headers or {}
             self.response.raise_for_status()
             return self.response
 
@@ -382,6 +399,23 @@ class TestModelsEndpoint:
         ).json()
         assert body == {"models": ["a", "b"]}
         assert captured["url"] == "http://llm:8080/v1/models"
+        assert captured["headers"] == {}
+
+    def test_sends_authorization_header_with_api_key(self, client, monkeypatch):
+        captured = self._patch_httpx(monkeypatch, self._FakeResponse({"data": []}))
+        client.get(
+            "/api/models",
+            params={"serverUrl": "http://llm:8080/v1", "apiKey": "sk-42"},
+        )
+        assert captured["headers"] == {"Authorization": "Bearer sk-42"}
+
+    def test_blank_api_key_sends_no_header(self, client, monkeypatch):
+        captured = self._patch_httpx(monkeypatch, self._FakeResponse({"data": []}))
+        client.get(
+            "/api/models",
+            params={"serverUrl": "http://llm:8080/v1", "apiKey": "  "},
+        )
+        assert captured["headers"] == {}
 
     def test_appends_v1_models_for_base_url(self, client, monkeypatch):
         captured = self._patch_httpx(monkeypatch, self._FakeResponse({"data": []}))

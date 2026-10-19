@@ -26,12 +26,20 @@ def questions() -> List[Dict[str, Any]]:
 def patch_llm(monkeypatch, events: List[Any], warmup=None):
     """Replace the LLM entry points in ``bench`` with event-recording stubs."""
 
-    def fake_warmup(model, server_url, cancel_event=None):
+    def fake_warmup(model, server_url, cancel_event=None, api_key="none"):
         events.append(("warmup", model))
         if warmup is not None:
             warmup()
 
-    def fake_call(model, server_url, question, emit, sampling=None, cancel_event=None):
+    def fake_call(
+        model,
+        server_url,
+        question,
+        emit,
+        sampling=None,
+        cancel_event=None,
+        api_key="none",
+    ):
         return LLMResult(
             text="answer",
             took=1.5,

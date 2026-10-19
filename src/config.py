@@ -19,6 +19,7 @@ QUESTION_SET_DEFAULT = "legacy"
 # Managed .env keys, in the order they are written to the file.
 SETTING_KEYS: Tuple[str, ...] = (
     "SERVER_URL",
+    "SERVER_URL_API_KEY",
     "ENDPOINT",
     "TEMP",
     "TOP_P",
@@ -30,6 +31,7 @@ SETTING_KEYS: Tuple[str, ...] = (
     "QUESTION_SET",
     "VERIFIER_AGENT_SYSPROMPT",
     "VERIFIER_AGENT_SERVERURL",
+    "VERIFIER_AGENT_SERVERURL_API_KEY",
     "VERIFIER_AGENT_ENDPOINT",
 )
 
@@ -149,6 +151,7 @@ def _render_env(values: Dict[str, str]) -> str:
         "",
         "# Target LLM endpoint",
         line("SERVER_URL"),
+        line("SERVER_URL_API_KEY"),
         line("ENDPOINT"),
         "# Optional comma-separated list of models (ENDPOINT takes precedence)",
         "#ENDPOINTS=model-a,model-b",
@@ -166,6 +169,7 @@ def _render_env(values: Dict[str, str]) -> str:
         "# Verifier agent (optional)",
         line("VERIFIER_AGENT_SYSPROMPT"),
         line("VERIFIER_AGENT_SERVERURL"),
+        line("VERIFIER_AGENT_SERVERURL_API_KEY"),
         line("VERIFIER_AGENT_ENDPOINT"),
         "",
     ]

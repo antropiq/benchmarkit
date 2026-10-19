@@ -20,6 +20,7 @@ class TestVerifierAgent:
         assert v.sysprompt == ""
         assert v.serverUrl == ""
         assert v.endpoint == ""
+        assert v.apiKey == ""
 
 
 class TestSamplingParams:
@@ -208,3 +209,21 @@ class TestFromEnv:
     def test_invalid_reasoning_raises(self):
         with pytest.raises(ValidationError):
             EndpointsConfig.from_env({"REASONING": "sideways"})
+
+    def test_api_keys_read_from_env(self):
+        cfg = EndpointsConfig.from_env({
+            "SERVER_URL_API_KEY": "sk-target",
+            "VERIFIER_AGENT_SERVERURL_API_KEY": "sk-judge",
+            "VERIFIER_AGENT_ENDPOINT": "strata",
+        })
+        assert cfg.apiKey == "sk-target"
+        assert cfg.verifierAgent.apiKey == "sk-judge"
+
+    def test_verifier_created_from_key_only(self):
+        cfg = EndpointsConfig.from_env({"VERIFIER_AGENT_SERVERURL_API_KEY": "sk"})
+        assert cfg.verifierAgent is not None
+        assert cfg.verifierAgent.apiKey == "sk"
+
+    def test_api_keys_default_to_empty(self):
+        cfg = EndpointsConfig.from_env({"ENDPOINT": "m"})
+        assert cfg.apiKey == ""

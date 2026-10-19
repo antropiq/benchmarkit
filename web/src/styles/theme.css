@@ -818,6 +818,44 @@ body {
   column-gap: var(--bi-space-2);
 }
 
+/* Password input with an inline show/hide (eye) toggle. */
+.password-field {
+  position: relative;
+  display: block;
+}
+
+.password-field input {
+  padding-right: 2.75rem;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.5rem;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--pico-border-radius);
+  background: transparent;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+
+.password-toggle:hover {
+  color: var(--pico-color);
+  background-color: var(--bi-surface-2);
+}
+
+.password-toggle svg {
+  pointer-events: none;
+}
+
 .settings-actions {
   display: flex;
   justify-content: flex-end;

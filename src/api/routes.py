@@ -56,6 +56,7 @@ class VerifierSettingsIn(SettingsFieldsMixin):
     """Verifier agent settings as sent by the settings dialog."""
 
     serverUrl: str = ""
+    apiKey: str = ""
     endpoint: str = ""
     sysprompt: str = ""
 
@@ -64,6 +65,7 @@ class SettingsIn(SettingsFieldsMixin):
     """Benchmark settings as sent by the settings dialog (raw strings)."""
 
     serverUrl: str = ""
+    apiKey: str = ""
     endpoint: str = ""
     temp: str = ""
     topP: str = ""
@@ -122,6 +124,7 @@ _CHAT_TASKS: set = set()
 # Dialog field -> .env key, used for both directions of the settings API.
 SETTINGS_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "SERVER_URL",
+    "apiKey": "SERVER_URL_API_KEY",
     "endpoint": "ENDPOINT",
     "temp": "TEMP",
     "topP": "TOP_P",
@@ -133,6 +136,7 @@ SETTINGS_ENV_KEYS: Dict[str, str] = {
 }
 VERIFIER_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "VERIFIER_AGENT_SERVERURL",
+    "apiKey": "VERIFIER_AGENT_SERVERURL_API_KEY",
     "endpoint": "VERIFIER_AGENT_ENDPOINT",
     "sysprompt": "VERIFIER_AGENT_SYSPROMPT",
 }
@@ -320,7 +324,7 @@ def build_router(state: RunState) -> APIRouter:
         }
 
     @router.get("/models")
-    async def get_models(serverUrl: str = "") -> Dict[str, Any]:
+    async def get_models(serverUrl: str = "", apiKey: str = "") -> Dict[str, Any]:
         """List models exposed by an OpenAI-compatible server URL."""
         url = serverUrl.strip()
         if not url:
@@ -330,9 +334,12 @@ def build_router(state: RunState) -> APIRouter:
                 status_code=422, detail="Server URL must start with http:// or https://"
             )
         models_url = _models_url(url)
+        headers = {}
+        if apiKey.strip():
+            headers["Authorization"] = f"Bearer {apiKey.strip()}"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(models_url)
+                response = await client.get(models_url, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
@@ -379,6 +386,7 @@ def build_router(state: RunState) -> APIRouter:
                     emit,
                     config.to_kwargs(),
                     cancel_event,
+                    config.apiKey or "none",
                 )
             except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
                 emit({"event": "error", "message": str(exc)})
