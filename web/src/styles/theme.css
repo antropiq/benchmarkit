@@ -1045,6 +1045,42 @@ body {
   gap: 0.75rem;
 }
 
+/* Draggable separator between the chat output and the input row.
+   Thin pill on hover/focus/drag; row-resize cursor, touch-friendly. */
+.chat-resizer {
+  flex: 0 0 auto;
+  height: 10px;
+  margin: -3px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: row-resize;
+  touch-action: none;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.chat-resizer::before {
+  content: '';
+  width: 48px;
+  height: 3px;
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--pico-muted-color) 30%, transparent);
+  transition: background-color 120ms ease, width 120ms ease;
+}
+
+.chat-resizer:hover::before,
+.chat-resizer:focus-visible::before,
+.chat-resizer.dragging::before {
+  width: 72px;
+  background-color: var(--pico-primary);
+}
+
+.chat-resizer.dragging::before {
+  width: 96px;
+}
+
 .chat-textarea {
   flex: 1 1 auto;
   min-width: 0;

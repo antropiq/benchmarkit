@@ -4,21 +4,35 @@ import ChatInput from './ChatInput.vue'
 import MarkdownStream from './MarkdownStream.vue'
 import { useChat } from '../composables/useChat'
 import { useAutoScroll } from '../composables/useAutoScroll'
+import { useSplitter } from '../composables/useSplitter'
 
 const { state } = useChat()
 
+const shell = ref(null)
+const input = ref(null)
 const panel = ref(null)
 const contentVersion = computed(() =>
   state.messages.map((m) => `${m.role}:${m.raw.length}`).join(','),
 )
 const { onScroll } = useAutoScroll(panel, contentVersion)
+const {
+  dragging,
+  topStyle,
+  bottomStyle,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  onKeyDown,
+  onDoubleClick,
+} = useSplitter(shell, input)
 </script>
 
 <template>
-  <div class="chat-shell">
+  <div ref="shell" class="chat-shell">
     <div
       ref="panel"
       class="chat-output stream-panel"
+      :style="topStyle"
       aria-label="Chat conversation"
       @scroll.passive="onScroll"
     >
@@ -50,6 +64,21 @@ const { onScroll } = useAutoScroll(panel, contentVersion)
       </div>
     </div>
 
-    <ChatInput />
+    <div
+      class="chat-resizer"
+      :class="{ dragging }"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize the message input (drag, arrow keys, double-click to reset)"
+      tabindex="0"
+      @pointerdown="onPointerDown"
+      @pointermove="onPointerMove"
+      @pointerup="onPointerUp"
+      @pointercancel="onPointerUp"
+      @keydown="onKeyDown"
+      @dblclick="onDoubleClick"
+    ></div>
+
+    <ChatInput ref="input" :style="bottomStyle" />
   </div>
 </template>
