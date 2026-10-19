@@ -1055,8 +1055,6 @@ body {
 }
 
 .chat-send {
-  flex: 0 0 auto;
-  align-self: flex-end;
   margin: 0;
 }
 
@@ -1074,13 +1072,13 @@ body {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: flex-start;
   gap: 0.5rem;
 }
 
 .chat-side-panel .badge {
-  width: 7rem;
+  width: 100%;
   justify-content: center;
   white-space: nowrap;
   box-sizing: border-box;

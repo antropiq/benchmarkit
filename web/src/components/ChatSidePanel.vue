@@ -6,6 +6,13 @@ import {
   useChat,
 } from '../composables/useChat'
 
+const props = defineProps({
+  canSend: { type: Boolean, default: false },
+  streaming: { type: Boolean, default: false },
+})
+
+const emit = defineEmits(['send'])
+
 const { state, stop, reset } = useChat()
 
 const streamingMessage = computed(
@@ -74,14 +81,14 @@ const rate = computed(() => {
 
 const rateText = computed(() =>
   rate.value
-    ? `${rate.value.estimated ? '≈ ' : ''}${rate.value.value.toFixed(1)} tok/s`
-    : '— tok/s',
+    ? `${rate.value.estimated ? '≈ ' : ''}${rate.value.value.toFixed(1)} t/s`
+    : '— t/s',
 )
 
 const tokensText = computed(() =>
   totalTokens.value
-    ? `${tokensEstimated.value ? '≈ ' : ''}${totalTokens.value} tok`
-    : '— tok',
+    ? `${tokensEstimated.value ? '≈ ' : ''}${totalTokens.value} tokens`
+    : '— tokens',
 )
 
 const canCopy = computed(() => state.messages.length > 0)
@@ -181,6 +188,34 @@ function restart() {
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
           <path d="M3 3v5h5" />
+        </svg>
+      </button>
+      <button
+        v-if="!streaming"
+        class="icon-btn chat-send"
+        type="button"
+        :disabled="!canSend"
+        aria-label="Send message"
+        title="Send"
+        @click="emit('send')"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 2 11 13" />
+          <path d="M22 2 15 22l-4-9-9-4 20-7z" />
+        </svg>
+      </button>
+      <button
+        v-else
+        class="icon-btn chat-send chat-stop"
+        type="button"
+        aria-label="Stop generating"
+        title="Stop"
+        @click="stop"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="5" y="5" width="14" height="14" rx="2" />
         </svg>
       </button>
     </div>

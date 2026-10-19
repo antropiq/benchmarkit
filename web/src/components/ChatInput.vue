@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import ChatSidePanel from './ChatSidePanel.vue'
 import { useChat } from '../composables/useChat'
 
-const { state, send, stop } = useChat()
+const { state, send } = useChat()
 
 const text = ref('')
 
@@ -27,7 +27,11 @@ function onKeydown(event) {
 
 <template>
   <div class="chat-input">
-    <ChatSidePanel />
+    <ChatSidePanel
+      :can-send="canSend"
+      :streaming="streaming"
+      @send="submit"
+    />
     <textarea
       v-model="text"
       class="chat-textarea"
@@ -36,33 +40,5 @@ function onKeydown(event) {
       :aria-label="streaming ? 'Chat input (reply streaming)' : 'Chat input'"
       @keydown="onKeydown"
     ></textarea>
-    <button
-      v-if="!streaming"
-      class="icon-btn chat-send"
-      type="button"
-      :disabled="!canSend"
-      aria-label="Send message"
-      title="Send"
-      @click="submit"
-    >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M22 2 11 13" />
-        <path d="M22 2 15 22l-4-9-9-4 20-7z" />
-      </svg>
-    </button>
-    <button
-      v-else
-      class="icon-btn chat-send chat-stop"
-      type="button"
-      aria-label="Stop generating"
-      title="Stop"
-      @click="stop"
-    >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-        stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="5" y="5" width="14" height="14" rx="2" />
-      </svg>
-    </button>
   </div>
 </template>

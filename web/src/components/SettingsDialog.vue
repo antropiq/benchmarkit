@@ -158,7 +158,7 @@ function onNativeClose() {
           </section>
 
           <section v-show="activeSection === 'sampling'">
-            <h3 class="settings-section-title">Sampling params</h3>
+            <h3 class="settings-section-title">Sampling params for LLM</h3>
             <div class="settings-grid">
               <label>
                 Temperature
