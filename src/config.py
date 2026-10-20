@@ -165,8 +165,6 @@ def _render_env(values: Dict[str, str]) -> str:
         line("SERVER_URL"),
         line("SERVER_URL_API_KEY"),
         line("ENDPOINT"),
-        "# Optional comma-separated list of models (ENDPOINT takes precedence)",
-        "#ENDPOINTS=model-a,model-b",
         "# Set to 1 when the model accepts image input (enables Chat image attach)",
         line("SUPPORTS_VISION"),
         line("LLM_SYSPROMPT"),

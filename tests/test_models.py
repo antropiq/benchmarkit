@@ -128,29 +128,10 @@ class TestEndpointsConfig:
         cfg = EndpointsConfig.model_validate({"endpoint": "my-model"})
         assert cfg.model_list() == ["my-model"]
 
-    def test_single_endpoint_preferred_over_legacy_list(self):
-        cfg = EndpointsConfig.model_validate({
-            "endpoint": "new",
-            "endpoints": ["old-a", "old-b"],
-        })
-        assert cfg.model_list() == ["new"]
-
-    def test_legacy_endpoints_list(self):
-        cfg = EndpointsConfig.model_validate({"endpoints": ["a", "b"]})
-        assert cfg.model_list() == ["a", "b"]
-
-    def test_legacy_endpoints_string(self):
-        cfg = EndpointsConfig.model_validate({"endpoints": "a"})
-        assert cfg.model_list() == ["a"]
-
     def test_blank_endpoint_ignored(self):
         cfg = EndpointsConfig.model_validate({"endpoint": "  "})
         assert cfg.endpoint is None
         assert cfg.model_list() == []
-
-    def test_blank_entries_stripped_from_list(self):
-        cfg = EndpointsConfig.model_validate({"endpoints": ["a", " ", "b"]})
-        assert cfg.model_list() == ["a", "b"]
 
     def test_empty_config(self):
         cfg = EndpointsConfig.model_validate({})
@@ -197,14 +178,6 @@ class TestFromEnv:
         assert cfg.model_list() == []
         assert cfg.serverUrl == ""
         assert cfg.verifierAgent is None
-
-    def test_env_endpoints_list(self):
-        cfg = EndpointsConfig.from_env({"ENDPOINTS": "a, b ,c"})
-        assert cfg.model_list() == ["a", "b", "c"]
-
-    def test_endpoint_takes_precedence_over_endpoints(self):
-        cfg = EndpointsConfig.from_env({"ENDPOINT": "x", "ENDPOINTS": "a,b"})
-        assert cfg.model_list() == ["x"]
 
     def test_invalid_reasoning_raises(self):
         with pytest.raises(ValidationError):

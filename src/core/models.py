@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, List, Literal, Mapping, Optional, Union
+from typing import Any, Dict, List, Literal, Mapping, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -67,20 +67,16 @@ class EndpointsConfig(SamplingParams):
 
     serverUrl: str = ""
     apiKey: str = ""
-    endpoint: Optional[Union[str, List[str]]] = None
-    endpoints: Optional[Union[str, List[str]]] = None
+    endpoint: Optional[str] = None
     sysprompt: str = DEFAULT_LLM_SYSPROMPT
     supports_vision: bool = False
     verifierAgent: Optional[VerifierAgent] = None
 
-    @field_validator("endpoint", "endpoints", mode="before")
+    @field_validator("endpoint", mode="before")
     @classmethod
-    def _strip_endpoints(cls, value: Any) -> Any:
+    def _strip_endpoint(cls, value: Any) -> Any:
         if isinstance(value, str):
             return value.strip() or None
-        if isinstance(value, list):
-            cleaned = [e.strip() for e in value if isinstance(e, str) and e.strip()]
-            return cleaned or None
         return value
 
     @classmethod
@@ -88,7 +84,7 @@ class EndpointsConfig(SamplingParams):
         """Build the configuration from environment variables.
 
         Recognized keys: ``SERVER_URL``, ``SERVER_URL_API_KEY``,
-        ``ENDPOINT``, ``ENDPOINTS`` (comma-separated), ``LLM_SYSPROMPT``,
+        ``ENDPOINT``, ``LLM_SYSPROMPT``,
         ``TEMP``, ``TOP_P``, ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``,
         ``PRESENCE_PENALTY``, ``REASONING``, ``SUPPORTS_VISION`` and the
         ``VERIFIER_AGENT_*`` block (``SYSPROMPT``, ``SERVERURL``,
@@ -102,12 +98,10 @@ class EndpointsConfig(SamplingParams):
                 value = value.strip()
             return value or None
 
-        endpoints = get("ENDPOINTS")
         data: Dict[str, Any] = {
             "serverUrl": get("SERVER_URL") or "",
             "apiKey": get("SERVER_URL_API_KEY") or "",
             "endpoint": get("ENDPOINT"),
-            "endpoints": [e.strip() for e in endpoints.split(",")] if endpoints else None,
             "sysprompt": get("LLM_SYSPROMPT") or DEFAULT_LLM_SYSPROMPT,
             "temp": get("TEMP"),
             "top-p": get("TOP_P"),
@@ -130,14 +124,5 @@ class EndpointsConfig(SamplingParams):
         return cls.model_validate(data)
 
     def model_list(self) -> List[str]:
-        """Return the tested model names.
-
-        Supports the single ``endpoint`` value and the comma-separated
-        ``endpoints`` list; ``endpoint`` takes precedence.
-        """
-        for value in (self.endpoint, self.endpoints):
-            if isinstance(value, str):
-                return [value]
-            if isinstance(value, list) and value:
-                return list(value)
-        return []
+        """Return the tested model names."""
+        return [self.endpoint] if self.endpoint else []

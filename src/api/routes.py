@@ -559,7 +559,7 @@ def build_router(state: RunState) -> APIRouter:
         config = _load_config()
         models = config.model_list()
         if not models:
-            raise HTTPException(status_code=400, detail="No models configured (ENDPOINT/ENDPOINTS)")
+            raise HTTPException(status_code=400, detail="No models configured (ENDPOINT)")
 
         messages = [m.payload() for m in body.messages]
         loop = asyncio.get_running_loop()
@@ -630,7 +630,7 @@ def build_router(state: RunState) -> APIRouter:
         questions = load_questions()
         models = config.model_list()
         if not models:
-            raise HTTPException(status_code=400, detail="No models configured (ENDPOINT/ENDPOINTS)")
+            raise HTTPException(status_code=400, detail="No models configured (ENDPOINT)")
         if not questions:
             raise HTTPException(status_code=400, detail="No questions loaded")
         if state.status == "running":

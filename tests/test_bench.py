@@ -73,9 +73,11 @@ class TestWarmupOrdering:
         assert events[2]["event"] == "question_started"
 
     def test_warmup_once_per_model(self, monkeypatch, job, questions):
-        config = EndpointsConfig(
-            serverUrl="http://server:8080/v1", endpoints=["m1", "m2"]
-        )
+        class TwoModelConfig(EndpointsConfig):
+            def model_list(self):
+                return ["m1", "m2"]
+
+        config = TwoModelConfig(serverUrl="http://server:8080/v1", endpoint="m1")
         events: List[Any] = []
         patch_llm(monkeypatch, events)
 
