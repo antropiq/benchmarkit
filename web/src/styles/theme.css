@@ -1171,6 +1171,13 @@ body {
   overflow-wrap: break-word;
 }
 
+/* Live markdown preview of the composer draft: same typography as a sent
+   user bubble, dimmed with a dashed border until it becomes the message. */
+.chat-bubble--draft {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
 .chat-typing {
   animation: bi-pulse 1.4s ease-in-out infinite;
 }

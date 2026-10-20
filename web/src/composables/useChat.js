@@ -5,11 +5,43 @@ const state = reactive({
   messages: [], // { role, raw, html, streaming } in conversation order
   phase: 'idle', // idle | waiting | reasoning | answering
   error: null,
+  // Composer draft mirrored as rendered markdown so ChatView can preview the
+  // exact HTML that send() will attach to the user message (no re-parse).
+  draft: { raw: '', html: '', renderedRaw: '' },
 })
 
 let controller = null
 let renderScheduled = false
 let activeMessage = null
+let draftTimer = null
+
+function clearDraft() {
+  state.draft.raw = ''
+  state.draft.html = ''
+  state.draft.renderedRaw = ''
+}
+
+function setDraft(text) {
+  state.draft.raw = text
+  if (draftTimer) clearTimeout(draftTimer)
+  draftTimer = setTimeout(() => {
+    draftTimer = null
+    const trimmed = state.draft.raw.trim()
+    state.draft.renderedRaw = trimmed
+    state.draft.html = trimmed ? renderMarkdown(trimmed) : ''
+  }, 200)
+}
+
+function flushDraftHtml(trimmed) {
+  if (draftTimer) {
+    clearTimeout(draftTimer)
+    draftTimer = null
+  }
+  if (state.draft.renderedRaw === trimmed && state.draft.html) {
+    return state.draft.html
+  }
+  return renderMarkdown(trimmed)
+}
 
 function scheduleMarkdownRender() {
   if (renderScheduled) return
@@ -156,15 +188,19 @@ async function readStream(response, assistant) {
 }
 
 export function useChat() {
-  async function send(text) {
-    const trimmed = (text ?? '').trim()
+  async function send() {
+    const trimmed = state.draft.raw.trim()
     if (!trimmed || state.phase !== 'idle') return
 
     state.error = null
+    // Reuse the preview HTML rendered by setDraft; re-render only if Enter
+    // beat the debounce (or nothing was ever rendered for this text).
+    const html = flushDraftHtml(trimmed)
+    clearDraft()
     state.messages.push({
       role: 'user',
       raw: trimmed,
-      html: renderMarkdown(trimmed),
+      html,
       streaming: false,
     })
     const history = state.messages.map(({ role, raw }) => ({ role, content: raw }))
@@ -224,5 +260,5 @@ export function useChat() {
     state.error = null
   }
 
-  return { state, send, stop, reset }
+  return { state, send, stop, reset, setDraft }
 }

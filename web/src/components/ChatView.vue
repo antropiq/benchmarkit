@@ -13,7 +13,10 @@ const shell = ref(null)
 const input = ref(null)
 const panel = ref(null)
 const contentVersion = computed(() =>
-  state.messages.map((m) => `${m.role}:${m.raw.length}`).join(','),
+  state.messages
+    .map((m) => `${m.role}:${m.raw.length}`)
+    .concat(`draft:${state.draft.raw.length}`)
+    .join(','),
 )
 const { onScroll } = useAutoScroll(panel, contentVersion)
 const {
@@ -53,8 +56,15 @@ const {
             </p>
           </article>
         </template>
+        <div
+          v-if="state.draft.html"
+          class="chat-bubble chat-bubble--draft"
+          aria-label="Message preview (not sent yet)"
+        >
+          <MarkdownStream :html="state.draft.html" />
+        </div>
         <p v-if="state.error" class="error-line" role="alert">{{ state.error }}</p>
-        <div v-if="!state.messages.length" class="stream-empty">
+        <div v-if="!state.messages.length && !state.draft.html" class="stream-empty">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

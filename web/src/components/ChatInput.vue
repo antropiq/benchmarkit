@@ -1,19 +1,18 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import ChatSidePanel from './ChatSidePanel.vue'
 import { useChat } from '../composables/useChat'
 
-const { state, send } = useChat()
-
-const text = ref('')
+const { state, send, setDraft } = useChat()
 
 const streaming = computed(() => state.phase !== 'idle')
-const canSend = computed(() => !streaming.value && text.value.trim().length > 0)
+const canSend = computed(
+  () => !streaming.value && state.draft.raw.trim().length > 0,
+)
 
 function submit() {
   if (!canSend.value) return
-  send(text.value)
-  text.value = ''
+  send()
 }
 
 function onKeydown(event) {
@@ -33,11 +32,12 @@ function onKeydown(event) {
       @send="submit"
     />
     <textarea
-      v-model="text"
+      :value="state.draft.raw"
       class="chat-textarea"
       rows="3"
       placeholder="Ask the model something… (Enter to send, Shift+Enter for a new line)"
       :aria-label="streaming ? 'Chat input (reply streaming)' : 'Chat input'"
+      @input="setDraft($event.target.value)"
       @keydown="onKeydown"
     ></textarea>
   </div>
