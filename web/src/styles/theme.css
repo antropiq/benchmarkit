@@ -1160,6 +1160,31 @@ body {
   fill: var(--bi-danger);
 }
 
+/* Right-aligned row holding the edit pencil to the left of a user bubble. */
+.chat-user-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+/* Inside the row the cross axis is vertical: align-self flex-end (the column
+   rule below) would bottom-pin the bubble next to the button. */
+.chat-user-row .chat-bubble {
+  align-self: auto;
+}
+
+.chat-edit-btn {
+  flex: none;
+  opacity: 0.45;
+}
+
+.chat-edit-btn:hover,
+.chat-edit-btn:focus-visible {
+  opacity: 1;
+}
+
 .chat-bubble {
   align-self: flex-end;
   max-width: min(75%, 46rem);

@@ -19,7 +19,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from litellm import completion
 
-from src.core.llm import Emit, _extract_reasoning, _extract_usage, safe_get_choice_content
+from src.core.llm import (
+    Emit,
+    _extract_reasoning,
+    _extract_usage,
+    close_llm_stream,
+    safe_get_choice_content,
+)
 from src.core.models import DEFAULT_LLM_SYSPROMPT
 from src.core.utils import estimate_completion_tokens
 
@@ -144,9 +150,7 @@ def stream_chat(
         try:
             for chunk in response_generator:
                 if cancel_event is not None and cancel_event.is_set():
-                    close = getattr(response_generator, "close", None)
-                    if close:
-                        close()
+                    close_llm_stream(response_generator)
                     return
                 usage = _extract_usage(chunk)
                 if usage is not None:

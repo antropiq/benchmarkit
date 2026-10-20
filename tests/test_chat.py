@@ -173,6 +173,52 @@ class TestStreamChat:
         assert events == []
         assert closed.is_set()
 
+    def test_cancel_closes_underlying_completion_stream(self, monkeypatch):
+        # litellm >= 1.105 CustomStreamWrapper has no sync close(): the raw
+        # provider stream on .completion_stream must be the one that closes,
+        # otherwise the server keeps generating into a dead connection.
+        cancel = threading.Event()
+        cancel.set()
+        closed = threading.Event()
+
+        class InnerStream:
+            def close(self):
+                closed.set()
+
+        class Wrapper:
+            completion_stream = InnerStream()
+
+            def __iter__(self):
+                yield content_chunk("x")
+
+        monkeypatch.setattr("src.core.chat.completion", lambda **kwargs: Wrapper())
+        events = []
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}], "m", "http://s", events.append,
+            cancel_event=cancel,
+        )
+        assert events == []
+        assert closed.is_set()
+
+    def test_cancel_close_errors_are_swallowed(self, monkeypatch):
+        cancel = threading.Event()
+        cancel.set()
+
+        class Gen:
+            def __iter__(self):
+                yield content_chunk("x")
+
+            def close(self):
+                raise RuntimeError("socket already gone")
+
+        monkeypatch.setattr("src.core.chat.completion", lambda **kwargs: Gen())
+        events = []
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}], "m", "http://s", events.append,
+            cancel_event=cancel,
+        )
+        assert events == []
+
     def test_estimates_tokens_without_usage(self, monkeypatch):
         events = self._run(monkeypatch, [content_chunk("hello world!!!")])
         done = events[-1]

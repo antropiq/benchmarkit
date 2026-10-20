@@ -4,9 +4,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.core.llm import (
+    RunCancelled,
     _extract_total_tokens,
     _extract_usage,
     call_llm_and_stream,
+    close_llm_stream,
     safe_get_choice_content,
     warmup_model,
 )
@@ -143,6 +145,92 @@ class TestCallLlmAndStreamTiming:
         assert result.text == ""
         assert result.gen_duration == 1.0
         assert [e["event"] for e in events if e["event"] == "token"] == []
+
+
+class TestCloseLlmStream:
+    def test_none_generator_is_noop(self):
+        close_llm_stream(None)
+
+    def test_prefers_completion_stream_close(self):
+        # litellm >= 1.105 CustomStreamWrapper: no sync close() on the
+        # wrapper; the raw provider stream on .completion_stream must close.
+        closed = []
+
+        class InnerStream:
+            def close(self):
+                closed.append("inner")
+
+        class Wrapper:
+            completion_stream = InnerStream()
+
+        close_llm_stream(Wrapper())
+        assert closed == ["inner"]
+
+    def test_falls_back_to_generator_close(self):
+        closed = []
+
+        class Gen:
+            def close(self):
+                closed.append("gen")
+
+        close_llm_stream(Gen())
+        assert closed == ["gen"]
+
+    def test_swallows_close_errors(self):
+        class Gen:
+            def close(self):
+                raise RuntimeError("socket already gone")
+
+        close_llm_stream(Gen())
+
+    def test_missing_close_is_noop(self):
+        close_llm_stream(iter([]))
+
+
+class TestCallLlmCancellation:
+    def _run_cancelled(self, monkeypatch, gen):
+        cancel = threading.Event()
+        cancel.set()
+        monkeypatch.setattr("src.core.llm.completion", lambda **kwargs: gen)
+        events = []
+        with pytest.raises(RunCancelled):
+            call_llm_and_stream(
+                "m", "http://server:8080/v1",
+                {"uuid": "u", "question": "q", "expected": "e"}, events.append,
+                cancel_event=cancel,
+            )
+        return events
+
+    def test_cancel_closes_underlying_completion_stream(self, monkeypatch):
+        closed = threading.Event()
+
+        class InnerStream:
+            def close(self):
+                closed.set()
+
+        class Wrapper:
+            completion_stream = InnerStream()
+
+            def __iter__(self):
+                yield content_chunk("x")
+
+        events = self._run_cancelled(monkeypatch, Wrapper())
+        assert events == []
+        assert closed.is_set()
+
+    def test_cancel_closes_generator_with_direct_close(self, monkeypatch):
+        closed = threading.Event()
+
+        class Gen:
+            def __iter__(self):
+                yield content_chunk("x")
+
+            def close(self):
+                closed.set()
+
+        events = self._run_cancelled(monkeypatch, Gen())
+        assert events == []
+        assert closed.is_set()
 
 
 class TestSafeGetChoiceContent:

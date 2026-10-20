@@ -7,7 +7,14 @@ import { useChat } from '../composables/useChat'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { useSplitter } from '../composables/useSplitter'
 
-const { state } = useChat()
+const { state, editLast } = useChat()
+
+const lastUserIndex = computed(() => {
+  for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+    if (state.messages[i].role === 'user') return i
+  }
+  return -1
+})
 
 const shell = ref(null)
 const input = ref(null)
@@ -42,8 +49,23 @@ const {
         @scroll.passive="onScroll"
       >
         <template v-for="(message, i) in state.messages" :key="i">
-          <div v-if="message.role === 'user'" class="chat-bubble">
-            <MarkdownStream :html="message.html" />
+          <div v-if="message.role === 'user'" class="chat-user-row">
+            <button
+              v-if="i === lastUserIndex && state.phase === 'idle'"
+              class="icon-btn chat-edit-btn"
+              type="button"
+              aria-label="Edit and resend"
+              title="Edit and resend"
+              @click="editLast"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+              </svg>
+            </button>
+            <div class="chat-bubble">
+              <MarkdownStream :html="message.html" />
+            </div>
           </div>
           <article v-else class="question-card">
             <MarkdownStream :html="message.html" mermaid />

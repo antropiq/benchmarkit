@@ -14,6 +14,8 @@ let controller = null
 let renderScheduled = false
 let activeMessage = null
 let draftTimer = null
+// Explicit Stop discards the partial reply; connection drops keep it.
+let userStopped = false
 
 function clearDraft() {
   state.draft.raw = ''
@@ -192,6 +194,7 @@ export function useChat() {
     const trimmed = state.draft.raw.trim()
     if (!trimmed || state.phase !== 'idle') return
 
+    userStopped = false
     state.error = null
     // Reuse the preview HTML rendered by setDraft; re-render only if Enter
     // beat the debounce (or nothing was ever rendered for this text).
@@ -244,14 +247,40 @@ export function useChat() {
       if (exc?.name !== 'AbortError') {
         state.error = `Could not reach the API: ${exc}`
       }
-      // Abort or connection drop: keep whatever partial answer arrived.
+      // Connection drop: keep whatever partial answer arrived; an explicit
+      // Stop is handled in the finally block below.
     } finally {
+      if (userStopped) {
+        // Stop discards the partial reply entirely (including the empty
+        // placeholder and its MCP tool badges). The user message stays so it
+        // can be edited and re-sent; the server-side stream is aborted.
+        const index = state.messages.indexOf(assistant)
+        if (index !== -1) state.messages.splice(index, 1)
+      }
       finish(assistant)
     }
   }
 
   function stop() {
+    userStopped = true
     if (controller) controller.abort()
+  }
+
+  function editLast() {
+    if (state.phase !== 'idle') return
+    let index = -1
+    for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+      if (state.messages[i].role === 'user') {
+        index = i
+        break
+      }
+    }
+    if (index === -1) return
+    setDraft(state.messages[index].raw)
+    // Drop the message and everything after it (its replies and tool badges)
+    // so the edited text re-sends onto a clean conversation tail.
+    state.messages.splice(index)
+    state.error = null
   }
 
   function reset() {
@@ -260,5 +289,5 @@ export function useChat() {
     state.error = null
   }
 
-  return { state, send, stop, reset, setDraft }
+  return { state, send, stop, reset, setDraft, editLast }
 }

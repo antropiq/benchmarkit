@@ -86,6 +86,34 @@ def _extract_total_tokens(chunk: Any) -> Optional[int]:
     return usage["total_tokens"] if usage else None
 
 
+def close_llm_stream(response_generator: Any) -> None:
+    """Close a streamed litellm response so the server aborts generation.
+
+    litellm's ``CustomStreamWrapper`` (>= some 1.x releases) has no sync
+    ``close()`` — only an async ``aclose()`` — so ``getattr(gen, "close")``
+    is a silent no-op and the underlying HTTP connection stays open, letting
+    the LLM server keep streaming into a socket nobody reads. The raw
+    provider stream (openai's sync ``Stream``) lives on ``.completion_stream``
+    and does expose ``close()``, which closes the httpx connection; servers
+    like llama.cpp then abort the generation slot on their next failed write.
+    Best-effort: cleanup must never raise out of a cancel path.
+    """
+    if response_generator is None:
+        return
+    target = getattr(response_generator, "completion_stream", None)
+    if target is None:
+        target = response_generator
+    close = getattr(target, "close", None)
+    if not callable(close):
+        close = getattr(response_generator, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+    except Exception:  # noqa: BLE001 — closing on cancel is best-effort
+        pass
+
+
 def call_llm_and_stream(
     model_name: str,
     server_url: str,
@@ -143,9 +171,7 @@ def call_llm_and_stream(
     try:
         for chunk in response_generator:
             if cancel_event is not None and cancel_event.is_set():
-                close = getattr(response_generator, "close", None)
-                if close:
-                    close()
+                close_llm_stream(response_generator)
                 raise RunCancelled()
             usage = _extract_usage(chunk)
             if usage is not None:
