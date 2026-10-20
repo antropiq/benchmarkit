@@ -127,6 +127,11 @@ function finish(assistant) {
     assistant.tokens = estimateCompletionTokens(assistant.raw)
     assistant.tokensEstimated = true
   }
+  // Stop/abort mid tool-execution: no tool_result will ever arrive, so never
+  // leave a badge stuck on the pulsing "running" state in the tool panel.
+  for (const tool of assistant.tools ?? []) {
+    if (tool.state === 'running') tool.state = 'error'
+  }
   assistant.streaming = false
   state.phase = 'idle'
   controller = null

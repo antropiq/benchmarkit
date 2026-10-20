@@ -17,6 +17,8 @@
   --bi-space-3: 1.25rem;
   --bi-space-4: 2rem;
   --bi-appbar-height: 60px;
+  /* Shared width of the Chat left column (tool-call log + stats panel). */
+  --bi-chat-panel-width: 12rem;
 }
 
 :root[data-theme='light'] {
@@ -1042,9 +1044,18 @@ body {
   padding: var(--bi-space-2) clamp(1rem, 3vw, 2rem) var(--bi-space-3);
 }
 
-/* Output card ~4/5, input row ~1/5 of the space below the app bar. */
-.chat-output {
+/* Output row ~4/5, input row ~1/5 of the space below the app bar. The
+   output row is the tool-call panel plus the conversation, side by side. */
+.chat-stream-row {
   flex: 4 1 0;
+  min-height: 0;
+  display: flex;
+  gap: var(--bi-space-2);
+}
+
+.chat-output {
+  flex: 1 1 auto;
+  min-width: 0;
   height: auto;
   min-height: 0;
 }
@@ -1111,11 +1122,10 @@ body {
   cursor: default;
 }
 
-/* Stats/actions panel left of the chat textarea, same height (stretch).
-   The panel itself adds no width: its size comes entirely from the badges,
-   which share one fixed width. */
+/* Stats/actions panel left of the chat textarea, same height (stretch) and
+   the same fixed width as the tool-call panel above it. */
 .chat-side-panel {
-  flex: 0 0 auto;
+  flex: 0 0 var(--bi-chat-panel-width);
   min-width: 0;
   box-sizing: border-box;
   display: flex;
@@ -1165,13 +1175,27 @@ body {
   animation: bi-pulse 1.4s ease-in-out infinite;
 }
 
-/* Compact MCP tool badges shown above a streaming chat answer. */
-.chat-tools {
+/* Vertical log of MCP tool-call badges, left of the chat output. Independent
+   scroll; same fixed width as the stats panel in the input row. Deliberately
+   not `.stream-panel`: that class pins a fixed viewport height. */
+.chat-tool-panel {
+  flex: 0 0 var(--bi-chat-panel-width);
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background-color: var(--bi-surface);
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.chat-tool-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  align-items: stretch;
   gap: 0.35rem;
-  margin: 0 0 0.5rem;
-  padding: 0;
+  margin: 0;
+  padding: 0.5rem;
   list-style: none;
 }
 
@@ -1179,12 +1203,21 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  min-width: 0;
   padding: 0.1rem 0.5rem;
   border: 1px solid var(--pico-muted-border-color);
   border-radius: 999px;
   font-family: var(--pico-font-family-monospace);
   font-size: 0.75rem;
   color: var(--pico-muted-color);
+}
+
+.chat-tool-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chat-tool.running .chat-tool-state {
@@ -1197,6 +1230,13 @@ body {
 
 .chat-tool.error .chat-tool-state {
   color: var(--bi-danger);
+}
+
+/* Narrow screens: the two Chat left panels shrink together (shared token). */
+@media (max-width: 640px) {
+  .chat-shell {
+    --bi-chat-panel-width: 8.5rem;
+  }
 }
 
 /* -- MCP connectors in the settings dialog ------------------------------------ */
