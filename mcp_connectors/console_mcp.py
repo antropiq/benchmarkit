@@ -24,21 +24,63 @@ server = MCPServer(
                  "Useful for file operations, system administration, and task automation.",
 )
 
-# Define allowed commands (security whitelist)
-ALLOWED_COMMANDS = {
-    "ls", "dir", "cat", "echo", "pwd", "whoami", "date", "time",
-    "find", "grep", "sed", "wc", "head", "tail", "sort", "uniq", "cut",
-    "mkdir", "touch", "cp", "mv", "rm", "chmod", "chown",
-    "ps", "top", "df", "du", "free", "uptime", "hostname",
-    "curl", "wget", "ping", "nslookup", "dig",
-    "python3", "python", "node", "npm", "pip", "git",
-    "vim", "nano", "less", "more", "man", "which",
-    "env", "printenv", "id", "groups", "who", "w"
+# ---------------------------------------------------------------------------
+# Security policy: ALLOWED is a whitelist, BLOCKED always wins.
+# Keep the two lists disjoint -- entries in both are effectively blocked
+# and only create confusion.
+# ---------------------------------------------------------------------------
+
+# Commands that are always blocked (checked first, security)
+BLOCKED_COMMANDS = {
+    # destructive file operations
+    "rm", "rmdir", "shred", "truncate",
+    # permissions / ownership
+    "chmod", "chown",
+    # disk / system destruction
+    "mkfs", "dd", "fdisk", "parted", "mount", "umount",
+    # power state
+    "shutdown", "reboot", "poweroff", "halt",
+    # privilege escalation
+    "sudo", "su", "doas", "runuser",
+    # package / service control
+    "pacman", "systemctl", "crontab",
 }
 
-# Commands that are always blocked (security)
-BLOCKED_COMMANDS = {
-    "rm", "rmdir", "chmod", "chown", "mkfs", "dd", "shutdown", "reboot", "poweroff"
+# Define allowed commands (security whitelist)
+ALLOWED_COMMANDS = {
+    # --- basic file & text (read-only) ---
+    "ls", "dir", "cat", "echo", "pwd", "whoami", "date", "time",
+    "head", "tail", "wc", "sort", "uniq", "cut",
+    "grep", "sed", "awk", "tr", "tac", "nl", "column", "comm", "paste",
+    "less", "more", "man", "which", "file", "stat",
+
+    # --- paths & paths metadata ---
+    "find", "basename", "dirname", "realpath", "readlink",
+    "diff", "cmp", "seq", "printf", "bc", "numfmt",
+
+    # --- benign file creation (destructive ops stay blocked) ---
+    "mkdir", "touch", "cp", "mv", "ln", "mktemp",
+
+    # --- checksums & archives ---
+    "md5sum", "sha1sum", "sha256sum",
+    "tar", "gzip", "unzip", "zip",
+
+    # --- system visibility (read-only) ---
+    "ps", "top", "vmstat", "df", "du", "free", "uptime", "hostname",
+    "uname", "lscpu", "lsb_release", "nproc", "id", "groups", "who", "w",
+
+    # --- network ---
+    "curl", "wget", "ping", "nslookup", "dig", "ss", "ip", "tracepath",
+
+    # --- environment ---
+    "env", "printenv", "sleep",
+
+    # --- dev tooling ---
+    "python3", "python", "node", "npm", "pip", "git",
+    "jq", "sqlite3", "openssl",
+
+    # --- editors (kept from your original list) ---
+    "vim", "nano",
 }
 
 
