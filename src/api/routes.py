@@ -1,17 +1,20 @@
 """REST + SSE endpoints for the benchmark run."""
 
 import asyncio
+import base64
+import binascii
 import json
+import re
 import threading
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Literal, Optional
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Union
 
 import os
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from src.api.events import EventBus, sse_format
 from src.config import (
@@ -78,6 +81,7 @@ class SettingsIn(SettingsFieldsMixin):
     repeatPenalty: str = ""
     presencePenalty: str = ""
     reasoning: str = ""
+    supportsVision: str = ""
     questionSet: str = ""
     verifier: VerifierSettingsIn = VerifierSettingsIn()
 
@@ -103,13 +107,97 @@ class McpIn(BaseModel):
     maxIterations: int = Field(default=25, ge=1, le=500)
 
 
+# Base64-decoded image size limit for multimodal chat messages (the client
+# applies the same limit before reading a file).
+MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024
+_CHAT_IMAGE_DATA_URL = re.compile(
+    r"^data:image/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$"
+)
+
+
+class ChatImageUrl(BaseModel):
+    """Image reference inside a multimodal chat content part."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def _require_data_url(cls, value: str) -> str:
+        match = _CHAT_IMAGE_DATA_URL.match(value)
+        if match is None:
+            raise ValueError(
+                "image_url.url must be a base64 data URL "
+                "(data:image/png|jpeg|webp|gif;base64,...)"
+            )
+        try:
+            decoded = base64.b64decode(match.group(2), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(f"image data is not valid base64: {exc}") from exc
+        if len(decoded) > MAX_CHAT_IMAGE_BYTES:
+            raise ValueError(
+                f"image is too large ({len(decoded)} bytes, max "
+                f"{MAX_CHAT_IMAGE_BYTES})"
+            )
+        return value
+
+
+class ChatContentPart(BaseModel):
+    """One OpenAI-style multimodal content part (text or image_url)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    type: Literal["text", "image_url"]
+    text: Optional[str] = None
+    image_url: Optional[ChatImageUrl] = None
+
+    @model_validator(mode="after")
+    def _require_payload(self) -> "ChatContentPart":
+        if self.type == "text" and self.text is None:
+            raise ValueError("text content part requires text")
+        if self.type == "image_url" and self.image_url is None:
+            raise ValueError("image_url content part requires image_url")
+        return self
+
+
 class ChatMessage(BaseModel):
-    """One chat turn as sent by the chat screen."""
+    """One chat turn as sent by the chat screen.
+
+    ``content`` is a plain string or a list of multimodal parts (user
+    messages only) so images travel as base64 data URLs in the standard
+    OpenAI format, passed through litellm to the OpenAI-compatible server.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
     role: Literal["user", "assistant"]
-    content: str
+    content: Union[str, List[ChatContentPart]]
+
+    @model_validator(mode="after")
+    def _require_payload(self) -> "ChatMessage":
+        if not isinstance(self.content, str):
+            if self.role == "assistant":
+                raise ValueError("assistant messages must use plain text content")
+            if not self.content:
+                raise ValueError("message content must not be empty")
+            has_image = any(part.type == "image_url" for part in self.content)
+            has_text = any(
+                part.type == "text" and (part.text or "").strip()
+                for part in self.content
+            )
+            if not has_image and not has_text:
+                raise ValueError("message content must not be empty")
+        return self
+
+    def payload(self) -> Dict[str, Any]:
+        """Shape the message for litellm (parts dumped to plain dicts)."""
+        if isinstance(self.content, str):
+            return {"role": self.role, "content": self.content}
+        return {
+            "role": self.role,
+            "content": [part.model_dump(exclude_none=True) for part in self.content],
+        }
 
 
 class ChatIn(BaseModel):
@@ -124,8 +212,9 @@ class ChatIn(BaseModel):
     def _require_turns(cls, value: List[ChatMessage]) -> List[ChatMessage]:
         if not value:
             raise ValueError("messages must not be empty")
-        if any(not message.content.strip() for message in value):
-            raise ValueError("message content must not be empty")
+        for message in value:
+            if isinstance(message.content, str) and not message.content.strip():
+                raise ValueError("message content must not be empty")
         return value
 
 
@@ -147,6 +236,7 @@ SETTINGS_ENV_KEYS: Dict[str, str] = {
     "repeatPenalty": "REPEAT_PENALTY",
     "presencePenalty": "PRESENCE_PENALTY",
     "reasoning": "REASONING",
+    "supportsVision": "SUPPORTS_VISION",
 }
 VERIFIER_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "VERIFIER_AGENT_SERVERURL",
@@ -200,6 +290,11 @@ def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
     }
     if values.get("REASONING", "").strip().lower() == "none":
         values["REASONING"] = ""
+    vision = values.get("SUPPORTS_VISION", "").strip().lower()
+    if vision in {"1", "true", "yes", "on"}:
+        values["SUPPORTS_VISION"] = "1"
+    elif vision in {"", "0", "false", "no", "off"}:
+        values["SUPPORTS_VISION"] = ""
     verifier = payload.get("verifier") or {}
     for field, key in VERIFIER_ENV_KEYS.items():
         values[key] = (verifier.get(field) or "").strip()
@@ -285,6 +380,7 @@ def build_router(state: RunState) -> APIRouter:
         return {
             "models": models,
             "serverUrl": config.serverUrl,
+            "supportsVision": config.supports_vision,
             "samplingSummary": sampling_summary,
             "questionCount": len(questions),
             "totalTests": len(questions) * len(models),
@@ -465,7 +561,7 @@ def build_router(state: RunState) -> APIRouter:
         if not models:
             raise HTTPException(status_code=400, detail="No models configured (ENDPOINT/ENDPOINTS)")
 
-        messages = [{"role": m.role, "content": m.content} for m in body.messages]
+        messages = [m.payload() for m in body.messages]
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         cancel_event = threading.Event()

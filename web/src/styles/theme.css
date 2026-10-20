@@ -1209,6 +1209,86 @@ body {
   opacity: 0.7;
 }
 
+/* Image attach: the file input is a plain picker, driven by the icon button. */
+.chat-file-input {
+  display: none;
+}
+
+.chat-attach {
+  position: relative;
+}
+
+/* Dot on the attach button while an image is pending in the composer. */
+.chat-attach-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--bi-violet);
+  pointer-events: none;
+}
+
+.chat-bubble .chat-thumb {
+  display: block;
+  max-width: 240px;
+  max-height: 180px;
+  border-radius: 8px;
+  object-fit: contain;
+  margin-bottom: 0.5rem;
+}
+
+.chat-bubble .chat-thumb:last-child {
+  margin-bottom: 0;
+}
+
+/* Right-aligned pending-image chip above the draft preview: thumbnail plus
+   name/size and a remove button, dashed like the draft it accompanies. */
+.chat-attachment {
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: min(75%, 46rem);
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px dashed color-mix(in srgb, var(--pico-primary) 35%, transparent);
+  border-radius: var(--bi-radius-lg);
+  background-color: color-mix(in srgb, var(--pico-primary) 8%, var(--bi-surface));
+}
+
+.chat-attachment .chat-thumb {
+  max-width: 96px;
+  max-height: 72px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.chat-attachment-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.chat-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.chat-attachment-remove {
+  flex: none;
+  opacity: 0.55;
+}
+
+.chat-attachment-remove:hover,
+.chat-attachment-remove:focus-visible {
+  opacity: 1;
+}
+
 .chat-typing {
   animation: bi-pulse 1.4s ease-in-out infinite;
 }

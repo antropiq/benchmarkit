@@ -1,5 +1,6 @@
 """Tests for the streaming chat core and the /api/chat SSE endpoint."""
 
+import base64
 import json
 import threading
 import time
@@ -226,6 +227,25 @@ class TestStreamChat:
         assert done["tokens"] == 4
         assert done["tokensEstimated"] is True
 
+    def test_multimodal_content_passed_through_untouched(self, monkeypatch):
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return iter([])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        parts = [
+            {"type": "text", "text": "describe"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA="}},
+        ]
+        chat_core.stream_chat(
+            [{"role": "user", "content": parts}], "m", "http://s/v1", lambda e: None
+        )
+        # Only the system message is prepended; the multimodal parts are
+        # forwarded to litellm as-is.
+        assert captured["messages"][1] == {"role": "user", "content": parts}
+
 
 def _config(endpoint: Optional[str] = "model-a") -> EndpointsConfig:
     return EndpointsConfig(
@@ -258,6 +278,20 @@ def _events(body: str):
         if name is not None:
             parsed.append((name, data))
     return parsed
+
+
+# Real 1x1 transparent PNG.
+_PNG_DATA_URL = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _oversized_data_url() -> str:
+    from src.api.routes import MAX_CHAT_IMAGE_BYTES
+
+    payload = base64.b64encode(b"x" * (MAX_CHAT_IMAGE_BYTES + 1)).decode()
+    return f"data:image/png;base64,{payload}"
 
 
 class TestChatEndpoint:
@@ -303,6 +337,88 @@ class TestChatEndpoint:
         assert seen["server_url"] == "http://localhost:8080/v1"
         assert seen["api_key"] == "none"
         assert [m["role"] for m in seen["messages"]] == ["user", "assistant", "user"]
+
+    def test_multimodal_message_forwarded_as_parts(self, client, monkeypatch):
+        seen = {}
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none", sysprompt=None):
+            seen["messages"] = messages
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+                ],
+            }]},
+        )
+        assert response.status_code == 200
+        content = seen["messages"][0]["content"]
+        assert content[0] == {"type": "text", "text": "describe"}
+        assert content[1] == {"type": "image_url",
+                              "image_url": {"url": _PNG_DATA_URL}}
+
+    def test_image_only_message_accepted(self, client, monkeypatch):
+        seen = {}
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none", sysprompt=None):
+            seen["messages"] = messages
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{
+                "role": "user",
+                "content": [{"type": "image_url",
+                             "image_url": {"url": _PNG_DATA_URL}}],
+            }]},
+        )
+        assert response.status_code == 200
+        assert len(seen["messages"][0]["content"]) == 1
+
+    @pytest.mark.parametrize(
+        "parts",
+        [
+            [],  # empty parts list
+            [{"type": "text", "text": "   "}],  # blank text only
+            [{"type": "text"}],  # text part without text
+            [{"type": "image_url"}],  # image part without image_url
+            # Not a data URL
+            [{"type": "image_url", "image_url": {"url": "http://x/y.png"}}],
+            # Disallowed media type
+            [{"type": "image_url", "image_url":
+              {"url": "data:image/svg+xml;base64,AAA="}}],
+            # Not base64
+            [{"type": "image_url", "image_url":
+              {"url": "data:image/png;base64,!!!not base64!!!"}}],
+            # Over the 10 MB decoded limit
+            [{"type": "image_url", "image_url": {"url": _oversized_data_url()}}],
+        ],
+    )
+    def test_invalid_multimodal_bodies_return_422(self, client, parts):
+        response = client.post(
+            "/api/chat", json={"messages": [{"role": "user", "content": parts}]}
+        )
+        assert response.status_code == 422
+
+    def test_assistant_multimodal_content_returns_422(self, client):
+        response = client.post(
+            "/api/chat",
+            json={"messages": [
+                {"role": "assistant",
+                 "content": [{"type": "text", "text": "hi"}]},
+            ]},
+        )
+        assert response.status_code == 422
 
     def test_forwards_configured_api_key(self, monkeypatch, tmp_path):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,

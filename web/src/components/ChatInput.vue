@@ -7,7 +7,9 @@ const { state, send, setDraft } = useChat()
 
 const streaming = computed(() => state.phase !== 'idle')
 const canSend = computed(
-  () => !streaming.value && state.draft.raw.trim().length > 0,
+  () =>
+    !streaming.value &&
+    (state.draft.raw.trim().length > 0 || state.pendingImage !== null),
 )
 
 function submit() {

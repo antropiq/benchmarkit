@@ -73,8 +73,14 @@ def _preview(value: str, limit: int = 200) -> str:
     return value if len(value) <= limit else value[:limit] + "\n... [truncated]"
 
 
+def _content_text(message: Dict[str, Any]) -> str:
+    """Text of a message's content, "" for multimodal (list) content parts."""
+    content = message.get("content", "")
+    return content if isinstance(content, str) else ""
+
+
 def stream_chat(
-    messages: List[Dict[str, str]],
+    messages: List[Dict[str, Any]],
     model_name: str,
     server_url: str,
     emit: Emit,
@@ -88,6 +94,10 @@ def stream_chat(
     max_tool_iterations: int = 25,
 ) -> None:
     """Stream one chat reply, emitting ``token`` / ``reasoning`` / ``done``.
+
+    Message ``content`` may be a plain string or a list of OpenAI-style
+    multimodal parts (``text`` / ``image_url`` data URLs); parts are passed
+    through to litellm untouched.
 
     With MCP tools active also emits ``tool_call`` / ``tool_result`` events
     per executed tool call (``tool_call`` carries ``iteration`` and
@@ -103,11 +113,11 @@ def stream_chat(
         ]
 
     use_tools = bool(tools) and tool_executor is not None
-    if use_tools and "tool" not in messages[0].get("content", "").lower():
+    if use_tools and "tool" not in _content_text(messages[0]).lower():
         # Replace (never mutate) the caller's system message.
         messages[0] = {
             "role": "system",
-            "content": messages[0].get("content", "") + TOOL_NOTICE,
+            "content": _content_text(messages[0]) + TOOL_NOTICE,
         }
     sampling_kwargs: Dict[str, Any] = dict(sampling or {})
     # litellm gates reasoning_effort to OpenAI reasoning models only;

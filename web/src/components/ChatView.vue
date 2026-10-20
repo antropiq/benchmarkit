@@ -1,13 +1,25 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import ChatInput from './ChatInput.vue'
 import ChatToolPanel from './ChatToolPanel.vue'
 import MarkdownStream from './MarkdownStream.vue'
-import { useChat } from '../composables/useChat'
+import { humanFileSize, useChat } from '../composables/useChat'
 import { useAutoScroll } from '../composables/useAutoScroll'
+import { useBenchmark } from '../composables/useBenchmark'
 import { useSplitter } from '../composables/useSplitter'
 
-const { state, editLast } = useChat()
+const { state, editLast, clearImage } = useChat()
+const { state: benchmarkState, loadConfig } = useBenchmark()
+
+// Keep config.supportsVision (which gates the attach button) fresh when the
+// chat tab is opened: settings may have been saved or .env edited meanwhile
+// (App.vue's initial loadConfig covers the first render).
+watch(
+  () => benchmarkState.activeTab,
+  (tab) => {
+    if (tab === 'chat') loadConfig()
+  },
+)
 
 const lastUserIndex = computed(() => {
   for (let i = state.messages.length - 1; i >= 0; i -= 1) {
@@ -21,8 +33,11 @@ const input = ref(null)
 const panel = ref(null)
 const contentVersion = computed(() =>
   state.messages
-    .map((m) => `${m.role}:${m.raw.length}`)
-    .concat(`draft:${state.draft.raw.length}`)
+    .map((m) => `${m.role}:${m.raw.length}:${m.images?.length ?? 0}`)
+    .concat(
+      `draft:${state.draft.raw.length}`,
+      `image:${state.pendingImage ? state.pendingImage.name : ''}`,
+    )
     .join(','),
 )
 const { onScroll } = useAutoScroll(panel, contentVersion)
@@ -64,7 +79,15 @@ const {
               </svg>
             </button>
             <div class="chat-bubble">
-              <MarkdownStream :html="message.html" />
+              <img
+                v-for="(image, j) in message.images ?? []"
+                :key="j"
+                :src="image.dataUrl"
+                :alt="image.name"
+                class="chat-thumb"
+                loading="lazy"
+              />
+              <MarkdownStream v-if="message.html" :html="message.html" />
             </div>
           </div>
           <article v-else class="question-card">
@@ -79,6 +102,34 @@ const {
           </article>
         </template>
         <div
+          v-if="state.pendingImage"
+          class="chat-attachment chat-attachment--pending"
+          aria-label="Attached image (not sent yet)"
+        >
+          <img
+            :src="state.pendingImage.dataUrl"
+            :alt="state.pendingImage.name"
+            class="chat-thumb"
+          />
+          <span class="chat-attachment-meta">
+            <span class="chat-attachment-name">{{ state.pendingImage.name }}</span>
+            <span class="caption">{{ humanFileSize(state.pendingImage.size) }}</span>
+          </span>
+          <button
+            class="icon-btn chat-attachment-remove"
+            type="button"
+            aria-label="Remove attached image"
+            title="Remove image"
+            @click="clearImage"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M18 6 6 18" />
+              <path d="m6 6 12 12" />
+            </svg>
+          </button>
+        </div>
+        <div
           v-if="state.draft.html"
           class="chat-bubble chat-bubble--draft"
           aria-label="Message preview (not sent yet)"
@@ -86,7 +137,10 @@ const {
           <MarkdownStream :html="state.draft.html" />
         </div>
         <p v-if="state.error" class="error-line" role="alert">{{ state.error }}</p>
-        <div v-if="!state.messages.length && !state.draft.html" class="stream-empty">
+        <div
+          v-if="!state.messages.length && !state.draft.html && !state.pendingImage"
+          class="stream-empty"
+        >
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

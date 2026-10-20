@@ -70,6 +70,7 @@ class EndpointsConfig(SamplingParams):
     endpoint: Optional[Union[str, List[str]]] = None
     endpoints: Optional[Union[str, List[str]]] = None
     sysprompt: str = DEFAULT_LLM_SYSPROMPT
+    supports_vision: bool = False
     verifierAgent: Optional[VerifierAgent] = None
 
     @field_validator("endpoint", "endpoints", mode="before")
@@ -89,9 +90,9 @@ class EndpointsConfig(SamplingParams):
         Recognized keys: ``SERVER_URL``, ``SERVER_URL_API_KEY``,
         ``ENDPOINT``, ``ENDPOINTS`` (comma-separated), ``LLM_SYSPROMPT``,
         ``TEMP``, ``TOP_P``, ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``,
-        ``PRESENCE_PENALTY``, ``REASONING`` and the ``VERIFIER_AGENT_*``
-        block (``SYSPROMPT``, ``SERVERURL``, ``SERVERURL_API_KEY``,
-        ``ENDPOINT``).
+        ``PRESENCE_PENALTY``, ``REASONING``, ``SUPPORTS_VISION`` and the
+        ``VERIFIER_AGENT_*`` block (``SYSPROMPT``, ``SERVERURL``,
+        ``SERVERURL_API_KEY``, ``ENDPOINT``).
         """
         source: Mapping[str, str] = os.environ if env is None else env
 
@@ -115,6 +116,8 @@ class EndpointsConfig(SamplingParams):
             "repeat-penalty": get("REPEAT_PENALTY"),
             "presence-penalty": get("PRESENCE_PENALTY"),
             "reasoning": get("REASONING"),
+            "supports_vision": (get("SUPPORTS_VISION") or "").lower()
+            in {"1", "true", "yes", "on"},
         }
         verifier = {
             "sysprompt": get("VERIFIER_AGENT_SYSPROMPT") or "",

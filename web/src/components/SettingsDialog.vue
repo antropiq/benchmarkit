@@ -171,6 +171,19 @@ function onNativeClose() {
                 placeholder="You are a helpful assistant."
               ></textarea>
             </label>
+            <label class="settings-vision">
+              <input
+                type="checkbox"
+                :checked="state.settings.supportsVision === '1'"
+                @change="state.settings.supportsVision = $event.target.checked ? '1' : ''"
+              />
+              Endpoint supports image input (vision)
+            </label>
+            <p class="caption">
+              Enables the image attach button in the Chat tab. Only check it
+              when the model accepts image input; GIFs are sent as their first
+              frame.
+            </p>
           </section>
 
           <section v-show="activeSection === 'sampling'">

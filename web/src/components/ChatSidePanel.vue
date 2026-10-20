@@ -5,6 +5,7 @@ import {
   estimateCompletionTokens,
   useChat,
 } from '../composables/useChat'
+import { useBenchmark } from '../composables/useBenchmark'
 
 const props = defineProps({
   canSend: { type: Boolean, default: false },
@@ -13,7 +14,27 @@ const props = defineProps({
 
 const emit = defineEmits(['send'])
 
-const { state, stop, reset } = useChat()
+const { state, stop, reset, attachImage } = useChat()
+const { state: benchmarkState } = useBenchmark()
+
+// The image attach button is only usable when the configured endpoint is
+// declared vision-capable (SUPPORTS_VISION in .env, via /api/config).
+const supportsVision = computed(
+  () => benchmarkState.config?.supportsVision === true,
+)
+
+const fileInput = ref(null)
+
+function pickImage() {
+  fileInput.value?.click()
+}
+
+function onFilePicked(event) {
+  const input = event.target
+  attachImage(input.files?.[0])
+  // Reset so picking the same file again still fires the change event.
+  input.value = ''
+}
 
 const streamingMessage = computed(
   () => state.messages.find((m) => m.streaming) ?? null,
@@ -155,6 +176,15 @@ function restart() {
 
 <template>
   <aside class="chat-side-panel" aria-label="Chat stats and actions">
+    <input
+      ref="fileInput"
+      type="file"
+      accept="image/png,image/jpeg,image/webp,image/gif"
+      class="chat-file-input"
+      tabindex="-1"
+      aria-hidden="true"
+      @change="onFilePicked"
+    />
     <span class="badge" :class="rate ? 'violet' : 'gray'" role="status">
       {{ rateText }}
     </span>
@@ -162,6 +192,35 @@ function restart() {
       {{ tokensText }}
     </span>
     <div class="chat-side-actions">
+      <button
+        class="icon-btn chat-attach"
+        type="button"
+        :disabled="!supportsVision || streaming"
+        :class="{ 'chat-attach--pending': !!state.pendingImage }"
+        :aria-label="
+          supportsVision
+            ? state.pendingImage
+              ? 'Replace attached image'
+              : 'Attach image'
+            : 'Image input not supported'
+        "
+        :title="
+          !supportsVision
+            ? 'The configured model does not support image input (enable it in Settings → LLM)'
+            : state.pendingImage
+              ? 'Replace attached image'
+              : 'Attach image'
+        "
+        @click="pickImage"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <path d="m21 15-5-5L5 21" />
+        </svg>
+        <span v-if="state.pendingImage" class="chat-attach-badge" aria-hidden="true"></span>
+      </button>
       <button
         class="icon-btn"
         type="button"

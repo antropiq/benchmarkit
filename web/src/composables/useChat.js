@@ -2,12 +2,14 @@ import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
 
 const state = reactive({
-  messages: [], // { role, raw, html, streaming } in conversation order
+  messages: [], // { role, raw, html, streaming, images } in conversation order
   phase: 'idle', // idle | waiting | reasoning | answering
   error: null,
   // Composer draft mirrored as rendered markdown so ChatView can preview the
   // exact HTML that send() will attach to the user message (no re-parse).
   draft: { raw: '', html: '', renderedRaw: '' },
+  // Image picked for the next message: { dataUrl, name, size } | null.
+  pendingImage: null,
 })
 
 let controller = null
@@ -16,6 +18,16 @@ let activeMessage = null
 let draftTimer = null
 // Explicit Stop discards the partial reply; connection drops keep it.
 let userStopped = false
+
+// Must mirror the backend ChatImageUrl validation (routes.py).
+export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+export function humanFileSize(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${bytes} B`
+}
 
 function clearDraft() {
   state.draft.raw = ''
@@ -45,6 +57,38 @@ function flushDraftHtml(trimmed) {
   return renderMarkdown(trimmed)
 }
 
+// Validates and reads a picked file into state.pendingImage (replacing any
+// previous attachment). Returns false (with state.error set) when rejected.
+function attachImage(file) {
+  if (!file) return false
+  state.error = null
+  if (!IMAGE_MIME_TYPES.includes(file.type)) {
+    state.error = `Unsupported image type: ${file.type || file.name} (png, jpeg, webp or gif).`
+    return false
+  }
+  if (file.size > MAX_IMAGE_BYTES) {
+    state.error = `Image too large (${humanFileSize(file.size)}, max ${humanFileSize(MAX_IMAGE_BYTES)}).`
+    return false
+  }
+  const reader = new FileReader()
+  reader.onload = () => {
+    state.pendingImage = {
+      dataUrl: String(reader.result),
+      name: file.name || 'image',
+      size: file.size,
+    }
+  }
+  reader.onerror = () => {
+    state.error = 'Could not read the selected image.'
+  }
+  reader.readAsDataURL(file)
+  return true
+}
+
+function clearImage() {
+  state.pendingImage = null
+}
+
 function scheduleMarkdownRender() {
   if (renderScheduled) return
   renderScheduled = true
@@ -63,9 +107,28 @@ export function estimateCompletionTokens(text) {
 
 export function conversationMarkdown(messages) {
   return messages
-    .filter((m) => m.raw.trim())
-    .map((m) => `## ${m.role}\n\n${m.raw}`)
+    .map((m) => {
+      const parts = []
+      if (m.raw.trim()) parts.push(m.raw)
+      for (const image of m.images ?? []) parts.push(`*[image: ${image.name}]*`)
+      return parts.length ? `## ${m.role}\n\n${parts.join('\n\n')}` : null
+    })
+    .filter(Boolean)
     .join('\n\n')
+}
+
+// OpenAI content shape for one message: plain string when text-only (the
+// backend and litellm keep the classic form), multimodal parts once an
+// image is attached (image-only messages omit the text part entirely).
+function messagePayload(message) {
+  const images = message.images ?? []
+  if (!images.length) return { role: message.role, content: message.raw }
+  const parts = []
+  if (message.raw.trim()) parts.push({ type: 'text', text: message.raw })
+  for (const image of images) {
+    parts.push({ type: 'image_url', image_url: { url: image.dataUrl } })
+  }
+  return { role: message.role, content: parts }
 }
 
 function describeError(body, fallback) {
@@ -202,7 +265,8 @@ async function readStream(response, assistant) {
 export function useChat() {
   async function send() {
     const trimmed = state.draft.raw.trim()
-    if (!trimmed || state.phase !== 'idle') return
+    const pendingImage = state.pendingImage
+    if ((!trimmed && !pendingImage) || state.phase !== 'idle') return
 
     userStopped = false
     state.error = null
@@ -215,8 +279,10 @@ export function useChat() {
       raw: trimmed,
       html,
       streaming: false,
+      images: pendingImage ? [{ ...pendingImage }] : [],
     })
-    const history = state.messages.map(({ role, raw }) => ({ role, content: raw }))
+    state.pendingImage = null
+    const history = state.messages.map(messagePayload)
     state.messages.push({
       role: 'assistant',
       raw: '',
@@ -291,6 +357,8 @@ export function useChat() {
     }
     if (index === -1) return
     setDraft(state.messages[index].raw)
+    // Re-attach the message's image so it travels with the edited text.
+    state.pendingImage = state.messages[index].images?.[0] ?? null
     // Drop the message and everything after it (its replies and tool badges)
     // so the edited text re-sends onto a clean conversation tail.
     state.messages.splice(index)
@@ -301,7 +369,8 @@ export function useChat() {
     if (controller) controller.abort()
     state.messages = []
     state.error = null
+    state.pendingImage = null
   }
 
-  return { state, send, stop, reset, setDraft, editLast }
+  return { state, send, stop, reset, setDraft, editLast, attachImage, clearImage }
 }

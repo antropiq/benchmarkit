@@ -237,3 +237,12 @@ class TestFromEnv:
 
         assert EndpointsConfig.from_env({"ENDPOINT": "m"}).sysprompt == DEFAULT_LLM_SYSPROMPT
         assert EndpointsConfig.from_env({"LLM_SYSPROMPT": "  "}).sysprompt == DEFAULT_LLM_SYSPROMPT
+
+    def test_supports_vision_truthy_values(self):
+        for value in ("1", "true", "True", "yes", "on"):
+            assert EndpointsConfig.from_env({"SUPPORTS_VISION": value}).supports_vision is True
+
+    def test_supports_vision_defaults_false(self):
+        assert EndpointsConfig.from_env({"ENDPOINT": "m"}).supports_vision is False
+        for value in ("", "  ", "0", "false", "no", "off", "bogus"):
+            assert EndpointsConfig.from_env({"SUPPORTS_VISION": value}).supports_vision is False

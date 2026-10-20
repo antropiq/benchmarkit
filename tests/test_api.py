@@ -66,6 +66,20 @@ class TestConfigEndpoint:
         assert body["verifierConfigured"] is True
         assert body["runStatus"] == "idle"
         assert body["samplingSummary"] == "defaults"
+        assert body["supportsVision"] is False
+
+    def test_supports_vision_reflects_config(self, client, monkeypatch):
+        monkeypatch.setattr(
+            routes,
+            "load_endpoints_config",
+            lambda: (
+                EndpointsConfig(
+                    serverUrl="http://x/v1", endpoint="m", supports_vision=True
+                ),
+                None,
+            ),
+        )
+        assert client.get("/api/config").json()["supportsVision"] is True
 
     def test_invalid_config_returns_422(self, client, monkeypatch):
         from pydantic import ValidationError
@@ -300,6 +314,33 @@ class TestSettingsEndpoint:
         assert "TEMP" not in os.environ
         text = config_module.ENV_PATH.read_text(encoding="utf-8")
         assert "#TEMP=" in text
+
+    def test_save_normalizes_supports_vision(self, client):
+        import os
+
+        from dotenv import dotenv_values
+
+        from src import config as config_module
+
+        response = client.post(
+            "/api/settings", json=self._payload(supportsVision="true")
+        )
+        assert response.status_code == 200
+        assert response.json()["supportsVision"] == "1"
+        assert os.environ["SUPPORTS_VISION"] == "1"
+        assert dotenv_values(config_module.ENV_PATH)["SUPPORTS_VISION"] == "1"
+
+    def test_save_unsets_blank_supports_vision(self, client, monkeypatch):
+        import os
+
+        from src import config as config_module
+
+        monkeypatch.setenv("SUPPORTS_VISION", "1")
+        response = client.post("/api/settings", json=self._payload(supportsVision=""))
+        assert response.status_code == 200
+        assert "SUPPORTS_VISION" not in os.environ
+        text = config_module.ENV_PATH.read_text(encoding="utf-8")
+        assert "#SUPPORTS_VISION=" in text
 
     def test_save_emptied_llm_sysprompt_falls_back_to_default(self, client, monkeypatch):
         from src import config as config_module
