@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import RunState, build_router
 from src.config import ENV_PATH, load_dotenv_once, PROJECT_ROOT, questions_path
-from src.core.mcp_hub import McpManager, discover_connectors
+from src.core.mcp_hub import McpManager, all_connectors
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
 
@@ -23,8 +23,10 @@ def create_app() -> FastAPI:
         # MCP connector processes live exactly as long as the web app:
         # spawned here on startup, terminated on shutdown. The env var is a
         # test/dev switch that keeps the endpoints alive but spawns nothing.
+        # Externals declared in mcp_connectors/externals.json join the set;
+        # those with ``enable: false`` stay stopped until toggled on.
         connectors = (
-            [] if os.environ.get("BENCHMARKIT_DISABLE_MCP") else discover_connectors()
+            [] if os.environ.get("BENCHMARKIT_DISABLE_MCP") else all_connectors()[0]
         )
         manager = McpManager(connectors)
         app.state.mcp = manager

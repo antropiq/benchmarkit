@@ -28,7 +28,7 @@ from src.config import (
     save_settings,
     questions_path,
 )
-from src.core.mcp_hub import discover_connectors
+from src.core.mcp_hub import all_connectors, load_externals, set_externals_enabled
 from src.core.bench import run_benchmark
 from src.core.chat import stream_chat
 from src.core.job import RunJob
@@ -322,6 +322,21 @@ class RunState:
         self.cancel_event = threading.Event()
 
 
+def _active_connector_ids() -> List[str]:
+    """Connector ids whose tools chat may use.
+
+    Built-ins come from ``MCP_ENABLED`` (.env); externals are activated by
+    their ``enable`` flag in ``externals.json`` (single source of truth, so
+    they never enter ``MCP_ENABLED``).
+    """
+    ids = list(mcp_enabled_ids())
+    connectors, _errors = load_externals()
+    for connector in connectors:
+        if connector["enable"] and connector["id"] not in ids:
+            ids.append(connector["id"])
+    return ids
+
+
 def _mcp_tool_kwargs(request: Request) -> Dict[str, Any]:
     """Extra ``stream_chat`` kwargs when MCP connectors are active for chat.
 
@@ -332,7 +347,7 @@ def _mcp_tool_kwargs(request: Request) -> Dict[str, Any]:
     if manager is None:
         return {}
     try:
-        tools, tool_to_server = manager.active_tool_defs(mcp_enabled_ids())
+        tools, tool_to_server = manager.active_tool_defs(_active_connector_ids())
     except Exception:  # noqa: BLE001 — never block chat because of the hub
         return {}
     if not tools:
@@ -464,38 +479,57 @@ def build_router(state: RunState) -> APIRouter:
             "current": os.environ.get("QUESTION_SET", QUESTION_SET_DEFAULT),
         }
 
-    def _mcp_payload(request: Request) -> Dict[str, Any]:
-        """Connector list (live folder scan) merged with manager status."""
+    def _mcp_payload(
+        request: Request, extra_errors: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Connector list (live folder scan + externals.json) merged with manager status.
+
+        External connectors are active on their file ``enable`` flag; built-ins
+        on ``MCP_ENABLED``. Secret material (``headers``/``env``) is stripped.
+        """
         manager = getattr(request.app.state, "mcp", None)
         statuses = {s["id"]: s for s in (manager.status() if manager else [])}
-        active = set(mcp_enabled_ids())
-        connectors = [
-            {
-                **connector,
-                "active": connector["id"] in active,
-                "status": statuses.get(connector["id"], {}).get("status", "stopped"),
-                "error": statuses.get(connector["id"], {}).get("error"),
-            }
-            for connector in discover_connectors()
-        ]
+        connectors, errors = all_connectors()
+        if extra_errors:
+            errors = errors + list(extra_errors)
+        active_builtins = set(mcp_enabled_ids())
+        payload_connectors = []
+        for connector in connectors:
+            status = statuses.get(connector["id"], {})
+            payload_connectors.append(
+                {
+                    key: value
+                    for key, value in connector.items()
+                    if key not in ("headers", "env")
+                }
+                | {
+                    "active": connector["enable"]
+                    if connector["external"]
+                    else connector["id"] in active_builtins,
+                    "status": status.get("status", "stopped"),
+                    "error": status.get("error"),
+                }
+            )
         return {
             "installed": bool(manager and manager.installed),
-            "connectors": connectors,
+            "connectors": payload_connectors,
             "maxIterations": max_mcp_iteration(),
+            "externalsError": "\n".join(errors) if errors else None,
         }
 
     @router.get("/mcp")
     def get_mcp(request: Request) -> Dict[str, Any]:
-        """List the MCP connectors found in ``mcp_connectors/`` with live status."""
+        """List built-in and external MCP connectors with live status."""
         return _mcp_payload(request)
 
     @router.post("/mcp")
     def post_mcp(body: McpIn, request: Request) -> Dict[str, Any]:
         """Activate MCP connectors for the Chat tab and set the iteration cap.
 
-        Persists ``MCP_ENABLED`` / ``MAX_MCP_ITERATION`` to ``.env``. The
-        connector processes themselves always run with the app; this only
-        controls which tools chat may use.
+        Built-in activations persist to ``MCP_ENABLED`` / ``MAX_MCP_ITERATION``
+        in ``.env``; external toggles write the ``enable`` flag back to
+        ``mcp_connectors/externals.json`` and start/stop the connector right
+        away (its process otherwise lives with the app).
         """
         if state.status == "running":
             raise HTTPException(
@@ -503,18 +537,41 @@ def build_router(state: RunState) -> APIRouter:
                 detail="Cannot change MCP settings while a benchmark run is in progress",
             )
         requested = [item.strip() for item in body.enabled if item.strip()]
-        available = {connector["id"] for connector in discover_connectors()}
-        unknown = [item for item in requested if item not in available]
+        connectors, _errors = all_connectors()
+        builtin_ids = {c["id"] for c in connectors if not c["external"]}
+        external_ids = {c["id"] for c in connectors if c["external"]}
+        unknown = [
+            item for item in requested if item not in builtin_ids and item not in external_ids
+        ]
         if unknown:
             raise HTTPException(
                 status_code=422,
                 detail=f"Unknown MCP connectors: {', '.join(unknown)}",
             )
+        enabled = set(requested)
         merged = dict(load_settings())
-        merged["MCP_ENABLED"] = ",".join(dict.fromkeys(requested))
+        merged["MCP_ENABLED"] = ",".join(
+            dict.fromkeys(item for item in requested if item in builtin_ids)
+        )
         merged["MAX_MCP_ITERATION"] = str(body.maxIterations)
         save_settings(merged)
-        return _mcp_payload(request)
+        write_errors = (
+            set_externals_enabled({cid: cid in enabled for cid in external_ids})
+            if external_ids
+            else []
+        )
+        manager = getattr(request.app.state, "mcp", None)
+        if manager is not None and hasattr(manager, "start_connector"):
+            for connector in connectors:
+                if not connector["external"]:
+                    continue
+                connector_id = connector["id"]
+                current = manager.connector_status(connector_id)
+                if connector_id in enabled and current not in ("running", "starting"):
+                    manager.start_connector(connector_id)
+                elif connector_id not in enabled and current in ("running", "starting"):
+                    manager.stop_connector(connector_id)
+        return _mcp_payload(request, extra_errors=write_errors)
 
     @router.get("/models")
     async def get_models(serverUrl: str = "", apiKey: str = "") -> Dict[str, Any]:

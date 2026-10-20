@@ -13,11 +13,15 @@ from src.api import routes
 from src.api.server import create_app
 from src.config import mcp_enabled_ids, max_mcp_iteration
 from src.core import chat as chat_core
+from src.core import mcp_hub
 from src.core.mcp_hub import (
     McpManager,
+    all_connectors,
     connector_environment,
     discover_connectors,
     extract_tool_result_text,
+    load_externals,
+    set_externals_enabled,
     tools_to_openai_format,
 )
 
@@ -55,6 +59,135 @@ class TestDiscoverConnectors:
 
     def test_missing_directory_returns_empty(self, tmp_path):
         assert discover_connectors(tmp_path / "nope") == []
+
+
+# ---------------------------------------------------------------------------
+# externals.json loading and write-back
+# ---------------------------------------------------------------------------
+
+
+def _write_externals(path: Path, doc: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    return path
+
+
+class TestLoadExternals:
+    def test_missing_file_is_empty_and_silent(self, tmp_path):
+        assert load_externals(tmp_path / "externals.json") == ([], [])
+
+    def test_parses_remote_and_local_entries(self, tmp_path):
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {
+                "context7": {
+                    "type": "remote",
+                    "enable": True,
+                    "url": "https://mcp.context7.com/mcp",
+                    "headers": {"CONTEXT7_API_KEY": "ctx7sk-1"},
+                },
+                "chrome-devtools": {
+                    "type": "local",
+                    "command": ["npx", "-y", "chrome-devtools-mcp@latest"],
+                },
+            },
+        )
+        connectors, errors = load_externals(path)
+        assert errors == []
+        by_id = {c["id"]: c for c in connectors}
+        remote = by_id["context7"]
+        assert remote["external"] is True and remote["kind"] == "remote"
+        assert remote["enable"] is True
+        assert remote["endpoint"] == "https://mcp.context7.com/mcp"
+        assert remote["headers"] == {"CONTEXT7_API_KEY": "ctx7sk-1"}
+        local = by_id["chrome-devtools"]
+        assert local["enable"] is False  # unset enable defaults to off
+        assert local["command"] == ["npx", "-y", "chrome-devtools-mcp@latest"]
+        assert local["endpoint"] == ""
+
+    def test_string_command_is_split_and_args_appended(self, tmp_path):
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {"devtools": {"type": "local", "command": "npx -y 'chrome devtools'", "args": ["--stdio"]}},
+        )
+        connectors, errors = load_externals(path)
+        assert errors == []
+        assert connectors[0]["command"] == ["npx", "-y", "chrome devtools", "--stdio"]
+
+    def test_invalid_json_reports_and_yields_nothing(self, tmp_path):
+        path = tmp_path / "externals.json"
+        path.write_text("{oops", encoding="utf-8")
+        connectors, errors = load_externals(path)
+        assert connectors == [] and len(errors) == 1 and "JSON" in errors[0]
+
+    def test_non_object_root_reports(self, tmp_path):
+        path = tmp_path / "externals.json"
+        path.write_text("[]", encoding="utf-8")
+        _, errors = load_externals(path)
+        assert "object" in errors[0]
+
+    def test_bad_entries_skipped_with_notes(self, tmp_path):
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {
+                "no_type": {"enable": True},
+                "bad_remote": {"type": "remote", "url": "ftp://x"},
+                "bad_local": {"type": "local"},
+                "bad_headers": {"type": "remote", "url": "http://x", "headers": "nope"},
+                "console_mcp": {"type": "remote", "url": "http://x"},
+            },
+        )
+        connectors, errors = load_externals(path, reserved_ids={"console_mcp"})
+        assert connectors == []
+        assert len(errors) == 5
+        assert any("collides" in note for note in errors)
+
+    def test_valid_entries_survive_bad_neighbours(self, tmp_path):
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {
+                "oops": {"type": "sideways"},
+                "good": {"type": "remote", "url": "https://x/mcp", "description": "Docs."},
+            },
+        )
+        connectors, errors = load_externals(path)
+        assert [c["id"] for c in connectors] == ["good"]
+        assert connectors[0]["description"] == "Docs."
+        assert len(errors) == 1
+
+
+class TestSetExternalsEnabled:
+    def test_missing_file_is_noop(self, tmp_path):
+        path = tmp_path / "externals.json"
+        assert set_externals_enabled({"a": True}, path) == []
+        assert not path.exists()
+
+    def test_flips_flags_and_preserves_everything_else(self, tmp_path):
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {
+                "a": {"type": "remote", "url": "https://a", "enable": False, "custom": "keep"},
+                "b": {"type": "local", "command": ["x"], "enable": True},
+                "untouched": {"type": "remote", "url": "https://u", "enable": True},
+            },
+        )
+        assert set_externals_enabled({"a": True, "b": False}, path) == []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["a"] == {"type": "remote", "url": "https://a", "enable": True, "custom": "keep"}
+        assert data["b"]["enable"] is False
+        assert data["untouched"]["enable"] is True
+
+    def test_unknown_id_is_not_added(self, tmp_path):
+        path = _write_externals(tmp_path / "externals.json", {})
+        set_externals_enabled({"ghost": True}, path)
+        assert json.loads(path.read_text(encoding="utf-8")) == {}
+
+    def test_broken_file_is_left_untouched(self, tmp_path):
+        path = tmp_path / "externals.json"
+        path.write_text("{oops", encoding="utf-8")
+        errors = set_externals_enabled({"a": True}, path)
+        assert errors and "Could not update" in errors[0]
+        assert path.read_text(encoding="utf-8") == "{oops"
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +275,84 @@ class TestMcpManager:
         asyncio.run(manager.stop_all())  # second call must not raise
 
 
+def _external_manager() -> McpManager:
+    return McpManager(
+        [
+            {
+                "id": "console_mcp",
+                "label": "Console",
+                "description": "",
+                "port": 9999,
+                "endpoint": "http://127.0.0.1:9999/mcp",
+                "external": False,
+                "kind": "builtin",
+            },
+            {
+                "id": "on_ext",
+                "label": "on_ext",
+                "description": "",
+                "port": 0,
+                "endpoint": "https://example.com/mcp",
+                "command": None,
+                "external": True,
+                "kind": "remote",
+                "enable": True,
+                "headers": {"SECRET": "leaky"},
+                "env": {"TOKEN": "leaky"},
+            },
+            {
+                "id": "off_ext",
+                "label": "off_ext",
+                "description": "",
+                "port": 0,
+                "endpoint": "https://example.com/other",
+                "command": None,
+                "external": True,
+                "kind": "remote",
+                "enable": False,
+                "headers": {},
+                "env": {},
+            },
+        ]
+    )
+
+
+class TestManagerExternals:
+    def test_status_exposes_kind_and_never_secrets(self):
+        manager = _external_manager()
+        entries = manager.status()
+        by_id = {entry["id"]: entry for entry in entries}
+        assert by_id["on_ext"]["kind"] == "remote"
+        assert by_id["on_ext"]["external"] is True
+        assert by_id["console_mcp"]["kind"] == "builtin"
+        for entry in entries:
+            assert "headers" not in entry
+            assert "env" not in entry
+        assert "leaky" not in repr(entries)
+
+    def test_start_all_skips_disabled_externals(self):
+        import asyncio
+
+        manager = _external_manager()
+        started: List[str] = []
+
+        async def fake_start(connector_id: str) -> None:
+            started.append(connector_id)
+
+        manager._installed = True
+        manager._start_one = fake_start
+        asyncio.run(manager.start_all())
+        asyncio.run(manager.stop_all())
+        assert sorted(started) == ["console_mcp", "on_ext"]
+
+    def test_start_stop_connector_are_noops_before_start(self):
+        manager = _external_manager()
+        manager.start_connector("on_ext")  # must not raise without a loop
+        manager.stop_connector("on_ext")
+        assert manager.connector_status("on_ext") == "stopped"
+        assert manager.connector_status("ghost") is None
+
+
 # ---------------------------------------------------------------------------
 # .env helpers
 # ---------------------------------------------------------------------------
@@ -220,26 +431,14 @@ def mcp_client(monkeypatch, tmp_path):
     for key in config_module.SETTING_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
-    monkeypatch.setattr(
-        routes,
-        "discover_connectors",
-        lambda: [
-            {
-                "id": "console_mcp",
-                "label": "Console",
-                "description": "Console MCP Server.",
-                "port": 9999,
-                "endpoint": "http://127.0.0.1:9999/mcp",
-            },
-            {
-                "id": "playwright_mcp",
-                "label": "Playwright",
-                "description": "Playwright MCP Server.",
-                "port": 8934,
-                "endpoint": "http://127.0.0.1:8934/mcp",
-            },
-        ],
-    )
+    # Point discovery at a temp folder holding two stub connectors, so the
+    # real mcp_connectors/ dir and any developer externals.json stay untouched.
+    connectors_dir = tmp_path / "mcp_connectors"
+    connectors_dir.mkdir()
+    _write_connector(connectors_dir, "console_mcp", "Console MCP Server.")
+    _write_connector(connectors_dir, "playwright_mcp", "Playwright MCP Server.")
+    monkeypatch.setattr(mcp_hub, "MCP_CONNECTORS_DIR", connectors_dir)
+    monkeypatch.setattr(mcp_hub, "EXTERNALS_PATH", connectors_dir / "externals.json")
     monkeypatch.setattr(
         routes,
         "load_endpoints_config",
@@ -321,6 +520,169 @@ class TestMcpEndpoints:
         # Empty selection writes a commented-out line and clears the env key.
         assert "MCP_ENABLED" not in os.environ
         assert not [c for c in response.json()["connectors"] if c["active"]]
+
+
+# ---------------------------------------------------------------------------
+# External connectors through the API
+# ---------------------------------------------------------------------------
+
+
+EXTERNALS_DOC = {
+    "context7": {
+        "type": "remote",
+        "enable": True,
+        "url": "https://mcp.context7.com/mcp",
+        "headers": {"CONTEXT7_API_KEY": "ctx7sk-secret-value"},
+    },
+    "chrome-devtools": {
+        "type": "local",
+        "enable": False,
+        "command": ["npx", "-y", "chrome-devtools-mcp@latest"],
+    },
+}
+
+
+class RecordingManager:
+    installed = True
+
+    def __init__(self, statuses: Dict[str, str]) -> None:
+        self._statuses = dict(statuses)
+        self.started: List[str] = []
+        self.stopped: List[str] = []
+
+    def status(self):
+        return [
+            {"id": cid, "status": status, "error": None}
+            for cid, status in self._statuses.items()
+        ]
+
+    def active_tool_defs(self, ids):
+        return [], {}
+
+    def connector_status(self, connector_id):
+        return self._statuses.get(connector_id)
+
+    def start_connector(self, connector_id):
+        self.started.append(connector_id)
+        self._statuses[connector_id] = "starting"
+
+    def stop_connector(self, connector_id):
+        self.stopped.append(connector_id)
+        self._statuses[connector_id] = "stopped"
+
+
+class TestExternalConnectorEndpoints:
+    def _externals_file(self, tmp_path, doc=None) -> Path:
+        return _write_externals(
+            tmp_path / "mcp_connectors" / "externals.json",
+            EXTERNALS_DOC if doc is None else doc,
+        )
+
+    def test_get_lists_externals_with_enable_as_active(self, mcp_client, tmp_path):
+        self._externals_file(tmp_path)
+        client, _ = mcp_client
+        body = client.get("/api/mcp").json()
+        ids = [c["id"] for c in body["connectors"]]
+        # Built-ins first (discovery order), then externals sorted by id.
+        assert ids == ["console_mcp", "playwright_mcp", "chrome-devtools", "context7"]
+        by_id = {c["id"]: c for c in body["connectors"]}
+        assert by_id["console_mcp"]["external"] is False
+        remote = by_id["context7"]
+        assert remote["external"] is True and remote["kind"] == "remote"
+        assert remote["active"] is True  # enable: true
+        assert by_id["chrome-devtools"]["active"] is False  # enable: false
+        assert by_id["chrome-devtools"]["command"] == [
+            "npx",
+            "-y",
+            "chrome-devtools-mcp@latest",
+        ]
+
+    def test_get_never_leaks_external_secrets(self, mcp_client, tmp_path):
+        self._externals_file(tmp_path)
+        client, _ = mcp_client
+        response = client.get("/api/mcp")
+        assert "ctx7sk-secret-value" not in response.text
+        assert "CONTEXT7_API_KEY" not in response.text
+
+    def test_post_writes_enable_back_but_not_into_mcp_enabled(self, mcp_client, tmp_path):
+        import os
+
+        from dotenv import dotenv_values
+
+        from src import config as config_module
+
+        path = self._externals_file(tmp_path)
+        client, _ = mcp_client
+        response = client.post(
+            "/api/mcp", json={"enabled": ["console_mcp", "context7"], "maxIterations": 9}
+        )
+        assert response.status_code == 200
+        # Externals never enter MCP_ENABLED — only the built-in stays.
+        assert os.environ["MCP_ENABLED"] == "console_mcp"
+        assert "context7" not in dotenv_values(config_module.ENV_PATH)["MCP_ENABLED"]
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["context7"]["enable"] is True
+        assert data["chrome-devtools"]["enable"] is False
+        assert data["context7"]["url"] == "https://mcp.context7.com/mcp"  # preserved
+        by_id = {c["id"]: c for c in response.json()["connectors"]}
+        assert by_id["context7"]["active"] is True
+
+    def test_post_enabling_only_one_external_disables_the_other(self, mcp_client, tmp_path):
+        path = self._externals_file(tmp_path)
+        client, _ = mcp_client
+        client.post("/api/mcp", json={"enabled": ["chrome-devtools"]})
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["chrome-devtools"]["enable"] is True
+        assert data["context7"]["enable"] is False
+
+    def test_post_unknown_connector_still_422_with_externals(self, mcp_client, tmp_path):
+        self._externals_file(tmp_path)
+        client, _ = mcp_client
+        response = client.post("/api/mcp", json={"enabled": ["ghost"]})
+        assert response.status_code == 422
+
+    def test_corrupt_file_surfaces_externals_error_and_survives_post(self, mcp_client, tmp_path):
+        path = tmp_path / "mcp_connectors" / "externals.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{oops", encoding="utf-8")
+        client, _ = mcp_client
+        body = client.get("/api/mcp").json()
+        assert "not readable JSON" in body["externalsError"]
+        response = client.post("/api/mcp", json={"enabled": ["console_mcp"], "maxIterations": 9})
+        assert response.status_code == 200
+        assert "not readable JSON" in response.json()["externalsError"]
+        assert path.read_text(encoding="utf-8") == "{oops"
+
+    def test_enable_start_and_disable_stop_are_reconciled(self, mcp_client, tmp_path):
+        self._externals_file(tmp_path)
+        client, app = mcp_client
+        hub = RecordingManager(
+            {
+                "console_mcp": "running",
+                "playwright_mcp": "running",
+                "context7": "running",
+                "chrome-devtools": "stopped",
+            }
+        )
+        app.state.mcp = hub
+        client.post(
+            "/api/mcp",
+            json={"enabled": ["console_mcp", "playwright_mcp", "context7", "chrome-devtools"]},
+        )
+        assert hub.started == ["chrome-devtools"]  # newly enabled
+        assert hub.stopped == []
+
+        client.post("/api/mcp", json={"enabled": ["console_mcp", "playwright_mcp"]})
+        # Both externals now go down: context7 was running, chrome starting.
+        assert hub.stopped == ["chrome-devtools", "context7"]
+        assert hub.started == ["chrome-devtools"]  # unchanged set not restarted
+
+    def test_chat_uses_mcp_enabled_plus_enabled_externals(self, mcp_client, tmp_path, monkeypatch):
+        import os
+
+        self._externals_file(tmp_path)
+        monkeypatch.setenv("MCP_ENABLED", "console_mcp")
+        assert routes._active_connector_ids() == ["console_mcp", "context7"]
 
 
 # ---------------------------------------------------------------------------

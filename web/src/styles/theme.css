@@ -1451,6 +1451,18 @@ body {
   margin: 0.4rem 0 0;
 }
 
+.mcp-external-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--pico-muted-color);
+  text-transform: none;
+}
+
+.mcp-externals-error {
+  white-space: pre-line;
+}
+
 .mcp-iterations {
   max-width: 12rem;
   margin-top: 1rem;

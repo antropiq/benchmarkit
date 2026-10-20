@@ -32,8 +32,8 @@ ALLOWED_COMMANDS = {
     "ps", "top", "df", "du", "free", "uptime", "hostname",
     "curl", "wget", "ping", "nslookup", "dig",
     "python3", "python", "node", "npm", "pip", "git",
-    "vim", "nano", "less", "more", "man",
-    "env", "printenv", "id", "groups", "who", "w", "actutopdf.py"
+    "vim", "nano", "less", "more", "man", "which",
+    "env", "printenv", "id", "groups", "who", "w"
 }
 
 # Commands that are always blocked (security)

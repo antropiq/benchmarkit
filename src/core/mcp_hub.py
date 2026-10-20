@@ -2,7 +2,10 @@
 
 Core-only: no FastAPI or browser concerns. Discovers the standalone MCP
 connector servers in ``mcp_connectors/`` (one ``*_mcp.py`` module each),
-spawns one subprocess per connector for the whole lifetime of the app,
+loads declarative external connectors from
+``mcp_connectors/externals.json`` (kilo.json-style ``remote``/``local``
+entries with an ``enable`` flag), spawns one subprocess per connector for
+the whole lifetime of the app,
 and keeps a persistent MCP client per connector on a dedicated asyncio
 thread so synchronous callers (chat worker threads) can bridge onto it
 with :meth:`McpManager.call_tool_sync`.
@@ -14,17 +17,24 @@ keep working when the optional ``[mcp]`` extra is not installed.
 import ast
 import asyncio
 import importlib.util
+import json
 import os
+import shlex
 import sys
 import tempfile
 import threading
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MCP_CONNECTORS_DIR = PROJECT_ROOT / "mcp_connectors"
 MCP_LOGS_DIR = PROJECT_ROOT / "logs" / "mcp"
+
+# Declarative third-party connectors (kilo.json-style, keyed by id). The file
+# may hold API keys in ``headers``/``env`` and is therefore gitignored; its
+# contents are never returned by the API.
+EXTERNALS_PATH = MCP_CONNECTORS_DIR / "externals.json"
 
 # Connector id -> default listen port, kept in sync with each connector
 # module's ``--port`` argparse default.
@@ -35,6 +45,9 @@ CONNECTOR_PORTS: Dict[str, int] = {
 
 # Connection retry policy for a freshly spawned connector process.
 CONNECT_RETRIES = 20
+# Local externals launch through a package runner (``npx``), whose cold start
+# (download + Node boot) can far exceed the built-in connectors' window.
+EXTERNAL_CONNECT_RETRIES = 60
 CONNECT_INTERVAL = 0.5
 # Grace given to a connector process between SIGTERM and SIGKILL.
 STOP_GRACE_SECONDS = 5.0
@@ -85,6 +98,177 @@ def discover_connectors(directory: Optional[Path] = None) -> List[Dict[str, Any]
             }
         )
     return connectors
+
+
+def _str_map(value: Any) -> Optional[Dict[str, str]]:
+    """Validate a ``headers``/``env`` entry: string keys, scalar values.
+
+    Returns the coerced mapping, ``{}`` for an unset value, or ``None`` when
+    the shape is invalid.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        return None
+    coerced: Dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, (str, int, float, bool)):
+            return None
+        coerced[key] = str(item)
+    return coerced
+
+
+def _argv_from_command(command: Any, args: Any) -> Optional[List[str]]:
+    """Normalize a local connector command into an argv list.
+
+    Accepts a kilo-style argv array or a plain command string (shell-quoting
+    rules) with an optional ``args`` list appended. ``None`` when invalid.
+    """
+    argv: List[str]
+    if isinstance(command, str):
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return None
+    elif isinstance(command, list) and command and all(
+        isinstance(part, str) and part for part in command
+    ):
+        argv = list(command)
+    else:
+        return None
+    if args is not None:
+        if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+            return None
+        argv.extend(args)
+    return argv or None
+
+
+def load_externals(
+    path: Optional[Path] = None, reserved_ids: Optional[Set[str]] = None
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Read ``mcp_connectors/externals.json`` into external connector dicts.
+
+    A missing file yields ``([], [])``. Unreadable/invalid JSON yields one
+    file-level error and no connectors. A single malformed entry is skipped
+    with a per-entry note; ``reserved_ids`` (built-in ids) rejects colliding
+    entries. Never raises. Entries keep their ``enable`` flag; the caller
+    decides what to do with disabled ones.
+    """
+    root = path or EXTERNALS_PATH
+    reserved = set(reserved_ids or ())
+    connectors: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    if not root.is_file():
+        return connectors, errors
+    try:
+        data = json.loads(root.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [], [f"{root.name} is not readable JSON: {exc}"]
+    if not isinstance(data, dict):
+        return [], [f"{root.name} must contain an object of connectors keyed by id"]
+    for connector_id in sorted(data):
+        prefix = f"{root.name}: '{connector_id}'"
+        if connector_id in reserved:
+            errors.append(f"{prefix}: id collides with a built-in connector — skipped")
+            continue
+        entry = data[connector_id]
+        if not isinstance(entry, dict):
+            errors.append(f"{prefix}: entry must be a JSON object — skipped")
+            continue
+        kind = entry.get("type")
+        kind = kind.lower() if isinstance(kind, str) else ""
+        if kind not in ("local", "remote"):
+            errors.append(f"{prefix}: type must be \"local\" or \"remote\" — skipped")
+            continue
+        headers = _str_map(entry.get("headers"))
+        env = _str_map(entry.get("env"))
+        if headers is None or env is None:
+            errors.append(
+                f"{prefix}: headers/env must be objects of string values — skipped"
+            )
+            continue
+        endpoint = ""
+        command: Optional[List[str]] = None
+        if kind == "remote":
+            url = entry.get("url")
+            if not isinstance(url, str) or not url.lower().startswith(
+                ("http://", "https://")
+            ):
+                errors.append(
+                    f"{prefix}: remote connector needs an http(s) url — skipped"
+                )
+                continue
+            endpoint = url
+        else:
+            command = _argv_from_command(entry.get("command"), entry.get("args"))
+            if command is None:
+                errors.append(
+                    f"{prefix}: local connector needs a command — skipped"
+                )
+                continue
+        description = entry.get("description")
+        connectors.append(
+            {
+                "id": connector_id,
+                "label": connector_id,
+                "description": description if isinstance(description, str) else "",
+                "port": 0,
+                "endpoint": endpoint,
+                "command": command,
+                "external": True,
+                "kind": kind,
+                "enable": bool(entry.get("enable", False)),
+                "headers": headers or {},
+                "env": env or {},
+            }
+        )
+    return connectors, errors
+
+
+def all_connectors() -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Built-in ``*_mcp.py`` connectors plus the declared external ones.
+
+    Returns the merged list (built-ins first, discovery order preserved) and
+    the external file's validation errors.
+    """
+    builtins = [
+        {**connector, "external": False, "kind": "builtin"}
+        for connector in discover_connectors()
+    ]
+    externals, errors = load_externals(
+        reserved_ids={connector["id"] for connector in builtins}
+    )
+    return builtins + externals, errors
+
+
+def set_externals_enabled(enabled: Dict[str, bool], path: Optional[Path] = None) -> List[str]:
+    """Write ``enable`` flags back to ``externals.json``, keeping everything else.
+
+    Only entries already present in the file are touched; other keys, entry
+    order, and unknown ids are preserved. A missing file is a no-op. A file
+    that cannot be parsed is left untouched (never rebuilt from partial
+    knowledge) and reported back as an error list.
+    """
+    root = path or EXTERNALS_PATH
+    if not root.is_file():
+        return []
+    try:
+        data = json.loads(root.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"Could not update {root.name}: {exc}"]
+    if not isinstance(data, dict):
+        return [f"Could not update {root.name}: top level is not an object"]
+    for connector_id, value in enabled.items():
+        entry = data.get(connector_id)
+        if isinstance(entry, dict):
+            entry["enable"] = bool(value)
+    try:
+        root.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        return [f"Could not write {root.name}: {exc}"]
+    return []
 
 
 def tools_to_openai_format(tools: List[Any]) -> List[Dict[str, Any]]:
@@ -182,7 +366,13 @@ class McpManager:
         logs_dir: Optional[Path] = None,
     ) -> None:
         self._connectors: Dict[str, Dict[str, Any]] = {
-            connector["id"]: {**connector, "status": "stopped", "error": None}
+            connector["id"]: {
+                **connector,
+                "kind": connector.get("kind", "builtin"),
+                "external": connector.get("external", False),
+                "status": "stopped",
+                "error": None,
+            }
             for connector in connectors
         }
         self._python_exe = python_exe or sys.executable
@@ -191,6 +381,7 @@ class McpManager:
         self._processes: Dict[str, asyncio.subprocess.Process] = {}
         self._stacks: Dict[str, AsyncExitStack] = {}
         self._clients: Dict[str, Any] = {}
+        self._http_clients: Dict[str, Any] = {}
         self._tools: Dict[str, List[Any]] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -203,7 +394,11 @@ class McpManager:
         return self._installed
 
     async def start_all(self) -> None:
-        """Spawn every connector and connect a client to each. Never raises."""
+        """Spawn every connector and connect a client to each. Never raises.
+
+        Disabled externals (``enable: false`` in ``externals.json``) stay
+        ``stopped`` until :meth:`start_connector`.
+        """
         if self._started or self._stopped:
             return
         self._started = True
@@ -217,7 +412,8 @@ class McpManager:
         self._thread.start()
         futures = [
             asyncio.run_coroutine_threadsafe(self._start_one(cid), self._loop)
-            for cid in self._connectors
+            for cid, info in self._connectors.items()
+            if not (info["external"] and not info.get("enable"))
         ]
         await asyncio.gather(*(asyncio.wrap_future(f) for f in futures))
 
@@ -234,7 +430,18 @@ class McpManager:
         return text[-chars:]
 
     async def _start_one(self, connector_id: str) -> None:
+        """Bring one connector up, dispatching on its kind. Never raises."""
         info = self._connectors[connector_id]
+        try:
+            if info["kind"] in ("local", "remote"):
+                await self._start_external(connector_id, info)
+            else:
+                await self._start_builtin(connector_id, info)
+        except Exception as exc:  # noqa: BLE001 — startup errors land in status
+            info["status"] = "error"
+            info["error"] = str(exc) or exc.__class__.__name__
+
+    async def _start_builtin(self, connector_id: str, info: Dict[str, Any]) -> None:
         if not info["port"]:
             info["status"] = "error"
             info["error"] = (
@@ -293,6 +500,126 @@ class McpManager:
         info["status"] = "error"
         info["error"] = last_error or "Connector did not become ready"
 
+    def _make_http_client(self, headers: Dict[str, str]) -> Any:
+        """HTTP client for remote externals, carrying their custom headers."""
+        try:
+            from mcp.shared._httpx_utils import create_mcp_http_client
+
+            return create_mcp_http_client(headers=headers or None)
+        except Exception:  # noqa: BLE001 — private helper, fall back to raw httpx
+            import httpx2
+
+            kwargs: Dict[str, Any] = {
+                "timeout": httpx2.Timeout(30.0, read=300.0),
+            }
+            if headers:
+                kwargs["headers"] = headers
+            return httpx2.AsyncClient(**kwargs)
+
+    async def _start_external(self, connector_id: str, info: Dict[str, Any]) -> None:
+        """Connect an external connector: Streamable HTTP (remote) or stdio (local)."""
+        info["status"] = "starting"
+        from mcp import Client  # lazy: importable only with the [mcp] extra
+
+        retries = (
+            EXTERNAL_CONNECT_RETRIES if info["kind"] == "local" else CONNECT_RETRIES
+        )
+        last_error: Optional[str] = None
+        for _ in range(retries):
+            stack = AsyncExitStack()
+            http_client = None
+            try:
+                if info["kind"] == "remote":
+                    from mcp.client.streamable_http import streamable_http_client
+
+                    http_client = self._make_http_client(info.get("headers") or {})
+                    transport = streamable_http_client(
+                        info["endpoint"], http_client=http_client
+                    )
+                    client = Client(transport)
+                else:
+                    from mcp import StdioServerParameters
+
+                    argv = info.get("command") or []
+                    if not argv:
+                        raise ValueError("local connector has no command")
+                    env = {
+                        **connector_environment(self._project_root),
+                        **(info.get("env") or {}),
+                    }
+                    params = StdioServerParameters(
+                        command=argv[0],
+                        args=list(argv[1:]),
+                        env=env,
+                        cwd=str(self._project_root),
+                    )
+                    client = Client(params)
+                await stack.enter_async_context(client)
+                listing = await client.list_tools()
+                self._stacks[connector_id] = stack
+                self._clients[connector_id] = client
+                if http_client is not None:
+                    self._http_clients[connector_id] = http_client
+                self._tools[connector_id] = list(listing.tools)
+                info["status"] = "running"
+                info["error"] = None
+                return
+            except Exception as exc:  # noqa: BLE001 — retry until the server is up
+                last_error = str(exc) or exc.__class__.__name__
+                with suppress(Exception):
+                    await asyncio.wait_for(stack.aclose(), timeout=STOP_GRACE_SECONDS)
+                # A caller-supplied http client is not owned by the transport.
+                if (
+                    http_client is not None
+                    and self._http_clients.get(connector_id) is not http_client
+                ):
+                    with suppress(Exception):
+                        await http_client.aclose()
+                await asyncio.sleep(CONNECT_INTERVAL)
+        await self._close_connector(connector_id)
+        info["status"] = "error"
+        info["error"] = last_error or "Connector did not become ready"
+
+    def start_connector(self, connector_id: str) -> None:
+        """Start (or restart) one connector from a synchronous caller. Never raises.
+
+        Fire-and-forget: the status flips to ``starting`` right away and the
+        connection attempt runs on the hub thread.
+        """
+        info = self._connectors.get(connector_id)
+        if info is None or self._loop is None or self._stopped:
+            return
+        info["status"] = "starting"
+        info["error"] = None
+        with suppress(Exception):
+            asyncio.run_coroutine_threadsafe(
+                self._restart_one(connector_id), self._loop
+            )
+
+    def stop_connector(self, connector_id: str) -> None:
+        """Tear one connector down, waiting briefly so callers can re-read status."""
+        if connector_id not in self._connectors or self._loop is None or self._stopped:
+            return
+        with suppress(Exception):
+            asyncio.run_coroutine_threadsafe(
+                self._stop_one(connector_id), self._loop
+            ).result(timeout=2 * STOP_GRACE_SECONDS + 5)
+
+    async def _restart_one(self, connector_id: str) -> None:
+        await self._close_connector(connector_id)
+        await self._start_one(connector_id)
+
+    async def _stop_one(self, connector_id: str) -> None:
+        await self._close_connector(connector_id)
+        info = self._connectors[connector_id]
+        info["status"] = "stopped"
+        info["error"] = None
+
+    def connector_status(self, connector_id: str) -> Optional[str]:
+        """Live status of one known connector, or ``None`` when unknown."""
+        info = self._connectors.get(connector_id)
+        return info["status"] if info is not None else None
+
     def active_tool_defs(
         self, connector_ids: List[str]
     ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
@@ -335,10 +662,25 @@ class McpManager:
         return extract_tool_result_text(result)
 
     def status(self) -> List[Dict[str, Any]]:
-        """Connector definitions merged with live status, in discovery order."""
+        """Connector definitions merged with live status, in discovery order.
+
+        ``headers``/``env`` of external connectors are deliberately excluded.
+        """
         return [
             {
-                **{key: info[key] for key in ("id", "label", "description", "port", "endpoint")},
+                **{
+                    key: info.get(key)
+                    for key in (
+                        "id",
+                        "label",
+                        "description",
+                        "port",
+                        "endpoint",
+                        "command",
+                        "external",
+                        "kind",
+                    )
+                },
                 "status": info["status"],
                 "error": info["error"],
                 "toolCount": len(self._tools.get(info["id"], [])),
@@ -350,9 +692,15 @@ class McpManager:
         stack = self._stacks.pop(connector_id, None)
         self._clients.pop(connector_id, None)
         self._tools.pop(connector_id, None)
+        http_client = self._http_clients.pop(connector_id, None)
         if stack is not None:
             with suppress(Exception):
                 await asyncio.wait_for(stack.aclose(), timeout=STOP_GRACE_SECONDS)
+        if http_client is not None:
+            with suppress(Exception):
+                await asyncio.wait_for(
+                    http_client.aclose(), timeout=STOP_GRACE_SECONDS
+                )
         process = self._processes.pop(connector_id, None)
         if process is not None and process.returncode is None:
             with suppress(ProcessLookupError):

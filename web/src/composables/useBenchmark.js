@@ -41,6 +41,7 @@ const state = reactive({
   mcpLoading: false,
   mcpSaving: false,
   mcpError: null,
+  mcpExternalsError: null, // externals.json validation errors from the backend
 })
 
 let eventSource = null
@@ -406,6 +407,7 @@ export function useBenchmark() {
       state.mcpConnectors = []
       state.mcpEnabled = []
       state.mcpError = null
+      state.mcpExternalsError = null
       refreshModelLists()
       loadQuestionSets()
       loadMcp()
@@ -562,6 +564,7 @@ export function useBenchmark() {
       state.mcpInstalled = !!body.installed
       state.mcpConnectors = body.connectors || []
       state.mcpMaxIterations = body.maxIterations ?? 25
+      state.mcpExternalsError = body.externalsError || null
       state.mcpEnabled = state.mcpConnectors
         .filter((connector) => connector.active)
         .map((connector) => connector.id)
@@ -603,6 +606,7 @@ export function useBenchmark() {
       state.mcpInstalled = !!body.installed
       state.mcpConnectors = body.connectors || []
       state.mcpMaxIterations = body.maxIterations ?? 25
+      state.mcpExternalsError = body.externalsError || null
       state.mcpEnabled = state.mcpConnectors
         .filter((connector) => connector.active)
         .map((connector) => connector.id)

@@ -63,6 +63,14 @@ function onBackdropClick(event) {
 function onNativeClose() {
   if (state.settingsOpen) closeSettings()
 }
+
+function connectorDetail(connector) {
+  if (connector.description) return connector.description
+  if (connector.kind === 'local') {
+    return Array.isArray(connector.command) ? connector.command.join(' ') : ''
+  }
+  return connector.endpoint || ''
+}
 </script>
 
 <template>
@@ -271,17 +279,24 @@ function onNativeClose() {
             <p class="caption">
               Connector servers start with the app and stop when it quits.
               Activated connectors add their tools to the Chat tab only —
-              benchmark runs never use them.
+              benchmark runs never use them. Toggling an
+              <span class="mcp-external-tag">[external]</span> connector updates
+              <code>mcp_connectors/externals.json</code> and starts or stops it
+              right away (local connectors launched through
+              <code>npx</code> may take a few seconds to run).
             </p>
             <p v-if="!state.mcpInstalled" class="caption alert-error" role="alert">
               The mcp package is not installed. Run
               <code>pip install -e ".[mcp]"</code> (then
               <code>playwright install chromium</code>) and restart the app.
             </p>
+            <p v-if="state.mcpExternalsError" class="caption alert-error mcp-externals-error" role="alert">
+              {{ state.mcpExternalsError }}
+            </p>
             <p v-if="state.mcpLoading" class="caption">Loading connectors…</p>
             <p v-else-if="!state.mcpConnectors.length" class="caption">
               No connectors found in <code>mcp_connectors/</code> (expected
-              <code>*_mcp.py</code> modules).
+              <code>*_mcp.py</code> modules or <code>externals.json</code> entries).
             </p>
             <div v-for="connector in state.mcpConnectors" :key="connector.id" class="mcp-panel">
               <div class="mcp-panel-header">
@@ -294,12 +309,13 @@ function onNativeClose() {
                     @change="toggleMcp(connector.id, $event.target.checked)"
                   />
                   {{ connector.label }}
+                  <span v-if="connector.external" class="mcp-external-tag">[external]</span>
                 </label>
                 <span class="badge" :class="MCP_STATUS_CLASS[connector.status]">
                   {{ connector.status }}
                 </span>
               </div>
-              <p class="caption mcp-description">{{ connector.description }}</p>
+              <p class="caption mcp-description">{{ connectorDetail(connector) }}</p>
               <p v-if="connector.error" class="caption alert-error">{{ connector.error }}</p>
             </div>
             <label class="mcp-iterations">
