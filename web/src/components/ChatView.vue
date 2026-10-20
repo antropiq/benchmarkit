@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import ChatInput from './ChatInput.vue'
 import ChatToolPanel from './ChatToolPanel.vue'
+import ImageLightbox from './ImageLightbox.vue'
 import MarkdownStream from './MarkdownStream.vue'
 import { humanFileSize, useChat } from '../composables/useChat'
 import { useAutoScroll } from '../composables/useAutoScroll'
@@ -31,6 +32,10 @@ const lastUserIndex = computed(() => {
 const shell = ref(null)
 const input = ref(null)
 const panel = ref(null)
+
+// Image opened in the full-size lightbox popup (null = closed). Pure view
+// state, deliberately outside the useChat singleton.
+const preview = ref(null)
 const contentVersion = computed(() =>
   state.messages
     .map((m) => `${m.role}:${m.raw.length}:${m.images?.length ?? 0}`)
@@ -79,14 +84,22 @@ const {
               </svg>
             </button>
             <div class="chat-bubble">
-              <img
+              <button
                 v-for="(image, j) in message.images ?? []"
                 :key="j"
-                :src="image.dataUrl"
-                :alt="image.name"
-                class="chat-thumb"
-                loading="lazy"
-              />
+                type="button"
+                class="chat-thumb-zoom"
+                :aria-label="`View ${image.name} at full size`"
+                :title="`View ${image.name} at full size`"
+                @click="preview = image"
+              >
+                <img
+                  :src="image.dataUrl"
+                  :alt="image.name"
+                  class="chat-thumb"
+                  loading="lazy"
+                />
+              </button>
               <MarkdownStream v-if="message.html" :html="message.html" />
             </div>
           </div>
@@ -106,11 +119,19 @@ const {
           class="chat-attachment chat-attachment--pending"
           aria-label="Attached image (not sent yet)"
         >
-          <img
-            :src="state.pendingImage.dataUrl"
-            :alt="state.pendingImage.name"
-            class="chat-thumb"
-          />
+          <button
+            type="button"
+            class="chat-thumb-zoom"
+            aria-label="View attached image at full size"
+            title="View attached image at full size"
+            @click="preview = state.pendingImage"
+          >
+            <img
+              :src="state.pendingImage.dataUrl"
+              :alt="state.pendingImage.name"
+              class="chat-thumb"
+            />
+          </button>
           <span class="chat-attachment-meta">
             <span class="chat-attachment-name">{{ state.pendingImage.name }}</span>
             <span class="caption">{{ humanFileSize(state.pendingImage.size) }}</span>
@@ -169,5 +190,7 @@ const {
     ></div>
 
     <ChatInput ref="input" :style="bottomStyle" />
+
+    <ImageLightbox :image="preview" @close="preview = null" />
   </div>
 </template>

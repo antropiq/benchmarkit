@@ -1289,6 +1289,89 @@ body {
   opacity: 1;
 }
 
+/* Clickable chat thumbnails: the <img> is wrapped in a bare button so it can
+   open the full-size lightbox. Keep the exact visual rhythm the bare thumb
+   had inside bubbles (button owns the margins now). */
+.chat-thumb-zoom {
+  display: block;
+  width: fit-content;
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  cursor: zoom-in;
+}
+
+.chat-thumb-zoom:focus-visible {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: 2px;
+}
+
+.chat-bubble .chat-thumb-zoom {
+  margin-bottom: 0.5rem;
+}
+
+.chat-bubble .chat-thumb-zoom:last-child {
+  margin-bottom: 0;
+}
+
+.chat-thumb-zoom .chat-thumb {
+  margin-bottom: 0;
+}
+
+/* -- full-size image lightbox -------------------------------------------------- */
+
+/* Native modal dialog reused as a lightbox — deliberately not Pico's card
+   pattern (no <article>, no padding): the image *is* the dialog content and
+   scrolls inside it whenever it is larger than the viewport. */
+.image-lightbox[open] {
+  display: flex;
+
+  /* Pico centers the dialog content (justify/align-items: center) for its
+     <article> card pattern; with an overflowing <img> that makes the top/left
+     edges unreachable even at scroll position 0. The image centers itself
+     with margin: auto instead, which collapses to 0 on overflow. */
+  justify-content: flex-start;
+  align-items: flex-start;
+  width: fit-content;
+  height: fit-content;
+  max-width: 92vw;
+  max-height: 92vh;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: auto;
+}
+
+.image-lightbox::backdrop {
+  background-color: rgb(0 0 0 / 0.72);
+}
+
+/* margin:auto centers a small image at its natural size; when the image
+   overflows the dialog the auto margins collapse to 0, so the top/left edges
+   stay reachable through the scrollbars. */
+.image-lightbox img {
+  display: block;
+  flex: none;
+  margin: auto;
+  max-width: none;
+  max-height: none;
+  border-radius: var(--bi-radius-lg);
+}
+
+.image-lightbox-close {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1;
+  border-color: color-mix(in srgb, var(--pico-color) 25%, transparent);
+}
+
 .chat-typing {
   animation: bi-pulse 1.4s ease-in-out infinite;
 }
