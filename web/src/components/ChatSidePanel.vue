@@ -23,8 +23,13 @@ const totalTokens = computed(() => {
   let total = 0
   for (const message of state.messages) {
     if (message.role !== 'assistant') continue
+    // Live usage events (exact, tool-call argument tokens included) beat
+    // the raw-text estimate; max() keeps the count ticking mid-round too.
     total += message.streaming
-      ? estimateCompletionTokens(message.raw)
+      ? Math.max(
+          message.usageTokens || 0,
+          estimateCompletionTokens(message.raw),
+        )
       : message.tokens
   }
   return total
@@ -52,6 +57,15 @@ const rate = computed(() => {
       return {
         value: estimateCompletionTokens(active.raw) / secs,
         estimated: true,
+      }
+    }
+    // MCP tool loop (no answer text streamed yet): cumulative usage from
+    // the last `usage` event — exact tokens over the decode window, so
+    // tool execution time never enters the rate.
+    if (active.usageTokens > 0 && active.usageDecode > 0) {
+      return {
+        value: active.usageTokens / active.usageDecode,
+        estimated: false,
       }
     }
   } else if (active && active.tokens && active.took > active.ttft) {

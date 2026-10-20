@@ -19,6 +19,12 @@
   --bi-appbar-height: 60px;
   /* Shared width of the Chat left column (tool-call log + stats panel). */
   --bi-chat-panel-width: 12rem;
+
+  /* Gradient gauge ramp: green → yellow → orange → red (theme-independent). */
+  --bi-gauge-low: #22c55e;
+  --bi-gauge-mid: #eab308;
+  --bi-gauge-high: #f97316;
+  --bi-gauge-max: #ef4444;
 }
 
 :root[data-theme='light'] {
@@ -1209,16 +1215,79 @@ body {
 
 /* Vertical log of MCP tool-call badges, left of the chat output. Independent
    scroll; same fixed width as the stats panel in the input row. Deliberately
-   not `.stream-panel`: that class pins a fixed viewport height. */
+   not `.stream-panel`: that class pins a fixed viewport height. The badges
+   scroll inside `.chat-tool-scroll` so the iteration gauge stays bottom-
+   pinned and always visible. */
 .chat-tool-panel {
   flex: 0 0 var(--bi-chat-panel-width);
   min-width: 0;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background-color: var(--bi-surface);
   border: 1px solid var(--bi-border);
   border-radius: var(--bi-radius-lg);
+}
+
+.chat-tool-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Gauge footer strip: surface must match the gauge mask color. */
+.chat-tool-gauge {
+  flex: none;
+  padding: 0.6rem 0.5rem;
+  border-top: 1px solid var(--bi-border);
+  background-color: var(--bi-surface);
+}
+
+/* -- Reusable gradient gauge (GaugeBar.vue) -------------------------------- */
+.gauge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.gauge-track {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--pico-muted-border-color) 80%, transparent);
+  background-image: linear-gradient(
+    90deg,
+    var(--bi-gauge-low) 0%,
+    var(--bi-gauge-mid) 45%,
+    var(--bi-gauge-high) 72%,
+    var(--bi-gauge-max) 100%
+  );
+}
+
+/* Unfilled remainder painted over the full-size gradient, so the color at
+   the fill tip reflects the level (green when low, red near the cap). */
+.gauge-mask {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  right: 1px;
+  background-color: var(--bi-surface);
+  transition: left 0.3s ease;
+}
+
+.gauge-caption {
+  flex: none;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--pico-muted-color);
+  white-space: nowrap;
 }
 
 .chat-tool-list {

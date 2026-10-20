@@ -90,9 +90,11 @@ def stream_chat(
     """Stream one chat reply, emitting ``token`` / ``reasoning`` / ``done``.
 
     With MCP tools active also emits ``tool_call`` / ``tool_result`` events
-    per executed tool call. Terminal event is exactly one of ``done`` or
-    ``error`` (unless the call was cancelled — then the client is gone and
-    nothing is emitted).
+    per executed tool call (``tool_call`` carries ``iteration`` and
+    ``maxIterations`` for the UI gauge) plus a cumulative ``usage`` event
+    (``tokens`` / ``decode`` seconds) after each tool round. Terminal event
+    is exactly one of ``done`` or ``error`` (unless the call was cancelled —
+    then the client is gone and nothing is emitted).
     """
     if not messages or messages[0].get("role") != "system":
         messages = [
@@ -121,6 +123,7 @@ def stream_chat(
     reasoning_emitted = False
     t_first: Optional[float] = None
     t_last: Optional[float] = None
+    decode_seconds = 0.0
     capped = False
 
     iteration = 0
@@ -147,6 +150,8 @@ def stream_chat(
         iteration_completion = 0
         iteration_usage: Optional[Dict[str, Optional[int]]] = None
         tool_calls: Dict[int, Dict[str, Any]] = {}
+        iter_first: Optional[float] = None
+        iter_last: Optional[float] = None
         try:
             for chunk in response_generator:
                 if cancel_event is not None and cancel_event.is_set():
@@ -172,6 +177,9 @@ def stream_chat(
                 if t_first is None:
                     t_first = arrival
                 t_last = arrival
+                if iter_first is None:
+                    iter_first = arrival
+                iter_last = arrival
                 if not content:
                     continue
                 iteration_content += content
@@ -182,6 +190,8 @@ def stream_chat(
             return
 
         completion_tokens += iteration_completion
+        if iter_first is not None and iter_last is not None:
+            decode_seconds += iter_last - iter_first
         if iteration_usage is not None:
             last_usage = iteration_usage
 
@@ -222,6 +232,8 @@ def stream_chat(
                     "tool": tool_name,
                     "server": (tool_servers or {}).get(tool_name, ""),
                     "argsPreview": _preview(args_preview),
+                    "iteration": iteration,
+                    "maxIterations": max_tool_iterations,
                 }
             )
             if invalid_json is not None:
@@ -251,6 +263,16 @@ def stream_chat(
             )
         if cancel_event is not None and cancel_event.is_set():
             return
+        # Cumulative usage of the completed round (tool-call argument tokens
+        # included): lets the chat UI update its token badges while the tool
+        # loop is still running instead of waiting for the final `done`.
+        emit(
+            {
+                "event": "usage",
+                "tokens": completion_tokens,
+                "decode": decode_seconds,
+            }
+        )
         if iteration >= max_tool_iterations:
             capped = True
             break

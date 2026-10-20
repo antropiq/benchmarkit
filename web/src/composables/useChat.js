@@ -108,6 +108,16 @@ function applyEvent(name, data, assistant) {
         preview: data.argsPreview ?? '',
         state: 'running',
       })
+      // Server-authoritative tool-loop position for the iteration gauge.
+      if (data.iteration) assistant.mcpIteration = data.iteration
+      if (data.maxIterations) assistant.mcpMax = data.maxIterations
+      break
+    case 'usage':
+      // Cumulative completion tokens (tool-call arguments included) and
+      // decode seconds after each tool round: keeps the side-panel badges
+      // live while the MCP tool loop is still running.
+      assistant.usageTokens = data.tokens ?? assistant.usageTokens
+      assistant.usageDecode = data.decode ?? assistant.usageDecode
       break
     case 'tool_result': {
       const tool = assistant.tools.find((item) => item.id === data.id)
@@ -219,6 +229,10 @@ export function useChat() {
       tokensEstimated: false,
       firstTokenAt: 0,
       lastTokenAt: 0,
+      mcpIteration: 0, // server tool-loop position (gauge)
+      mcpMax: 0, // MAX_MCP_ITERATION reported by the server
+      usageTokens: 0, // cumulative completion tokens per `usage` event
+      usageDecode: 0, // cumulative decode seconds per `usage` event
     })
     // Keep the reactive proxy so token mutations re-render.
     const assistant = state.messages[state.messages.length - 1]

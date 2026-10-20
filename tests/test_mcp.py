@@ -408,12 +408,16 @@ class TestChatToolLoop:
             executor=executor,
         )
         names = [e["event"] for e in events]
-        assert names == ["tool_call", "tool_result", "token", "done"]
+        assert names == ["tool_call", "tool_result", "usage", "token", "done"]
         assert seen_args["call"] == ("execute_command", {"command": "ls"})
         tool_call = events[0]
         assert tool_call["tool"] == "execute_command"
         assert tool_call["server"] == "console_mcp"
+        assert tool_call["iteration"] == 1
+        assert tool_call["maxIterations"] == 25
         assert events[1]["ok"] is True
+        # Cumulative usage of the completed round, before the final answer.
+        assert events[2]["tokens"] == 8
         # Second request carries the assistant tool_calls + tool result turn.
         second = calls[1]
         assistant = [m for m in second if m.get("tool_calls")]
@@ -483,6 +487,31 @@ class TestChatToolLoop:
         assert result["ok"] is False
         assert "connector down" in result["preview"]
 
+    def test_iteration_and_usage_events_across_rounds(self, monkeypatch):
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [tool_call_chunk("c1", "execute_command", "{}"),
+                 usage_chunk(completion=8)],
+                [tool_call_chunk("c2", "execute_command", "{}"),
+                 usage_chunk(completion=5)],
+                [content_chunk("done")],
+            ],
+            max_tool_iterations=10,
+        )
+        names = [e["event"] for e in events]
+        assert names == [
+            "tool_call", "tool_result", "usage",
+            "tool_call", "tool_result", "usage",
+            "token", "done",
+        ]
+        calls = [e for e in events if e["event"] == "tool_call"]
+        assert [e["iteration"] for e in calls] == [1, 2]
+        assert all(e["maxIterations"] == 10 for e in calls)
+        usages = [e for e in events if e["event"] == "usage"]
+        assert [e["tokens"] for e in usages] == [8, 13]  # cumulative
+        assert all(e["decode"] >= 0 for e in usages)
+
     def test_iteration_cap_stops_with_note(self, monkeypatch):
         forever = [[tool_call_chunk(f"c{i}", "execute_command", "{}")] for i in range(5)]
         forever.append([content_chunk("never reached")])
@@ -492,7 +521,9 @@ class TestChatToolLoop:
             max_tool_iterations=2,
         )
         # Two iterations of one tool call each, then the cap note.
-        assert len([e for e in events if e["event"] == "tool_call"]) == 2
+        tool_calls = [e for e in events if e["event"] == "tool_call"]
+        assert len(tool_calls) == 2
+        assert tool_calls[-1]["iteration"] == 2  # gauge reads max on the cap round
         assert len(calls) == 2
         note = next(e for e in events if e["event"] == "token")
         assert "tool iterations reached" in note["text"]
