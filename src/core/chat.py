@@ -2,8 +2,11 @@
 
 Pure loop + event emission, like ``core/llm.py``: takes an ``emit``
 callable, no FastAPI or browser concerns. Reasoning/thinking deltas are
-never emitted as text — a single ``reasoning`` event flags that the model
-is thinking — so the chat UI can show an indicator instead.
+streamed as ``reasoning_delta`` text (the Chat tab's left panel shows the
+thinking timeline) while a single ``reasoning`` event flags that the model
+started thinking (the app-bar status pill). Reasoning text is never answer
+text: it never reaches ``token`` events nor the assistant message content
+sent back to the model.
 
 When ``tools`` and ``tool_executor`` are provided (MCP connectors active
 for the Chat tab), the reply runs an OpenAI-style tool-calling loop: each
@@ -119,6 +122,9 @@ def stream_chat(
     multimodal parts (``text`` / ``image_url`` data URLs); parts are passed
     through to litellm untouched.
 
+    Thinking streams as ``reasoning_delta`` (``text``) frames, preceded by
+    the one-shot ``reasoning`` flag frame.
+
     With MCP tools active also emits ``tool_call`` / ``tool_result`` events
     per executed tool call (``tool_call`` carries ``iteration`` and
     ``maxIterations`` for the UI gauge) plus a cumulative ``usage`` event as
@@ -228,9 +234,11 @@ def stream_chat(
                 tool_args_text = _collect_tool_call_deltas(chunk, tool_calls)
                 content = safe_get_choice_content(chunk) or ""
                 reasoning = _extract_reasoning(chunk)
-                if reasoning and not reasoning_emitted:
-                    reasoning_emitted = True
-                    emit({"event": "reasoning"})
+                if reasoning:
+                    if not reasoning_emitted:
+                        reasoning_emitted = True
+                        emit({"event": "reasoning"})
+                    emit({"event": "reasoning_delta", "text": reasoning})
                 # Content, reasoning and tool-call argument deltas all open
                 # and extend the decode window (like the benchmark loop in
                 # core/llm.py): they are all generated tokens counted in

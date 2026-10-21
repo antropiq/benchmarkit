@@ -253,6 +253,13 @@ function applyEvent(name, data, assistant) {
         preview: data.argsPreview ?? '',
         state: 'running',
       })
+      // Same reactive object in the panel timeline, at its chronological
+      // slot: reasoning text flows around the badges, tool_result state
+      // flips still re-render the badge in place.
+      assistant.blocks.push({
+        kind: 'tool',
+        tool: assistant.tools[assistant.tools.length - 1],
+      })
       // Server-authoritative tool-loop position for the iteration gauge.
       if (data.iteration) assistant.mcpIteration = data.iteration
       if (data.maxIterations) assistant.mcpMax = data.maxIterations
@@ -294,6 +301,19 @@ function applyEvent(name, data, assistant) {
       // arrives via the backend's usage/done events, which open the decode
       // window on reasoning deltas server-side.
       break
+    case 'reasoning_delta': {
+      // Thinking text, streamed live: appended to the panel timeline. A
+      // tool_call frame in between breaks the flow, so consecutive deltas
+      // extend one block and the next round's thinking starts a new one —
+      // matching the model's actual reasoning-then-act chronology.
+      const text = data.text ?? ''
+      if (!text) break
+      const blocks = assistant.blocks
+      const last = blocks[blocks.length - 1]
+      if (last && last.kind === 'reasoning') last.text += text
+      else blocks.push({ kind: 'reasoning', text })
+      break
+    }
     case 'error':
       state.error = data.message || 'Chat request failed.'
       break
@@ -404,6 +424,7 @@ export function useChat() {
       html: '',
       streaming: true,
       tools: [], // MCP tool calls: { id, tool, server, preview, state, resultPreview }
+      blocks: [], // panel timeline: { kind: 'reasoning', text } | { kind: 'tool', tool }
       tokens: 0,
       took: 0,
       ttft: 0,

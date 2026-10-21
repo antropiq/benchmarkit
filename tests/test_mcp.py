@@ -1086,6 +1086,34 @@ class TestChatToolLoop:
         assert done["took"] == 22.0  # wall clock does include the tool run
         assert done["ttft"] == 1.0
 
+    def test_reasoning_deltas_interleave_with_tool_frames(self, monkeypatch):
+        # The Chat tab's left panel renders a chronological timeline: the
+        # panel relies on reasoning_delta frames arriving between the rounds'
+        # tool_call frames, in stream order.
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [{"choices": [{"delta": {"reasoning_content": "plan"}}]},
+                 tool_call_chunk("c1", "execute_command", "{}")],
+                [{"choices": [{"delta": {"reasoning_content": "again"}}]},
+                 tool_call_chunk("c2", "execute_command", "{}")],
+                [content_chunk("ok")],
+            ],
+        )
+        names = [e["event"] for e in events]
+        assert names == [
+            "reasoning",            # one-shot flag (first thinking delta)
+            "reasoning_delta",      # round 1 flow
+            "usage",
+            "tool_call", "tool_result",
+            "reasoning_delta",      # round 2 flow, after the tool round
+            "usage",
+            "tool_call", "tool_result",
+            "token", "done",
+        ]
+        texts = [e["text"] for e in events if e["event"] == "reasoning_delta"]
+        assert texts == ["plan", "again"]
+
     def test_usage_precedes_tool_execution(self, monkeypatch):
         # The usage frame is emitted when the round's generation ends, so a
         # slow tool cannot freeze the token badge for its whole execution.

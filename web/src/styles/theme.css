@@ -17,12 +17,16 @@
   --bi-space-3: 1.25rem;
   --bi-space-4: 2rem;
   --bi-appbar-height: 60px;
-  /* Shared width of the Chat left column (tool-call log + stats panel). */
-  --bi-chat-panel-width: 12rem;
-  /* Conversation-scoped MCP toggle panel (input row): wider than the
-     shared column so connector names fit next to their switch (also wide
-     enough that the vertical scrollbar never squeezes a row sideways). */
+  /* Stats panel of the input row (counters + actions): +50% vs before, in
+     lockstep with the widened tool/reasoning timeline above it. */
+  --bi-chat-panel-width: 18rem;
+  /* Conversation-scoped MCP toggle panel (input row): sized so connector
+     names fit next to their switch (also wide enough that the vertical
+     scrollbar never squeezes a row sideways). */
   --bi-chat-mcp-width: 15.5rem;
+  /* Flex gap inside the input row (.chat-input) — feeds the left-zone
+     alignment math in the chat-screen section below. */
+  --bi-chat-input-gap: 0.75rem;
 
   /* Gradient gauge ramp: green → yellow → orange → red (theme-independent). */
   --bi-gauge-low: #22c55e;
@@ -1531,13 +1535,30 @@ body {
   animation: bi-pulse 1.4s ease-in-out infinite;
 }
 
-/* Vertical log of MCP tool-call badges, left of the chat output. Independent
-   scroll; same fixed width as the stats panel in the input row. Deliberately
-   not `.stream-panel`: that class pins a fixed viewport height. The badges
-   scroll inside `.chat-tool-scroll` so the iteration gauge stays bottom-
-   pinned and always visible. */
+/* Vertical timeline of what the chat stream on the right never shows: the
+   model's streamed reasoning flows interleaved with the MCP tool-call
+   badges, in emission order. Independent scroll. Deliberately not
+   `.stream-panel`: that class pins a fixed viewport height. The content
+   scrolls inside `.chat-tool-scroll` so the iteration gauge stays
+   bottom-pinned and always visible.
+
+   Width: the timeline spans the whole left zone of the input row, so both
+   rows share one left column — with the MCP panel visible it covers the
+   stats panel + MCP panel + their gap, putting the timeline's right edge
+   on the MCP panel's right edge: the input row's left zone is
+   panel + gap + MCP panel + gap, but only the first gap lies right of the
+   timeline (the second one sits between the MCP panel and the textarea
+   column, i.e. beyond the timeline's edge), hence one gap is subtracted.
+   Without a visible MCP panel it equals the stats panel's width. */
+.chat-shell:has(.chat-mcp-panel) {
+  --bi-chat-tool-width: calc(
+    var(--bi-chat-panel-width) + var(--bi-chat-mcp-width)
+      - var(--bi-chat-input-gap)
+  );
+}
+
 .chat-tool-panel {
-  flex: 0 0 var(--bi-chat-panel-width);
+  flex: 0 0 var(--bi-chat-tool-width, var(--bi-chat-panel-width));
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1629,6 +1650,18 @@ body {
   font-family: var(--pico-font-family-monospace);
   font-size: 0.75rem;
   color: var(--pico-muted-color);
+}
+
+/* Reasoning (thinking) text block of the timeline: plain text — thinking is
+   not markdown, and it stays XSS-safe as a Vue text interpolation. Same
+   small mono muted look as the brand subtitle and the tool badges. */
+.chat-reasoning {
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.7rem;
+  line-height: 1.45;
+  color: var(--pico-muted-color);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .chat-tool-name {

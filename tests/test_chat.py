@@ -60,11 +60,23 @@ class TestStreamChat:
             ],
         )
         names = [e["event"] for e in events]
-        assert names == ["reasoning", "token", "token", "done"]
+        # The one-shot `reasoning` flag opens the phase, then every thinking
+        # delta streams as its own `reasoning_delta` frame.
+        assert names == [
+            "reasoning",
+            "reasoning_delta", "reasoning_delta",
+            "token", "token",
+            "done",
+        ]
+        assert [e["text"] for e in events if e["event"] == "reasoning_delta"] == [
+            "thinking", " more",
+        ]
         text = "".join(e["text"] for e in events if e["event"] == "token")
         assert text == "Hello"
-        # Reasoning text must never leak into emitted text.
-        assert all("thinking" not in json.dumps(e) for e in events)
+        # Reasoning is never ANSWER text: it stays out of `token` frames and
+        # out of the assistant turn fed back to the model.
+        assert all("thinking" not in e["text"] for e in events if e["event"] == "token")
+        assert events[0] == {"event": "reasoning"}  # flag carries no text
         done = events[-1]
         assert done["tokens"] == 7
         assert done["tokensEstimated"] is False
@@ -107,7 +119,7 @@ class TestStreamChat:
         # t0, reasoning, reasoning, content — the usage-only chunk is not
         # timed. The window must start at the first reasoning delta, like in
         # the benchmark loop, so tok/s does not pretend thinking was free.
-        clock = [0.0, 1.0, 2.0, 6.0]
+        clock = [0.0, 1.0, 2.0, 6.0]  # t0 + one arrival per generated chunk
         monkeypatch.setattr(
             "src.core.chat.time.monotonic", lambda: clock.pop(0)
         )
