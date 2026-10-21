@@ -5,6 +5,11 @@ Console MCP Server - Allows LLMs to execute console commands via MCP protocol.
 This server exposes tools that enable AI models to run shell commands on the local system.
 It implements the Model Context Protocol (MCP) and serves at http://localhost:9999/mcp
 
+Reading and editing files is the job of the fedit-mcp connector (line-numbered
+reads, match-verified edits, backups and revert). Enable both together
+(MCP_ENABLED=console_mcp,fedit_mcp): this server for shell commands, fedit-mcp
+for any file content work.
+
 Usage:
     python -m mcp_connectors.console_mcp               # Start server on default port 9999
     python -m mcp_connectors.console_mcp --port 8080   # Start server on custom port
@@ -21,7 +26,9 @@ from mcp.server.mcpserver import MCPServer
 server = MCPServer(
     name="console-mcp",
     instructions="A server that allows LLMs to execute console commands on the local system. "
-                 "Useful for file operations, system administration, and task automation.",
+                 "Useful for system inspection, archives, checksums, and task automation. "
+                 "For reading or editing file contents, use the fedit-mcp connector instead "
+                 "(read_file / preview_edit / apply_edit / revert_edit).",
 )
 
 # ---------------------------------------------------------------------------
@@ -210,87 +217,6 @@ def check_command_allowed(command: str) -> str:
         return f"Command '{command}' is ALLOWED for execution"
     else:
         return f"Command '{command}' is NOT ALLOWED: {error_msg}"
-
-
-@server.tool()
-def safe_file_read(filepath: str, max_lines: int = 1000) -> str:
-    """
-    Safely read a file with line limit protection.
-
-    Args:
-        filepath: Path to the file to read
-        max_lines: Maximum number of lines to read (default: 1000)
-
-    Returns:
-        File contents or error message
-
-    Example:
-        safe_file_read("/etc/hostname", max_lines=10)
-    """
-    # Validate filepath
-    if not filepath or ".." in filepath:
-        return "Error: Invalid filepath"
-
-    # Use cat with head to enforce line limit
-    command = f"head -n {max_lines} {shlex.quote(filepath)}"
-    is_valid, error_msg = validate_command(command)
-
-    if not is_valid:
-        return f"Error: {error_msg}"
-
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-
-        output = result.stdout
-        if result.returncode != 0:
-            return f"Error reading file: {result.stderr}"
-
-        # Check if we hit the limit
-        line_count = len(output.split('\n'))
-        if line_count >= max_lines:
-            output += f"\n... (output truncated at {max_lines} lines)"
-
-        return f"File: {filepath}\n{output}"
-
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-@server.tool()
-def safe_file_write(filepath: str, content: str) -> str:
-    """
-    Safely write content to a file.
-
-    Args:
-        filepath: Path to the file to write
-        content: Content to write to the file
-
-    Returns:
-        Success or error message
-
-    Example:
-        safe_file_write("/tmp/test.txt", "Hello, World!")
-    """
-    # Validate filepath
-    if not filepath or ".." in filepath:
-        return "Error: Invalid filepath"
-
-    try:
-        with open(filepath, 'w') as f:
-            f.write(content)
-
-        return f"Successfully wrote {len(content)} bytes to {filepath}"
-
-    except PermissionError:
-        return f"Error: Permission denied writing to {filepath}"
-    except Exception as e:
-        return f"Error writing file: {str(e)}"
 
 
 def main():

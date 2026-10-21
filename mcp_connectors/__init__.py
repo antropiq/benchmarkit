@@ -14,6 +14,10 @@ Modules:
     playwright_mcp — Browser automation MCP server
     fedit_mcp      — File edit (diff / SEARCH-REPLACE) MCP server
 
+Pair ``console_mcp`` with ``fedit_mcp``: the console connector runs shell
+commands, while every file read/edit (with the path policy, backups and
+revert) goes through ``fedit_mcp`` — the single file-content authority.
+
 Run either as a standalone server, e.g.:
     python -m mcp_connectors.console_mcp --port 9999
     python -m mcp_connectors.playwright_mcp --port 8934
