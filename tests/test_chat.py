@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from src.api import routes
 from src.api.server import create_app
 from src.core import chat as chat_core
-from src.core.models import EndpointsConfig
+from src.core.models import DEFAULT_LLM_SYSPROMPT, EndpointsConfig
 
 
 def content_chunk(text):
@@ -498,3 +498,116 @@ class TestChatEndpoint:
             assert response.status_code == 409
         finally:
             gate.set()
+
+
+class TestAgentDocInjection:
+    """The user-scope AGENTS.md reaches chat, and only chat."""
+
+    @pytest.fixture
+    def doc(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        directory = tmp_path / "xdg" / "benchmarkit"
+        directory.mkdir(parents=True)
+        path = directory / "AGENTS.md"
+        # Mentions tools explicitly, which is what suppresses TOOL_NOTICE.
+        path.write_text(
+            "Tools are available for this conversation. "
+            "Never pipe inside execute_command.",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        return path
+
+    def test_chat_receives_the_agent_doc(self, client, monkeypatch, doc):
+        seen = {}
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none", sysprompt=None):
+            seen["sysprompt"] = sysprompt
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        response = client.post(
+            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
+        )
+        assert response.status_code == 200
+        assert "Never pipe inside execute_command." in seen["sysprompt"]
+        # The configured prompt is kept, not replaced.
+        assert seen["sysprompt"].startswith(DEFAULT_LLM_SYSPROMPT)
+
+    def test_benchmark_run_never_sees_the_agent_doc(self, client, monkeypatch, doc):
+        """Scores must stay comparable regardless of what the file contains."""
+        seen = {}
+
+        def fake_run(questions, config, job, emit, cancel_event=None):
+            seen["sysprompt"] = config.sysprompt
+
+        monkeypatch.setattr(routes, "run_benchmark", fake_run)
+        monkeypatch.setattr(
+            routes, "load_questions",
+            lambda: [{"uuid": "q", "question": "q?", "expected": "e"}],
+        )
+        assert client.post("/api/run").status_code == 202
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if client.get("/api/run").json()["status"] != "running":
+                break
+            time.sleep(0.02)
+        assert seen["sysprompt"] == DEFAULT_LLM_SYSPROMPT
+
+    def test_doc_mentioning_tools_suppresses_the_notice(self, monkeypatch, doc):
+        """Documents stating tool availability take over from TOOL_NOTICE.
+
+        ``stream_chat`` appends TOOL_NOTICE only when the system prompt does not
+        already mention tools, so an agent doc that states tools are available
+        replaces the generic notice instead of doubling it.
+        """
+        captured = []
+
+        def fake_completion(**kwargs):
+            captured.append(kwargs["messages"][0])
+            return iter([{"choices": [{"delta": {"content": "hi"}}]}])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            "m",
+            "http://s/v1",
+            lambda e: None,
+            sysprompt=routes.chat_sysprompt(DEFAULT_LLM_SYSPROMPT),
+            tools=[{"type": "function"}],
+            tool_executor=lambda name, args: "ok",
+        )
+        assert chat_core.TOOL_NOTICE.strip() not in captured[0]["content"]
+        assert "Never pipe inside execute_command." in captured[0]["content"]
+
+    def test_framing_text_alone_does_not_suppress_the_notice(self, monkeypatch, tmp_path):
+        """A document saying nothing about tools must not disable TOOL_NOTICE.
+
+        The wrapper around the document is worded to avoid the trigger word, so
+        suppression stays driven by the document's own content.
+        """
+        directory = tmp_path / "xdg" / "benchmarkit"
+        directory.mkdir(parents=True)
+        (directory / "AGENTS.md").write_text(
+            "Answer in French. Keep replies under five lines.", encoding="utf-8"
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        captured = []
+
+        def fake_completion(**kwargs):
+            captured.append(kwargs["messages"][0])
+            return iter([{"choices": [{"delta": {"content": "hi"}}]}])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            "m",
+            "http://s/v1",
+            lambda e: None,
+            sysprompt=routes.chat_sysprompt(DEFAULT_LLM_SYSPROMPT),
+            tools=[{"type": "function"}],
+            tool_executor=lambda name, args: "ok",
+        )
+        assert "Answer in French." in captured[0]["content"]
+        assert chat_core.TOOL_NOTICE.strip() in captured[0]["content"]

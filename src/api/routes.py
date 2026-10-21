@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from src.api.events import EventBus, sse_format
 from src.config import (
     QUESTION_SET_DEFAULT,
+    chat_sysprompt,
     list_question_sets,
     load_endpoints_config,
     load_questions,
@@ -638,7 +639,10 @@ def build_router(state: RunState) -> APIRouter:
                     config.to_kwargs(),
                     cancel_event,
                     config.apiKey or "none",
-                    config.sysprompt,
+                    # Chat-only composition: the user's AGENTS.md is appended for
+                    # the Chat tab, while a benchmark run still sends
+                    # ``LLM_SYSPROMPT`` verbatim (see config.chat_sysprompt).
+                    chat_sysprompt(config.sysprompt),
                     **tool_kwargs,
                 )
             except Exception as exc:  # noqa: BLE001 — surface any failure to the UI

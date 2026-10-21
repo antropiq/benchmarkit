@@ -19,6 +19,14 @@ QUESTION_SET_DEFAULT = "legacy"
 # Cap on tool-calling iterations for one chat reply; shared by all connectors.
 DEFAULT_MAX_MCP_ITERATION = 25
 
+# Cap on the agent instruction document injected into the chat system prompt.
+# Deliberately far below the 2 MB the connectors accept elsewhere: this text is
+# paid for on every chat round-trip, on top of the tool schemas.
+AGENT_DOC_MAX_BYTES = 8192
+
+# Document name read from the user config dir (see agent_doc_dir).
+AGENT_DOC_FILENAME = "AGENTS.md"
+
 # Managed .env keys, in the order they are written to the file.
 SETTING_KEYS: Tuple[str, ...] = (
     "SERVER_URL",
@@ -216,6 +224,78 @@ def max_mcp_iteration() -> int:
         return max(1, int(raw))
     except ValueError:
         return DEFAULT_MAX_MCP_ITERATION
+
+
+def agent_doc_dir() -> Path:
+    """User-scope config directory: ``$XDG_CONFIG_HOME/benchmarkit``.
+
+    Falls back to ``~/.config/benchmarkit`` when ``XDG_CONFIG_HOME`` is unset
+    or empty, per the XDG Base Directory specification. Resolved at call time
+    so a changed environment takes effect without a restart.
+    """
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if not base:
+        base = str(Path.home() / ".config")
+    return Path(base).expanduser() / "benchmarkit"
+
+
+def agent_doc_path() -> Path:
+    """Path of the chat agent instruction document.
+
+    ``AGENT_DOC`` overrides the location outright (and may point at a
+    nonexistent file to disable the feature). Otherwise the conventional
+    ``AGENTS.md`` inside :func:`agent_doc_dir` is used.
+    """
+    explicit = os.environ.get("AGENT_DOC", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    return agent_doc_dir() / AGENT_DOC_FILENAME
+
+
+def load_agent_doc() -> str:
+    """Read the user-scope agent instruction document, "" when unusable.
+
+    Called on every chat request, so it must never raise: a missing, unreadable
+    or empty document is reported as an empty string and chat proceeds normally.
+    The content is capped at ``AGENT_DOC_MAX_BYTES`` (bytes, not characters) so
+    an oversized document cannot inflate the system prompt; a document cut in the
+    middle of a multi-byte character decodes to U+FFFD rather than failing.
+    """
+    path = agent_doc_path()
+    try:
+        if not path.is_file():
+            return ""
+        raw = path.read_bytes()[:AGENT_DOC_MAX_BYTES]
+    except OSError:
+        return ""
+    return raw.decode("utf-8", errors="replace").strip()
+
+
+def chat_sysprompt(base: str) -> str:
+    """Compose the chat system prompt: the configured prompt plus the agent doc.
+
+    Used by the Chat endpoint only -- a benchmark run keeps sending
+    ``LLM_SYSPROMPT`` verbatim, so its measured behaviour stays comparable
+    across runs no matter what this file contains. Returns ``base`` unchanged
+    when no document is available.
+
+    The framing text deliberately avoids the word ``tool``: ``stream_chat``
+    appends its generic "you can call the provided tools" notice only when the
+    system prompt does not mention tools, so wording it here would suppress
+    that notice for every document, including one that says nothing about
+    tools. Whether the notice is replaced is left to the document's own text.
+    """
+    doc = load_agent_doc()
+    if not doc:
+        return base
+    return (
+        f"{base}\n\n"
+        "# Additional rules for this conversation\n"
+        "These instructions come from the user's agent configuration file. "
+        "Follow them unless they conflict with a direct instruction from the "
+        "user.\n\n"
+        f"{doc}\n"
+    )
 
 
 def _encode_value(value: str) -> str:
