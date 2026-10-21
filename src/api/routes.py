@@ -18,14 +18,20 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from src.api.events import EventBus, sse_format
 from src.config import (
+    MEMORY_COLOR_RE,
+    MEMORY_CONTENT_MAX_CHARS,
+    MEMORY_DEFAULT_COLOR,
+    MEMORY_SLOT_COUNT,
     QUESTION_SET_DEFAULT,
     chat_sysprompt,
     list_question_sets,
     load_endpoints_config,
+    load_memory_registrations,
     load_questions,
     load_settings,
     mcp_enabled_ids,
     max_mcp_iteration,
+    save_memory_registration,
     save_settings,
     questions_path,
 )
@@ -97,6 +103,37 @@ class QuestionSetIn(SettingsFieldsMixin):
     """Question set selection as sent by the settings dialog."""
 
     questionSet: str = ""
+
+
+class MemorySlotIn(BaseModel):
+    """One memory-bullet slot as sent by the registration dialog.
+
+    ``index`` addresses one of the fixed slots (the file always holds exactly
+    ``MEMORY_SLOT_COUNT``, so there is nothing to create or delete); saving
+    empty ``content`` clears the slot.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    index: int = Field(ge=0, le=MEMORY_SLOT_COUNT - 1)
+    color: str = MEMORY_DEFAULT_COLOR
+    content: str = ""
+
+    @field_validator("color")
+    @classmethod
+    def _require_hex_color(cls, value: str) -> str:
+        if not MEMORY_COLOR_RE.match(value):
+            raise ValueError("color must be a 6-digit hex color (e.g. #808080)")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def _cap_content(cls, value: str) -> str:
+        if len(value) > MEMORY_CONTENT_MAX_CHARS:
+            raise ValueError(
+                f"content exceeds the {MEMORY_CONTENT_MAX_CHARS} character cap"
+            )
+        return value
 
 
 class McpIn(BaseModel):
@@ -495,6 +532,22 @@ def build_router(state: RunState) -> APIRouter:
             "questionSets": list_question_sets(),
             "current": os.environ.get("QUESTION_SET", QUESTION_SET_DEFAULT),
         }
+
+    @router.get("/memory")
+    def get_memory() -> Dict[str, Any]:
+        """Return the memory-bullet slots (self-heals the file to 9 defaults)."""
+        return {"registration": load_memory_registrations()}
+
+    @router.post("/memory")
+    def post_memory(body: MemorySlotIn) -> Dict[str, Any]:
+        """Persist one memory-bullet slot and return the full registration.
+
+        Chat-adjacent configuration, so (unlike settings/question sets) it is
+        not gated while a benchmark run is in progress. Invalid index, color
+        or oversized content are rejected with 422 by the request model.
+        """
+        slots = save_memory_registration(body.index, body.color, body.content)
+        return {"registration": slots}
 
     def _mcp_payload(
         request: Request, extra_errors: Optional[List[str]] = None

@@ -1157,6 +1157,92 @@ body {
   gap: 0.5rem;
 }
 
+/* Textarea with its memory-bullet row below, so the bullets stay centered
+   under the textarea itself rather than the whole input row. */
+.chat-textarea-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chat-textarea-col .chat-textarea {
+  height: auto;
+  min-height: 0;
+}
+
+/* Nine numbered registration slots under the textarea (MemoryBullets.vue).
+   A filled bullet's background is set inline (the slot color), which also
+   wins over Pico's button hover background; the number color follows the
+   background luminance.
+   The selectors are scoped under .memory-bullets on purpose: the wrapper's
+   role="group" activates Pico's input-group rules ([role="group"] button
+   { width: auto }, [role="group"] > :not(:last-child) { right radii 0 },
+   [role="group"] > * { flex: 1 1 auto }) which otherwise outrank a bare
+   .memory-bullet (0,1,0), squashing the circles into 8px-wide flat slivers.
+   .memory-bullets .memory-bullet ties those rules on specificity (0,2,1)
+   and wins on source order (theme.css loads after Pico). */
+.memory-bullets {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.memory-bullets .memory-bullet {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--bi-border);
+  border-radius: 50%;
+  background-color: #808080;
+  color: #ffffff;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 120ms ease;
+}
+
+.memory-bullets .memory-bullet:hover {
+  transform: scale(1.12);
+}
+
+.memory-bullets .memory-bullet:focus-visible {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: 2px;
+}
+
+/* Native <dialog> editing one memory bullet (Pico card, see the
+   SettingsDialog note above). */
+.memory-dialog > article {
+  width: 780px;
+  max-width: 94vw;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.memory-color {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.memory-color input[type='color'] {
+  inline-size: 3rem;
+  block-size: 2rem;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0.15rem;
+}
+
 /* Conversation-scoped MCP toggles, between the stats panel and the
    textarea. Own fixed width (not --bi-chat-panel-width); scrolls vertically
    when the list outgrows the input row's (splitter-bounded) height. */

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,6 +16,15 @@ ENV_PATH = PROJECT_ROOT / ".env"
 RESOURCES_DIR = PROJECT_ROOT / "resources"
 
 QUESTION_SET_DEFAULT = "legacy"
+
+# Chat-tab memory bullets: fixed-size slot registration stored in
+# ``resources/memory_registration.json`` (never a question set).
+MEMORY_REGISTRATION_FILENAME = "memory_registration.json"
+MEMORY_SLOT_COUNT = 9
+MEMORY_DEFAULT_COLOR = "#808080"
+MEMORY_CONTENT_MAX_CHARS = 32000
+
+MEMORY_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 # Cap on tool-calling iterations for one chat reply; shared by all connectors.
 DEFAULT_MAX_MCP_ITERATION = 25
@@ -78,6 +88,8 @@ def list_question_sets() -> List[Dict[str, Any]]:
     """
     sets: List[Dict[str, Any]] = []
     for path in sorted(RESOURCES_DIR.glob("*.json")):
+        if path.name == MEMORY_REGISTRATION_FILENAME:
+            continue
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             questions = data.get("questions", [])
@@ -101,6 +113,80 @@ def load_questions(path: Optional[Path] = None) -> List[Dict[str, Any]]:
         path = questions_path()
     data: Dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     return data.get("questions", [])
+
+
+def memory_path() -> Path:
+    """Path of the memory-bullet slot registration file."""
+    return RESOURCES_DIR / MEMORY_REGISTRATION_FILENAME
+
+
+def default_memory_registrations() -> List[Dict[str, str]]:
+    """The fresh-state registration: empty gray slots, nothing configured."""
+    return [
+        {"color": MEMORY_DEFAULT_COLOR, "content": ""}
+        for _ in range(MEMORY_SLOT_COUNT)
+    ]
+
+
+def _normalize_memory_slot(item: Any) -> Dict[str, str]:
+    """Coerce one raw JSON entry to a ``{color, content}`` string pair.
+
+    A missing or malformed color (anything but a 6-digit hex) falls back to
+    the default gray so rendering never receives an invalid CSS color; a
+    non-string content becomes empty.
+    """
+    raw_color = item.get("color") if isinstance(item, dict) else None
+    raw_content = item.get("content") if isinstance(item, dict) else None
+    color = (
+        raw_color
+        if isinstance(raw_color, str) and MEMORY_COLOR_RE.match(raw_color)
+        else MEMORY_DEFAULT_COLOR
+    )
+    content = raw_content if isinstance(raw_content, str) else ""
+    return {"color": color, "content": content}
+
+
+def _write_memory_registrations(slots: List[Dict[str, str]]) -> None:
+    """Persist the normalized registration (same simple write as save_settings)."""
+    payload = {"registration": slots}
+    memory_path().write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
+def load_memory_registrations() -> List[Dict[str, str]]:
+    """Read the memory-bullet slots, self-healing the file to 9 normalized slots.
+
+    A missing file, invalid JSON or a missing/malformed ``registration`` list
+    falls back to the defaults; the normalized result is also written back
+    whenever the file did not already contain exactly those 9 slots (pad /
+    truncate, malformed entries coerced), so the file on disk is always valid.
+    """
+    path = memory_path()
+    raw: Optional[List[Any]] = None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("registration"), list):
+            raw = data["registration"]
+    except (json.JSONDecodeError, OSError, ValueError):
+        raw = None
+    slots = [_normalize_memory_slot(item) for item in (raw or [])]
+    slots = (slots + default_memory_registrations())[:MEMORY_SLOT_COUNT]
+    if (
+        raw is None
+        or len(raw) != MEMORY_SLOT_COUNT
+        or any(raw[i] != slots[i] for i in range(MEMORY_SLOT_COUNT))
+    ):
+        _write_memory_registrations(slots)
+    return slots
+
+
+def save_memory_registration(index: int, color: str, content: str) -> List[Dict[str, str]]:
+    """Write one memory-bullet slot and return the full normalized registration."""
+    slots = load_memory_registrations()
+    slots[index] = {"color": color, "content": content}
+    _write_memory_registrations(slots)
+    return slots
 
 
 def load_endpoints_config() -> Tuple[Optional[EndpointsConfig], Optional[ValidationError]]:

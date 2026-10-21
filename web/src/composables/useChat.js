@@ -1,4 +1,4 @@
-import { reactive } from 'vue'
+import { nextTick, reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
 
 const state = reactive({
@@ -53,6 +53,29 @@ function setDraft(text) {
     state.draft.renderedRaw = trimmed
     state.draft.html = trimmed ? renderMarkdown(trimmed) : ''
   }, 200)
+}
+
+// Composer textarea, registered by ChatInput so draft insertions (memory
+// bullets) can focus it after appending.
+let draftInputEl = null
+
+function registerDraftInput(el) {
+  draftInputEl = el ?? null
+}
+
+// Appends a memory bullet's text to the draft (never overwrites): joined to
+// the existing draft with a blank line when there is one. Goes through
+// setDraft, so the markdown preview updates on the usual debounce.
+function appendDraft(text) {
+  const value = text ?? ''
+  if (!value) return
+  const existing = state.draft.raw
+  setDraft(existing.trim() ? `${existing}\n\n${value}` : value)
+  nextTick(() => {
+    if (draftInputEl && document.activeElement !== draftInputEl) {
+      draftInputEl.focus()
+    }
+  })
 }
 
 function flushDraftHtml(trimmed) {
@@ -445,6 +468,8 @@ export function useChat() {
     stop,
     reset,
     setDraft,
+    appendDraft,
+    registerDraftInput,
     editLast,
     attachImage,
     clearImage,

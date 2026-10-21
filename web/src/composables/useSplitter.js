@@ -1,4 +1,4 @@
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const STORAGE_KEY = 'benchmarkit:chatSplit'
 const MIN_INPUT_HEIGHT = 90
@@ -107,11 +107,33 @@ export function useSplitter(shellRef, bottomRef) {
   }
 
   function onResize() {
-    if (inputHeight.value) inputHeight.value = clamp(inputHeight.value)
+    const shell = shellRef.value
+    // While the Chat tab is hidden (App.vue toggles tabs with v-show), the
+    // shell has no layout and clientHeight is 0. Clamping the restored
+    // height against a 0-height shell collapses it to the minimum, which is
+    // what made the saved split position look lost after a page refresh.
+    if (!inputHeight.value || !shell || shell.clientHeight === 0) return
+    inputHeight.value = clamp(inputHeight.value)
   }
 
-  window.addEventListener('resize', onResize)
-  onBeforeUnmount(() => window.removeEventListener('resize', onResize))
+  // A ResizeObserver catches window resizes and the moment the shell gains
+  // layout again when the Chat tab becomes visible — no resize event fires
+  // for the latter, and the first observer callback doubles as the initial
+  // check, so the restored height is validated as soon as it can be.
+  let observer = null
+  onMounted(() => {
+    const shell = shellRef.value
+    if (typeof ResizeObserver !== 'undefined' && shell) {
+      observer = new ResizeObserver(onResize)
+      observer.observe(shell)
+    } else {
+      window.addEventListener('resize', onResize)
+    }
+  })
+  onBeforeUnmount(() => {
+    if (observer) observer.disconnect()
+    else window.removeEventListener('resize', onResize)
+  })
 
   nextTick(onResize)
 

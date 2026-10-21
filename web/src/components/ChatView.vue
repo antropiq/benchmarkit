@@ -5,24 +5,28 @@ import ChatToolPanel from './ChatToolPanel.vue'
 import ImageLightbox from './ImageLightbox.vue'
 import MarkdownStream from './MarkdownStream.vue'
 import { humanFileSize, useChat } from '../composables/useChat'
+import { useMemory } from '../composables/useMemory'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useSplitter } from '../composables/useSplitter'
 
 const { state, editLast, clearImage, loadChatMcp } = useChat()
 const { state: benchmarkState, loadConfig } = useBenchmark()
+const { loadMemory } = useMemory()
 
 // Keep config.supportsVision (which gates the attach button) and the
 // conversation-scoped MCP snapshot fresh when the chat tab is opened:
 // settings may have been saved or .env edited meanwhile (App.vue's initial
 // loadConfig covers the first render). A locked (started) conversation
-// keeps its frozen list — loadChatMcp ignores locked state.
+// keeps its frozen list — loadChatMcp ignores locked state. The memory
+// bullets refresh the same way (they may have been edited meanwhile).
 watch(
   () => benchmarkState.activeTab,
   (tab) => {
     if (tab === 'chat') {
       loadConfig()
       loadChatMcp()
+      loadMemory()
     }
   },
 )
