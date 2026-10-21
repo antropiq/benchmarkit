@@ -68,6 +68,40 @@ class TestStreamChat:
         done = events[-1]
         assert done["tokens"] == 7
         assert done["tokensEstimated"] is False
+        # Consumed = prompt + completion: exactly the server's total here.
+        assert done["consumed"] == 12
+        assert done["consumedEstimated"] is False
+
+    def test_consumed_estimated_from_prompt_when_server_reports_no_usage(
+        self, monkeypatch,
+    ):
+        # No usage chunk at all: completion keeps its char estimate, and the
+        # consumed figure adds the char estimate of the prompt the request
+        # carries (system prompt + user text) — flagged as estimated.
+        from src.core.models import DEFAULT_LLM_SYSPROMPT
+        from src.core.utils import estimate_completion_tokens
+
+        events = self._run(monkeypatch, [content_chunk("Hello there")])
+        done = events[-1]
+        prompt_est = estimate_completion_tokens(DEFAULT_LLM_SYSPROMPT + "hi?")
+        assert done["tokens"] == estimate_completion_tokens("Hello there")
+        assert done["consumed"] == prompt_est + done["tokens"]
+        assert done["consumedEstimated"] is True
+
+    def test_consumed_prompt_exact_when_only_completion_is_estimated(
+        self, monkeypatch,
+    ):
+        # prompt without completion or total: the exact prompt is kept, only
+        # the generation share is char-estimated (flagged).
+        events = self._run(
+            monkeypatch,
+            [content_chunk("abcd"), usage_chunk(prompt=40)],
+        )
+        done = events[-1]
+        assert done["tokens"] == 1  # 4 chars / 4
+        assert done["tokensEstimated"] is True
+        assert done["consumed"] == 41
+        assert done["consumedEstimated"] is True
 
     def test_reasoning_deltas_open_and_extend_decode_window(self, monkeypatch):
         # t0, reasoning, reasoning, content — the usage-only chunk is not
@@ -91,6 +125,8 @@ class TestStreamChat:
         assert done["ttft"] == 1.0  # first generated delta was reasoning
         assert done["took"] == 6.0
         assert done["tokens"] == 9  # completion usage counts reasoning tokens
+        # Single round: the decode window equals took - ttft, thinking included.
+        assert done["decode"] == 5.0
 
     def test_prepends_system_prompt(self, monkeypatch):
         from src.core.models import DEFAULT_LLM_SYSPROMPT
@@ -226,6 +262,32 @@ class TestStreamChat:
         assert done["event"] == "done"
         assert done["tokens"] == 4
         assert done["tokensEstimated"] is True
+
+    def test_char_estimate_covers_reasoning_text(self, monkeypatch):
+        # No usage at all: the ~4 chars/token fallback must count the
+        # reasoning deltas too (they were generated tokens), not just answer
+        # text: 8 reasoning chars + "hi" = 10 chars -> 3 tokens.
+        events = self._run(
+            monkeypatch,
+            [reasoning_chunk("thinking"), content_chunk("hi")],
+        )
+        done = events[-1]
+        assert done["tokens"] == 3
+        assert done["tokensEstimated"] is True
+
+    def test_total_minus_prompt_derived_across_rounds_without_completion(
+        self, monkeypatch,
+    ):
+        # A server that omits completion_tokens but reports total/prompt per
+        # request: without tools the single usage chunk still yields total -
+        # prompt, not flagged as estimated.
+        events = self._run(
+            monkeypatch,
+            [content_chunk("hi"), usage_chunk(prompt=5, total=12)],
+        )
+        done = events[-1]
+        assert done["tokens"] == 7
+        assert done["tokensEstimated"] is False
 
     def test_multimodal_content_passed_through_untouched(self, monkeypatch):
         captured = {}

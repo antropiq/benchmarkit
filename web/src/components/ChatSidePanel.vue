@@ -40,76 +40,133 @@ const streamingMessage = computed(
   () => state.messages.find((m) => m.streaming) ?? null,
 )
 
+// Session badge: tokens actually CONSUMED (prompt + completion, summed per
+// round — every tool round re-sends and re-processes the whole history),
+// not the completion-only figure behind the tok/s badge.
+function historyChars(messages) {
+  // Rough char cost of the prompt the next request carries: the text of
+  // every message so far (state messages keep their `raw` text; the OpenAI
+  // content-parts shape is only built on send). Images are excluded, like
+  // the backend's own prompt estimate, which is text-only too.
+  let chars = 0
+  for (const message of messages) chars += message.raw?.length ?? 0
+  return chars
+}
+
 const totalTokens = computed(() => {
   let total = 0
-  for (const message of state.messages) {
+  for (let i = 0; i < state.messages.length; i += 1) {
+    const message = state.messages[i]
     if (message.role !== 'assistant') continue
-    // Live usage events (exact, tool-call argument tokens included) beat
-    // the raw-text estimate; max() keeps the count ticking mid-round too.
-    total += message.streaming
-      ? Math.max(
-          message.usageTokens || 0,
-          estimateCompletionTokens(message.raw),
+    if (!message.streaming) {
+      total += message.consumed || message.tokens
+      continue
+    }
+    // Live: exact cumulative consumed tokens from the last `usage` event
+    // (every ended round's prompt + generation, exact when the server
+    // reports usage) plus a ~4 chars/token estimate of the in-flight round:
+    // the prompt it carries — the conversation so far, the backend's own
+    // fallback — and the answer text streamed so far (thinking and tool
+    // arguments are invisible to the client either way).
+    if (message.usageConsumed > 0) {
+      total +=
+        message.usageConsumed +
+        estimateCompletionTokens(
+          historyChars(state.messages.slice(0, i)) +
+            message.raw.slice(message.usageRawLen || 0),
         )
-      : message.tokens
+    } else {
+      total += estimateCompletionTokens(
+        historyChars(state.messages.slice(0, i)) + message.raw,
+      )
+    }
   }
   return total
 })
 
-const tokensEstimated = computed(
-  () =>
-    streamingMessage.value !== null ||
-    state.messages.some(
-      (m) => m.role === 'assistant' && m.tokensEstimated && m.tokens > 0,
-    ),
-)
+const tokensEstimated = computed(() => {
+  for (const message of state.messages) {
+    if (message.role !== 'assistant') continue
+    if (message.streaming) {
+      // The in-flight round always carries a client-side char estimate of
+      // its prompt and answer tail, however small: flag the total.
+      return true
+    }
+    if (
+      (message.consumed || message.tokens) > 0 &&
+      (message.consumedEstimated || message.tokensEstimated || !message.consumed)
+    ) {
+      return true
+    }
+  }
+  return false
+})
 
 // Same convention as the benchmark tokenRate: tokens / decode window.
-// Exact once the `done` event carried usage; live-estimated while answering.
+// The server-side `decode` (cumulative generation seconds across all tool
+// rounds, tool execution and re-prefill gaps excluded) is the preferred
+// denominator; `took - ttft` only backs up payloads without it (old
+// servers — where there were no tool rounds, so the window is exact).
+function exactRate(message) {
+  const secs = message.decode > 0 ? message.decode : message.took - message.ttft
+  return secs > 0 ? message.tokens / secs : null
+}
+
 const rate = computed(() => {
   const active = streamingMessage.value
   if (active && !active.tokens) {
-    if (
-      state.phase === 'answering' &&
-      active.firstTokenAt &&
-      active.lastTokenAt > active.firstTokenAt
-    ) {
-      const secs = (active.lastTokenAt - active.firstTokenAt) / 1000
-      return {
-        value: estimateCompletionTokens(active.raw) / secs,
-        estimated: true,
-      }
-    }
-    // MCP tool loop (no answer text streamed yet): cumulative usage from
-    // the last `usage` event — exact tokens over the decode window, so
-    // tool execution time never enters the rate.
+    // MCP tool loop: cumulative usage from the last `usage` event — exact
+    // tokens over the exact decode window (reasoning and tool-argument
+    // tokens included), so tool execution time never enters the rate.
     if (active.usageTokens > 0 && active.usageDecode > 0) {
       return {
         value: active.usageTokens / active.usageDecode,
         estimated: false,
       }
     }
-  } else if (active && active.tokens && active.took > active.ttft) {
+    // Answer text streaming: continue from the usage baseline when tool
+    // rounds ran (exact tokens + decode so far, extended by the estimated
+    // tail over the client-measured window), else pure client estimate
+    // over the answer window only — thinking tokens are unknown to the
+    // client, so the window starts at the first answer token too.
+    if (
+      state.phase === 'answering' &&
+      active.firstTokenAt &&
+      active.lastTokenAt > active.firstTokenAt
+    ) {
+      const tail = estimateCompletionTokens(
+        active.raw.slice(active.usageRawLen || 0),
+      )
+      if (active.usageTokens > 0 && active.usageAt) {
+        return {
+          value:
+            (active.usageTokens + tail) /
+            (active.usageDecode +
+              (active.lastTokenAt - active.usageAt) / 1000),
+          estimated: false,
+        }
+      }
+      const secs = (active.lastTokenAt - active.firstTokenAt) / 1000
+      return {
+        value: estimateCompletionTokens(active.raw) / secs,
+        estimated: true,
+      }
+    }
+  } else if (active && active.tokens) {
     // done received but the stream is still closing: show the exact rate.
-    return {
-      value: active.tokens / (active.took - active.ttft),
-      estimated: active.tokensEstimated,
+    const value = exactRate(active)
+    if (value !== null) {
+      return { value, estimated: active.tokensEstimated }
     }
   }
   const finished = [...state.messages]
     .reverse()
     .find(
       (m) =>
-        m.role === 'assistant' &&
-        !m.streaming &&
-        m.tokens > 0 &&
-        m.took > m.ttft,
+        m.role === 'assistant' && !m.streaming && m.tokens > 0 && exactRate(m) !== null,
     )
   if (finished) {
-    return {
-      value: finished.tokens / (finished.took - finished.ttft),
-      estimated: finished.tokensEstimated,
-    }
+    return { value: exactRate(finished), estimated: finished.tokensEstimated }
   }
   return null
 })

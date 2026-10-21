@@ -878,16 +878,24 @@ class TestChatToolLoop:
             executor=executor,
         )
         names = [e["event"] for e in events]
-        assert names == ["tool_call", "tool_result", "usage", "token", "done"]
+        # `usage` closes the round's *generation*, so it precedes the tool
+        # execution: the badges tick as soon as generation stops.
+        assert names == ["usage", "tool_call", "tool_result", "token", "done"]
         assert seen_args["call"] == ("execute_command", {"command": "ls"})
-        tool_call = events[0]
+        tool_call = events[1]
         assert tool_call["tool"] == "execute_command"
         assert tool_call["server"] == "console_mcp"
         assert tool_call["iteration"] == 1
         assert tool_call["maxIterations"] == 25
-        assert events[1]["ok"] is True
+        assert events[2]["ok"] is True
         # Cumulative usage of the completed round, before the final answer.
-        assert events[2]["tokens"] == 8
+        assert events[0]["tokens"] == 8
+        # usage.consumed: the round's prompt + completion (its total_tokens,
+        # char-estimated here since the stub reports completion only).
+        assert events[0]["consumed"] >= 8
+        assert events[0]["consumedEstimated"] is True
+        # done carries the cumulative decode window for an accurate tok/s.
+        assert events[-1]["decode"] >= 0
         # Second request carries the assistant tool_calls + tool result turn.
         second = calls[1]
         assistant = [m for m in second if m.get("tool_calls")]
@@ -971,8 +979,8 @@ class TestChatToolLoop:
         )
         names = [e["event"] for e in events]
         assert names == [
-            "tool_call", "tool_result", "usage",
-            "tool_call", "tool_result", "usage",
+            "usage", "tool_call", "tool_result",
+            "usage", "tool_call", "tool_result",
             "token", "done",
         ]
         calls = [e for e in events if e["event"] == "tool_call"]
@@ -981,6 +989,11 @@ class TestChatToolLoop:
         usages = [e for e in events if e["event"] == "usage"]
         assert [e["tokens"] for e in usages] == [8, 13]  # cumulative
         assert all(e["decode"] >= 0 for e in usages)
+        # Consumed is cumulative too, and each round re-pays the growing
+        # history's prompt: strictly above the completion-only sum.
+        consumed = [e["consumed"] for e in usages]
+        assert consumed[1] > consumed[0]
+        assert events[-1]["consumed"] >= consumed[1]
 
     def test_iteration_cap_stops_with_note(self, monkeypatch):
         forever = [[tool_call_chunk(f"c{i}", "execute_command", "{}")] for i in range(5)]
@@ -1012,9 +1025,118 @@ class TestChatToolLoop:
             executor=executor,
             cancel_event=cancel,
         )
-        assert all(e["event"] in ("tool_call", "tool_result") for e in events)
+        assert all(
+            e["event"] in ("usage", "tool_call", "tool_result") for e in events
+        )
         assert "done" not in [e["event"] for e in events]
         assert len(calls) == 1
+
+    def test_consumed_sums_prompt_per_round_with_total_usage(self, monkeypatch):
+        # Each round reports usage with a total: the consumed figure is the
+        # SUM of per-round totals — every tool round re-sends (and re-pays)
+        # the whole history, so its prompt counts again. Round totals here:
+        # 18 + 25 + 25 = 68, vs 13 completion tokens.
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [tool_call_chunk("c1", "execute_command", "{}"),
+                 usage_chunk(completion=8, prompt=10, total=18)],
+                [tool_call_chunk("c2", "execute_command", "{}"),
+                 usage_chunk(completion=5, prompt=20, total=25)],
+                [content_chunk("done"), usage_chunk(completion=0, prompt=25,
+                                                   total=25)],
+            ],
+        )
+        usages = [e for e in events if e["event"] == "usage"]
+        assert [e["consumed"] for e in usages] == [18, 43]
+        assert all(e["consumedEstimated"] is False for e in usages)
+        done = events[-1]
+        assert done["tokens"] == 13
+        assert done["consumed"] == 68
+        assert done["consumedEstimated"] is False
+
+    def test_tool_call_arguments_extend_decode_window(self, monkeypatch):
+        # A pure tool-call round streams no content and no reasoning: the
+        # argument deltas must still open/extend the decode window (their
+        # tokens are in completion_tokens), and the cumulative done.decode
+        # must sum the rounds' windows without any tool-execution time.
+        clock = [
+            0.0,   # t0
+            1.0,   # first tool-call argument delta (round 1 opens)
+            3.0,   # second argument delta (round 1 closes at 2.0s)
+            20.0,  # first content delta of the final round (opens)
+            22.0,  # second content delta (final round closes at 2.0s)
+        ]
+        monkeypatch.setattr("src.core.chat.time.monotonic", lambda: clock.pop(0))
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [tool_call_chunk("c1", "execute_command", '{"a"'),
+                 tool_call_chunk("c1", None, ': 1}')],
+                [content_chunk("He"), content_chunk("llo")],
+            ],
+            # The 17 s gap between t=3 and t=20 stands for the tool run +
+            # re-prefill: the clock is never sampled there, so none of it
+            # may leak into the decode window.
+            executor=lambda name, args: "42",
+        )
+        assert clock == []
+        done = events[-1]
+        assert done["decode"] == 4.0  # (3-1) + (22-20), tool time excluded
+        assert done["took"] == 22.0  # wall clock does include the tool run
+        assert done["ttft"] == 1.0
+
+    def test_usage_precedes_tool_execution(self, monkeypatch):
+        # The usage frame is emitted when the round's generation ends, so a
+        # slow tool cannot freeze the token badge for its whole execution.
+        order = []
+
+        def executor(name, args):
+            order.append("execute")
+            return "42"
+
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [tool_call_chunk("c1", "execute_command", "{}")],
+                [content_chunk("ok")],
+            ],
+            executor=executor,
+        )
+        names = [e["event"] for e in events]
+        assert names.index("usage") < names.index("tool_result")
+
+    def test_multi_round_usage_tokens_summed_without_completion(self, monkeypatch):
+        # Servers omitting completion_tokens: the per-round (total - prompt)
+        # deltas must add up across rounds — the last round's usage alone
+        # would drop the tool rounds' tokens.
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [tool_call_chunk("c1", "execute_command", "{}"),
+                 usage_chunk(prompt=10, total=18)],
+                [tool_call_chunk("c2", "execute_command", "{}"),
+                 usage_chunk(prompt=20, total=25)],
+                [content_chunk("done"), usage_chunk(prompt=27, total=32)],
+            ],
+        )
+        done = events[-1]
+        assert done["tokens"] == 8 + 5 + 5  # per-round deltas summed
+        assert done["tokensEstimated"] is False
+
+    def test_char_estimate_covers_tool_arguments_without_usage(self, monkeypatch):
+        # No usage anywhere: the fallback estimate counts answer text AND
+        # tool-call argument text (16 + 16 chars here -> 8 tokens).
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [tool_call_chunk("c1", "execute_command", "x" * 16)],
+                [content_chunk("y" * 16)],
+            ],
+        )
+        done = events[-1]
+        assert done["tokens"] == 8
+        assert done["tokensEstimated"] is True
 
     def test_tool_notice_appended_to_system_prompt(self, monkeypatch):
         events, calls = self._run(monkeypatch, [[content_chunk("hi")]])

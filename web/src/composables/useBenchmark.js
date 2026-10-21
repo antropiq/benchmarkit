@@ -87,7 +87,12 @@ function resetUi() {
 
 function applyTiming(entry, event) {
   entry.took = event.took
+  // `tokens` stays completion-only (the tok/s numerator); `consumed` is the
+  // prompt + completion figure shown to the user. Old servers without the
+  // field: fall back to completion + prompt, exact whenever usage was
+  // reported (and identical to `tokens` when it wasn't, promptTokens = 0).
   entry.tokens = event.tokens
+  entry.consumed = event.consumed ?? event.tokens + (event.promptTokens ?? 0)
   entry.ttft = event.ttft ?? 0
   entry.genTook = event.genTook ?? 0
   entry.promptTokens = event.promptTokens ?? 0
@@ -127,6 +132,7 @@ function applyEvent(event) {
         succeeded: null,
         took: 0,
         tokens: 0,
+        consumed: 0,
         ttft: 0,
         genTook: 0,
         promptTokens: 0,

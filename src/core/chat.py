@@ -41,8 +41,15 @@ TOOL_NOTICE = (
 )
 
 
-def _collect_tool_call_deltas(chunk: Any, acc: Dict[int, Dict[str, Any]]) -> None:
-    """Accumulate streamed tool-call deltas (they can split across chunks)."""
+def _collect_tool_call_deltas(chunk: Any, acc: Dict[int, Dict[str, Any]]) -> str:
+    """Accumulate streamed tool-call deltas (they can split across chunks).
+
+    Returns the argument text carried by this chunk ("" when it streams no
+    tool-call deltas) — argument fragments are generated tokens too, so the
+    caller both anchors the decode window on them and folds them into the
+    last-resort char-based token estimate.
+    """
+    arg_text = ""
     if isinstance(chunk, dict):
         delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
         deltas = delta.get("tool_calls") if isinstance(delta, dict) else None
@@ -67,6 +74,8 @@ def _collect_tool_call_deltas(chunk: Any, acc: Dict[int, Dict[str, Any]]) -> Non
         )
         if arguments:
             entry["arguments"] += arguments
+            arg_text += str(arguments)
+    return arg_text
 
 
 def _preview(value: str, limit: int = 200) -> str:
@@ -77,6 +86,17 @@ def _content_text(message: Dict[str, Any]) -> str:
     """Text of a message's content, "" for multimodal (list) content parts."""
     content = message.get("content", "")
     return content if isinstance(content, str) else ""
+
+
+def _prompt_estimate(messages: List[Dict[str, Any]]) -> int:
+    """Char-based (~4 chars/token) estimate of one round's prompt cost.
+
+    Fallback for rounds whose server reported no usage at all: the message
+    history as it stands at the round's start is exactly what the request
+    sends as prompt (the server-side system prompt beyond it is not visible
+    here, so the figure is a floor — flagged through the estimated badge).
+    """
+    return estimate_completion_tokens("".join(_content_text(m) for m in messages))
 
 
 def stream_chat(
@@ -101,10 +121,21 @@ def stream_chat(
 
     With MCP tools active also emits ``tool_call`` / ``tool_result`` events
     per executed tool call (``tool_call`` carries ``iteration`` and
-    ``maxIterations`` for the UI gauge) plus a cumulative ``usage`` event
-    (``tokens`` / ``decode`` seconds) after each tool round. Terminal event
-    is exactly one of ``done`` or ``error`` (unless the call was cancelled —
-    then the client is gone and nothing is emitted).
+    ``maxIterations`` for the UI gauge) plus a cumulative ``usage`` event as
+    soon as each tool round has finished generating — before the tool
+    executes, so the chat badges tick when generation stops instead of
+    waiting for the tool to return. The terminal ``done`` carries the
+    cumulative ``decode`` seconds (sum of the per-iteration generation
+    windows: tool-call argument deltas included, tool execution and
+    inter-round re-prefill gaps excluded) so the client can compute an
+    accurate tok/s with tools in play. ``tokens``/``usage.tokens`` count
+    **completion tokens only** (the tok/s numerator); ``consumed``/
+    ``usage.consumed`` count **tokens actually consumed** — prompt +
+    completion summed per round, since every tool round re-processes the
+    whole history (``consumedEstimated`` flags char-based fallbacks, e.g.
+    servers reporting no usage at all). Terminal event is exactly one of
+    ``done`` or ``error`` (unless the call was cancelled — then the client
+    is gone and nothing is emitted).
     """
     if not messages or messages[0].get("role") != "system":
         messages = [
@@ -128,8 +159,22 @@ def stream_chat(
 
     t0 = time.monotonic()
     answer_buffer = ""
+    # Every generated character seen (answer + reasoning + tool-call
+    # arguments): the corpus for the last-resort char-based token estimate
+    # when the server reports no usage at all.
+    generated_chars = ""
     completion_tokens = 0
-    last_usage: Optional[Dict[str, Optional[int]]] = None
+    # Sum of (total - prompt) per round — each round's total covers its full
+    # prompt, so the per-round differences add up to the loop's completion
+    # tokens; used only when no round reported completion_tokens itself.
+    usage_derived_completion = 0
+    # "Consumed" tokens = prompt + completion, summed PER ROUND: every tool
+    # round re-sends and re-processes the whole history, so each round's own
+    # prompt counts again (a round's server-reported total_tokens is exactly
+    # that round's consumed figure). Completion tokens and the tok/s rate
+    # stay completion-only — prompt processing is prefill, not decode.
+    consumed_tokens = 0
+    consumed_estimated = False
     reasoning_emitted = False
     t_first: Optional[float] = None
     t_last: Optional[float] = None
@@ -138,6 +183,11 @@ def stream_chat(
 
     iteration = 0
     while True:
+        # Prompt cost of this round, estimated from the exact messages the
+        # request is about to send — used only if the server reports no
+        # usable usage for the round (floor: invisible server-side template
+        # tokens are not in it, hence the estimated flag).
+        round_prompt_est = _prompt_estimate(messages)
         kwargs: Dict[str, Any] = {
             "model": f"openai/{model_name}",
             "api_key": api_key,
@@ -157,8 +207,10 @@ def stream_chat(
             return
 
         iteration_content = ""
+        iteration_chars = ""
         iteration_completion = 0
         iteration_usage: Optional[Dict[str, Optional[int]]] = None
+        iteration_usage_from_completion = False
         tool_calls: Dict[int, Dict[str, Any]] = {}
         iter_first: Optional[float] = None
         iter_last: Optional[float] = None
@@ -172,16 +224,19 @@ def stream_chat(
                     iteration_usage = usage
                     if usage["completion_tokens"]:
                         iteration_completion = usage["completion_tokens"]
-                _collect_tool_call_deltas(chunk, tool_calls)
-                content = safe_get_choice_content(chunk)
+                        iteration_usage_from_completion = True
+                tool_args_text = _collect_tool_call_deltas(chunk, tool_calls)
+                content = safe_get_choice_content(chunk) or ""
                 reasoning = _extract_reasoning(chunk)
                 if reasoning and not reasoning_emitted:
                     reasoning_emitted = True
                     emit({"event": "reasoning"})
-                # Reasoning deltas open and extend the decode window (like the
-                # benchmark loop in core/llm.py): they are generated tokens too,
-                # so tok/s must not pretend the thinking phase was free.
-                if not content and not reasoning:
+                # Content, reasoning and tool-call argument deltas all open
+                # and extend the decode window (like the benchmark loop in
+                # core/llm.py): they are all generated tokens counted in
+                # completion_tokens, so neither the thinking phase nor a
+                # tool-call-only round may look free to the tok/s maths.
+                if not content and not reasoning and not tool_args_text:
                     continue
                 arrival = time.monotonic()
                 if t_first is None:
@@ -190,6 +245,8 @@ def stream_chat(
                 if iter_first is None:
                     iter_first = arrival
                 iter_last = arrival
+                generated_chars += content + reasoning + tool_args_text
+                iteration_chars += content + reasoning + tool_args_text
                 if not content:
                     continue
                 iteration_content += content
@@ -202,13 +259,58 @@ def stream_chat(
         completion_tokens += iteration_completion
         if iter_first is not None and iter_last is not None:
             decode_seconds += iter_last - iter_first
+        round_consumed_est = round_prompt_est + max(
+            iteration_completion, estimate_completion_tokens(iteration_chars)
+        )
         if iteration_usage is not None:
-            last_usage = iteration_usage
+            total = iteration_usage.get("total_tokens")
+            prompt = iteration_usage.get("prompt_tokens")
+            if total:
+                # The server's per-round total covers its full prompt plus
+                # generation: the exact consumed figure for this round.
+                consumed_tokens += total
+            elif prompt:
+                # Exact prompt without a total: keep it, add the completion
+                # (or its char estimate — then flagged).
+                consumed_tokens += prompt + (
+                    iteration_completion
+                    or estimate_completion_tokens(iteration_chars)
+                )
+                consumed_estimated = consumed_estimated or not iteration_completion
+            else:
+                # Prompt unseen (completion-only or empty usage): estimate
+                # the round's prompt from the request we sent — flagged,
+                # never presented as a server-reported count.
+                consumed_tokens += round_consumed_est
+                consumed_estimated = True
+            if not iteration_usage_from_completion and total and prompt:
+                # Only rounds that omitted completion_tokens contribute their
+                # (total - prompt) delta to the fallback sum — a round that did
+                # report it is already counted in completion_tokens.
+                usage_derived_completion += max(total - prompt, 0)
+        else:
+            consumed_tokens += round_consumed_est
+            consumed_estimated = True
 
         if not use_tools or not tool_calls:
             break
 
         iteration += 1
+        # This round's generation is over: report cumulative usage *before*
+        # executing the tool(s) (which can take tens of seconds), so the
+        # chat token badge ticks as soon as generation stops. Emitted before
+        # the post-tool cancellation check too: a stop during the tool run
+        # still leaves the client badges on the exact figure of everything
+        # generated so far.
+        emit(
+            {
+                "event": "usage",
+                "tokens": completion_tokens,
+                "decode": decode_seconds,
+                "consumed": consumed_tokens,
+                "consumedEstimated": consumed_estimated,
+            }
+        )
         messages.append(
             {
                 "role": "assistant",
@@ -273,16 +375,6 @@ def stream_chat(
             )
         if cancel_event is not None and cancel_event.is_set():
             return
-        # Cumulative usage of the completed round (tool-call argument tokens
-        # included): lets the chat UI update its token badges while the tool
-        # loop is still running instead of waiting for the final `done`.
-        emit(
-            {
-                "event": "usage",
-                "tokens": completion_tokens,
-                "decode": decode_seconds,
-            }
-        )
         if iteration >= max_tool_iterations:
             capped = True
             break
@@ -298,19 +390,30 @@ def stream_chat(
     ttft = t_first - t0 if t_first is not None else 0.0
     tokens_estimated = False
     if not completion_tokens:
-        if last_usage is not None:
-            total = last_usage.get("total_tokens")
-            prompt = last_usage.get("prompt_tokens")
-            if total and prompt:
-                completion_tokens = max(total - prompt, 0)
-        if not completion_tokens:
-            completion_tokens = estimate_completion_tokens(answer_buffer)
+        # Servers that omit completion_tokens still report total/prompt per
+        # round: the per-round differences summed cover every tool round
+        # (last_usage alone would keep only the final round's share).
+        if usage_derived_completion:
+            completion_tokens = usage_derived_completion
+        else:
+            # Char heuristic over everything generated: answer text,
+            # reasoning and tool-call arguments alike.
+            completion_tokens = estimate_completion_tokens(generated_chars)
             tokens_estimated = completion_tokens > 0
 
     emit({
         "event": "done",
         "took": took,
         "ttft": ttft,
+        # Cumulative decode seconds across all rounds — the tok/s denominator
+        # once tools ran (took - ttft would wrongly include tool execution
+        # and inter-round gaps). Equals took - ttft for a single round.
+        "decode": decode_seconds,
         "tokens": completion_tokens or 0,
         "tokensEstimated": tokens_estimated,
+        # Consumed tokens (prompt + completion) summed over every round of
+        # the loop — what the conversation actually cost, as opposed to
+        # `tokens` (completion only, the tok/s numerator).
+        "consumed": consumed_tokens,
+        "consumedEstimated": consumed_estimated,
     })

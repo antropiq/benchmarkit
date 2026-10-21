@@ -45,7 +45,11 @@ const genRate = computed(() =>
 
 const footer = computed(() => {
   const entry = props.entry
-  const tokens = `${entry.tokensEstimated ? '~' : ''}${entry.tokens.toLocaleString()} tokens`
+  // Consumed tokens (prompt + completion) — what the answer actually cost.
+  // The rate keeps its completion-only numerator (prompt is prefill, not
+  // decode), so the two figures deliberately use different token counts.
+  const consumed = entry.consumed || entry.tokens
+  const tokens = `${entry.tokensEstimated ? '~' : ''}${consumed.toLocaleString()} tokens`
   const rate = genRate.value === null ? 'n/a' : `${genRate.value.toFixed(1)} tok/s`
   return `${entry.took.toFixed(1)}s · ${tokens} · ${rate}`
 })

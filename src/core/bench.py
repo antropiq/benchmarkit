@@ -59,7 +59,12 @@ def process_question(
         "took": result.took,
         "ttft": result.ttft,
         "genTook": result.gen_duration,
+        # `tokens` stays completion-only (the tok/s numerator); `consumed`
+        # is what the answer actually cost (prompt + completion), the figure
+        # displayed to the user. promptTokens is 0 when the server reports no
+        # usage, in which case consumed equals the (estimated) completion.
         "tokens": result.completion_tokens,
+        "consumed": result.completion_tokens + result.prompt_tokens,
         "promptTokens": result.prompt_tokens,
         "tokensEstimated": result.tokens_estimated,
     }

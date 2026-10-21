@@ -172,7 +172,8 @@ function scheduleMarkdownRender() {
 }
 
 // Client-side mirror of the backend's estimate_completion_tokens() heuristic
-// (~4 chars/token), used for the live badges and abort fallbacks.
+// (~4 chars/token), used for the live badges and abort fallbacks. Also used
+// on whole message histories to estimate a round's prompt cost.
 export function estimateCompletionTokens(text) {
   return Math.ceil(text.length / 4)
 }
@@ -233,7 +234,16 @@ function applyEvent(name, data, assistant) {
       assistant.tokens = data.tokens ?? 0
       assistant.took = data.took ?? 0
       assistant.ttft = data.ttft ?? 0
+      // Cumulative decode seconds across all tool-loop rounds: the accurate
+      // tok/s denominator once tools ran (took - ttft would include tool
+      // execution and inter-round gaps). 0 on payloads from an old server.
+      assistant.decode = data.decode ?? 0
       assistant.tokensEstimated = !!data.tokensEstimated
+      // Tokens actually consumed (prompt + completion, summed per round —
+      // every tool round re-processes the whole history): what the badge
+      // shows, as opposed to `tokens` (completion only, the rate numerator).
+      assistant.consumed = data.consumed ?? 0
+      assistant.consumedEstimated = !!data.consumedEstimated
       break
     case 'tool_call':
       assistant.tools.push({
@@ -249,10 +259,19 @@ function applyEvent(name, data, assistant) {
       break
     case 'usage':
       // Cumulative completion tokens (tool-call arguments included) and
-      // decode seconds after each tool round: keeps the side-panel badges
-      // live while the MCP tool loop is still running.
+      // decode seconds as soon as a tool round has finished generating:
+      // keeps the side-panel badges live while the MCP tool loop is still
+      // running. usageRawLen snapshots the answer text already streamed so
+      // later estimates only count the characters generated after this
+      // exact baseline (never double-counted, never missed).
       assistant.usageTokens = data.tokens ?? assistant.usageTokens
       assistant.usageDecode = data.decode ?? assistant.usageDecode
+      assistant.usageRawLen = assistant.raw.length
+      assistant.usageAt = Date.now()
+      // Consumed tokens (prompt + completion) summed over the rounds ended
+      // so far — the exact baseline for the session token badge.
+      assistant.usageConsumed = data.consumed ?? assistant.usageConsumed
+      assistant.usageConsumedEstimated = !!data.consumedEstimated
       break
     case 'tool_result': {
       const tool = assistant.tools.find((item) => item.id === data.id)
@@ -267,9 +286,13 @@ function applyEvent(name, data, assistant) {
       if (state.phase === 'waiting' || state.phase === 'reasoning') {
         state.phase = 'reasoning'
       }
-      // Reasoning opens the decode window, like the benchmark does — the
-      // live tok/s estimate must count the thinking time from its start.
-      if (!assistant.firstTokenAt) assistant.firstTokenAt = Date.now()
+      // Deliberately NOT anchoring firstTokenAt here: the client-side live
+      // estimate only ever sees answer text, so its numerator can never
+      // include thinking tokens — anchoring the window on the thinking
+      // start would divide answer-only tokens by thinking + answering time
+      // and underestimate. The exact accounting (thinking tokens AND time)
+      // arrives via the backend's usage/done events, which open the decode
+      // window on reasoning deltas server-side.
       break
     case 'error':
       state.error = data.message || 'Chat request failed.'
@@ -300,11 +323,31 @@ function finish(assistant) {
     activeMessage.html = renderMarkdown(activeMessage.raw, { mermaid: true })
   activeMessage = null
   // Stream ended without an exact usage report (stop/abort/error): keep the
-  // conversation totals stable with the same ~4 chars/token heuristic the
-  // backend uses, flagged as estimated.
-  if (!assistant.tokens && assistant.raw) {
-    assistant.tokens = estimateCompletionTokens(assistant.raw)
-    assistant.tokensEstimated = true
+  // conversation totals stable — exact cumulative tokens from the last
+  // `usage` event (covers every completed tool round, reasoning and tool
+  // arguments included) plus the ~4 chars/token heuristic on the answer
+  // text streamed since then, flagged as estimated.
+  if (!assistant.tokens) {
+    const carried = assistant.usageTokens || 0
+    const tail = estimateCompletionTokens(
+      assistant.raw.slice(assistant.usageRawLen || 0),
+    )
+    if (carried + tail > 0) {
+      assistant.tokens = carried + tail
+      assistant.tokensEstimated = true
+    }
+  }
+  // Same for the consumed (prompt + completion) badge: exact baseline from
+  // the last `usage` event plus the estimated tail of the unfinished round.
+  if (!assistant.consumed) {
+    const carried = assistant.usageConsumed || 0
+    const tail = estimateCompletionTokens(
+      assistant.raw.slice(assistant.usageRawLen || 0),
+    )
+    if (carried + tail > 0) {
+      assistant.consumed = carried + tail
+      assistant.consumedEstimated = true
+    }
   }
   // Stop/abort mid tool-execution: no tool_result will ever arrive, so never
   // leave a badge stuck on the pulsing "running" state in the tool panel.
@@ -371,6 +414,13 @@ export function useChat() {
       mcpMax: 0, // MAX_MCP_ITERATION reported by the server
       usageTokens: 0, // cumulative completion tokens per `usage` event
       usageDecode: 0, // cumulative decode seconds per `usage` event
+      usageRawLen: 0, // raw.length at the last `usage` event (estimate baseline)
+      usageAt: 0, // client clock at the last `usage` event (live-rate anchor)
+      usageConsumed: 0, // cumulative consumed tokens per `usage` event
+      usageConsumedEstimated: false, // that consumed baseline is char-estimated
+      decode: 0, // cumulative decode seconds from the `done` event
+      consumed: 0, // consumed tokens (prompt + completion) from `done`
+      consumedEstimated: false, // consumed figure involves a char estimate
     })
     // Keep the reactive proxy so token mutations re-render.
     const assistant = state.messages[state.messages.length - 1]

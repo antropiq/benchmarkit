@@ -128,6 +128,9 @@ class TestTimingEvents:
         assert done["tokens"] == 10
         assert done["promptTokens"] == 7
         assert done["tokensEstimated"] is False
+        # Displayed figure: what the answer consumed (prompt + completion),
+        # while `tokens` stays the completion-only rate numerator.
+        assert done["consumed"] == 17
 
     def test_stats_token_rate_is_generation_based(
         self, monkeypatch, job, config, questions
