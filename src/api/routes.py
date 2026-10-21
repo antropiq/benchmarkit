@@ -324,6 +324,44 @@ def _model_ids(payload: Any) -> List[str]:
     return sorted(set(ids))
 
 
+# Last known context window per (models url, model id): success is cached
+# indefinitely (n_ctx only changes with a server restart, which also flips
+# the url/model key), failures fall back to the stale value or None.
+_CTX_WINDOW_CACHE: Dict[tuple, int] = {}
+
+
+def _context_window(server_url: str, api_key: str, model: str) -> Optional[int]:
+    """Context window (tokens) of the configured model, None when unknown.
+
+    Reads ``meta.n_ctx`` from an OpenAI-compatible ``/models`` entry
+    (llama.cpp exposes it); a server that omits it is not an error — the
+    chat occupancy badge then just shows the used side without a limit.
+    """
+    if not server_url.strip():
+        return None
+    url = _models_url(server_url)
+    key = (url, model)
+    try:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        with httpx.Client(timeout=3.0) as client:
+            response = client.get(url, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        entries = [item for item in data or [] if isinstance(item, dict)]
+        entry = next((item for item in entries if item.get("id") == model), None)
+        if entry is None and entries:
+            entry = entries[0]
+        meta = entry.get("meta") if entry else None
+        n_ctx = meta.get("n_ctx") if isinstance(meta, dict) else None
+        if isinstance(n_ctx, int) and n_ctx > 0:
+            _CTX_WINDOW_CACHE[key] = n_ctx
+            return n_ctx
+    except (httpx.HTTPError, ValueError):
+        pass
+    return _CTX_WINDOW_CACHE.get(key)
+
+
 def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
     """Convert a settings payload into the managed .env key/value mapping."""
     payload = settings.model_dump()
@@ -451,6 +489,11 @@ def build_router(state: RunState) -> APIRouter:
             "serverUrl": config.serverUrl,
             "supportsVision": config.supports_vision,
             "samplingSummary": sampling_summary,
+            # Chat occupancy gauge cap: the configured model's context window
+            # (meta.n_ctx), None when the server does not expose it.
+            "contextWindow": _context_window(
+                config.serverUrl, config.apiKey or "none", models[0] if models else ""
+            ),
             "questionCount": len(questions),
             "totalTests": len(questions) * len(models),
             "verifierConfigured": bool(config.verifierAgent and config.verifierAgent.endpoint),

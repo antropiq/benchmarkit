@@ -83,6 +83,9 @@ class TestStreamChat:
         # Consumed = prompt + completion: exactly the server's total here.
         assert done["consumed"] == 12
         assert done["consumedEstimated"] is False
+        # Single round: the occupancy figure is that round's total, exact.
+        assert done["contextTokens"] == 12
+        assert done["contextEstimated"] is False
 
     def test_consumed_estimated_from_prompt_when_server_reports_no_usage(
         self, monkeypatch,
@@ -99,6 +102,10 @@ class TestStreamChat:
         assert done["tokens"] == estimate_completion_tokens("Hello there")
         assert done["consumed"] == prompt_est + done["tokens"]
         assert done["consumedEstimated"] is True
+        # Without usage the occupancy figure is the same char-based round
+        # estimate, flagged.
+        assert done["contextTokens"] == done["consumed"]
+        assert done["contextEstimated"] is True
 
     def test_consumed_prompt_exact_when_only_completion_is_estimated(
         self, monkeypatch,

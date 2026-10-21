@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -39,6 +40,11 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     results = tmp_path / "results.json"
     monkeypatch.setattr(routes, "RESULTS_PATH", results)
     monkeypatch.setattr("src.core.utils.RESULTS_PATH", results)
+    # The context-window probe hits the configured LLM server: keep the
+    # suite hermetic; the real function is unit-tested directly.
+    monkeypatch.setattr(
+        routes, "_context_window", lambda server_url, api_key, model: None
+    )
     # Context-managed so the app event loop lives across requests and
     # background run tasks can progress between polls.
     with TestClient(app) as test_client:
@@ -67,6 +73,8 @@ class TestConfigEndpoint:
         assert body["runStatus"] == "idle"
         assert body["samplingSummary"] == "defaults"
         assert body["supportsVision"] is False
+        # Hermetic fixture stubs the probe: the key must always be present.
+        assert body["contextWindow"] is None
 
     def test_supports_vision_reflects_config(self, client, monkeypatch):
         monkeypatch.setattr(
@@ -94,6 +102,80 @@ class TestConfigEndpoint:
         monkeypatch.setattr(routes, "load_endpoints_config", invalid)
         response = client.get("/api/config")
         assert response.status_code == 422
+
+
+class TestContextWindow:
+    """Unit tests for the /api/config n_ctx probe (real function, stubbed httpx)."""
+
+    class _Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def _patch(self, monkeypatch, payload=None, error=None):
+        captured = {}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def get(self, url, headers=None):
+                captured["url"] = url
+                captured["headers"] = headers
+                if error is not None:
+                    raise error
+                return TestContextWindow._Response(payload)
+
+        monkeypatch.setattr(routes.httpx, "Client", FakeClient)
+        return captured
+
+    def test_reads_n_ctx_from_the_matching_model_entry(self, monkeypatch):
+        captured = self._patch(
+            monkeypatch,
+            {
+                "data": [
+                    {"id": "other", "meta": {"n_ctx": 4096}},
+                    {"id": "model-a", "meta": {"n_ctx": 262144}},
+                ]
+            },
+        )
+        got = routes._context_window("http://ctx-test:9/v1", "sk-1", "model-a")
+        assert got == 262144
+        assert captured["url"] == "http://ctx-test:9/v1/models"
+        assert captured["headers"] == {"Authorization": "Bearer sk-1"}
+
+    def test_falls_back_to_first_entry_when_model_absent(self, monkeypatch):
+        self._patch(monkeypatch, {"data": [{"id": "x", "meta": {"n_ctx": 8192}}]})
+        assert routes._context_window("http://ctx-first:9/v1", "", "model-a") == 8192
+
+    def test_missing_meta_or_bad_server_is_none(self, monkeypatch):
+        self._patch(monkeypatch, {"data": [{"id": "model-a"}]})
+        assert routes._context_window("http://ctx-nometa:9/v1", "", "model-a") is None
+        self._patch(monkeypatch, None, error=httpx.ConnectError("boom"))
+        assert routes._context_window("http://ctx-down:9/v1", "", "model-a") is None
+
+    def test_success_is_cached_across_failures(self, monkeypatch):
+        self._patch(monkeypatch, {"data": [{"id": "m", "meta": {"n_ctx": 32768}}]})
+        assert routes._context_window("http://ctx-cache:9/v1", "", "m") == 32768
+        self._patch(monkeypatch, None, error=httpx.ConnectError("gone"))
+        # Same (url, model) key: the stale success answers while the server is away.
+        assert routes._context_window("http://ctx-cache:9/v1", "", "m") == 32768
+        # A different key has no cache to fall back on.
+        assert routes._context_window("http://ctx-cache:9/v1", "", "other") is None
+
+    def test_empty_server_url_is_none(self, monkeypatch):
+        assert routes._context_window("", "none", "model-a") is None
 
 
 def patch_bench(monkeypatch, run_fn=None, block: Optional[threading.Event] = None):

@@ -994,6 +994,33 @@ class TestChatToolLoop:
         consumed = [e["consumed"] for e in usages]
         assert consumed[1] > consumed[0]
         assert events[-1]["consumed"] >= consumed[1]
+        # Occupancy is NOT the cumulative sum: each usage event carries its
+        # OWN round's prompt + completion (the consumed DELTA), never the
+        # running total.
+        assert usages[0]["contextTokens"] == consumed[0]
+        assert usages[1]["contextTokens"] == consumed[1] - consumed[0]
+        assert all(e["contextEstimated"] is True for e in usages)  # no totals
+
+    def test_context_tokens_is_last_round_not_cumulative(self, monkeypatch):
+        # Both rounds report full usage: consumed sums the round totals
+        # (history re-billed), contextTokens is ONLY the final round's total
+        # — the figure comparable to the server's context window.
+        events, _ = self._run(
+            monkeypatch,
+            [
+                [tool_call_chunk("c1", "execute_command", "{}"),
+                 usage_chunk(prompt=100, completion=8, total=108)],
+                [content_chunk("done"),
+                 usage_chunk(prompt=120, completion=5, total=125)],
+            ],
+        )
+        usage_event = next(e for e in events if e["event"] == "usage")
+        assert usage_event["contextTokens"] == 108
+        assert usage_event["contextEstimated"] is False
+        done = events[-1]
+        assert done["consumed"] == 233  # 108 + 125
+        assert done["contextTokens"] == 125
+        assert done["contextEstimated"] is False
 
     def test_iteration_cap_stops_with_note(self, monkeypatch):
         forever = [[tool_call_chunk(f"c{i}", "execute_command", "{}")] for i in range(5)]

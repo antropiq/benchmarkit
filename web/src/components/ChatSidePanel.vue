@@ -183,6 +183,69 @@ const tokensText = computed(() =>
     : '— tokens',
 )
 
+// Context-window occupancy: the LAST round's prompt + completion (exactly
+// what the server slots into its window — template, tool schemas and
+// thinking-round history included), never summed across rounds/turns like
+// the session "tokens" badge above. Fed by `done`, refreshed between tool
+// rounds by `usage`; the cap comes from /api/config (meta.n_ctx).
+const contextUsage = computed(() => {
+  for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+    const message = state.messages[i]
+    if (message.role === 'assistant' && message.contextTokens > 0) {
+      return { tokens: message.contextTokens, estimated: message.contextEstimated }
+    }
+  }
+  return null
+})
+
+const contextWindow = computed(
+  () => benchmarkState.config?.contextWindow ?? null,
+)
+
+function formatTokens(n) {
+  return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : `${n}`
+}
+
+const contextFill = computed(() => {
+  const usage = contextUsage.value
+  if (!usage) return null
+  return contextWindow.value ? usage.tokens / contextWindow.value : null
+})
+
+const contextText = computed(() => {
+  const usage = contextUsage.value
+  if (!usage) return '— ctx'
+  const cap = contextWindow.value
+  return (
+    `${usage.estimated ? '≈ ' : ''}ctx ${formatTokens(usage.tokens)}` +
+    (cap ? ` / ${formatTokens(cap)}` : '')
+  )
+})
+
+const contextTitle = computed(() => {
+  const fill = contextFill.value
+  const parts = [
+    'Tokens in the model context window (last round: prompt + generation, tool schemas included).',
+    'The "tokens" badge is different: session-processed tokens, re-counted every round.',
+  ]
+  if (fill !== null) {
+    parts.push(
+      fill > 0 && fill < 0.01
+        ? '<1% of the window used.'
+        : `${Math.round(fill * 100)}% of the window used.`,
+    )
+  }
+  return parts.join(' ')
+})
+
+const contextClass = computed(() => {
+  const fill = contextFill.value
+  if (fill === null) return contextUsage.value ? 'green' : 'gray'
+  if (fill >= 0.9) return 'red'
+  if (fill >= 0.7) return 'violet'
+  return 'green'
+})
+
 const canCopy = computed(() => state.messages.length > 0)
 const canRestart = computed(
   () => state.messages.length > 0 || state.phase !== 'idle',
@@ -247,6 +310,9 @@ function restart() {
     </span>
     <span class="badge" :class="totalTokens ? 'green' : 'gray'" role="status">
       {{ tokensText }}
+    </span>
+    <span class="badge" :class="contextClass" role="status" :title="contextTitle">
+      {{ contextText }}
     </span>
     <div class="chat-side-actions">
       <button

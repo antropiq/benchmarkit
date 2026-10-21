@@ -244,6 +244,12 @@ function applyEvent(name, data, assistant) {
       // shows, as opposed to `tokens` (completion only, the rate numerator).
       assistant.consumed = data.consumed ?? 0
       assistant.consumedEstimated = !!data.consumedEstimated
+      // Context occupancy of the FINAL round: the figure to compare against
+      // the server window — unlike `consumed` it never accumulates.
+      if (typeof data.contextTokens === 'number' && data.contextTokens > 0) {
+        assistant.contextTokens = data.contextTokens
+        assistant.contextEstimated = !!data.contextEstimated
+      }
       break
     case 'tool_call':
       assistant.tools.push({
@@ -279,6 +285,12 @@ function applyEvent(name, data, assistant) {
       // so far — the exact baseline for the session token badge.
       assistant.usageConsumed = data.consumed ?? assistant.usageConsumed
       assistant.usageConsumedEstimated = !!data.consumedEstimated
+      // Occupancy of the round that just ended: the tool loop refreshes the
+      // context badge between rounds, right when generation stops.
+      if (typeof data.contextTokens === 'number' && data.contextTokens > 0) {
+        assistant.contextTokens = data.contextTokens
+        assistant.contextEstimated = !!data.contextEstimated
+      }
       break
     case 'tool_result': {
       const tool = assistant.tools.find((item) => item.id === data.id)
@@ -442,6 +454,8 @@ export function useChat() {
       decode: 0, // cumulative decode seconds from the `done` event
       consumed: 0, // consumed tokens (prompt + completion) from `done`
       consumedEstimated: false, // consumed figure involves a char estimate
+      contextTokens: 0, // LAST round's prompt + completion = context occupancy
+      contextEstimated: false, // occupancy figure involves a char estimate
     })
     // Keep the reactive proxy so token mutations re-render.
     const assistant = state.messages[state.messages.length - 1]
