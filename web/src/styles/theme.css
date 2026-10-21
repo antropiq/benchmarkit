@@ -1530,6 +1530,18 @@ body {
   margin: 0;
 }
 
+.mcp-panel-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.mcp-port-badge {
+  color: var(--pico-muted-color);
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.78rem;
+}
+
 .mcp-description {
   margin: 0.4rem 0 0;
 }

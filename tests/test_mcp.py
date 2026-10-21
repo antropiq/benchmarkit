@@ -1,6 +1,10 @@
 """Tests for MCP connector discovery, settings API, and the chat tool loop."""
 
 import json
+import os
+import socket
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,8 +50,12 @@ class TestDiscoverConnectors:
         assert connector["id"] == "console_mcp"
         assert connector["label"] == "Console"
         assert connector["description"] == "Console MCP Server - Allows LLMs."
-        assert connector["port"] == 9999
-        assert connector["endpoint"] == "http://127.0.0.1:9999/mcp"
+        assert (
+            mcp_hub.AUTO_PORT_BASE
+            <= connector["port"]
+            < mcp_hub.AUTO_PORT_BASE + mcp_hub.AUTO_PORT_SPAN
+        )
+        assert connector["endpoint"] == f"http://127.0.0.1:{connector['port']}/mcp"
 
     def test_ignores_other_files_and_broken_modules(self, tmp_path):
         _write_connector(tmp_path, "playwright_mcp", "Browser.")
@@ -59,6 +67,72 @@ class TestDiscoverConnectors:
 
     def test_missing_directory_returns_empty(self, tmp_path):
         assert discover_connectors(tmp_path / "nope") == []
+
+    def test_allocation_is_deterministic(self, tmp_path):
+        _write_connector(tmp_path, "alpha_mcp", "A.")
+        _write_connector(tmp_path, "beta_mcp", "B.")
+        first = [c["port"] for c in discover_connectors(tmp_path)]
+        second = [c["port"] for c in discover_connectors(tmp_path)]
+        assert first == second
+        assert len(set(first)) == 2  # distinct connectors, distinct ports
+
+    def test_preferred_port_survives_hash_seed_change(self):
+        # hash() is randomised per process via PYTHONHASHSEED — the port
+        # derivation must use a stable digest, so two interpreter runs
+        # with different seeds must agree on the preferred port.
+        project_root = str(Path(mcp_hub.__file__).resolve().parents[2])
+        code = (
+            f"import sys; sys.path.insert(0, {project_root!r}); "
+            "from src.core.mcp_hub import _preferred_port; "
+            "print(_preferred_port('console_mcp'))"
+        )
+        outputs = []
+        for seed in ("1", "2"):
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert result.returncode == 0, result.stderr
+            outputs.append(result.stdout.strip())
+        assert outputs[0] == outputs[1] == str(mcp_hub._preferred_port("console_mcp"))
+
+    def test_no_registry_entry_is_required_for_a_new_connector(self, tmp_path):
+        _write_connector(tmp_path, "foo_mcp", "Fresh connector, no port declared.")
+        [connector] = discover_connectors(tmp_path)
+        assert connector["port"]  # never 0 for a parsed built-in
+        assert connector["endpoint"] == f"http://127.0.0.1:{connector['port']}/mcp"
+
+    def test_allocated_ports_never_collide_within_a_run(self, tmp_path):
+        for index in range(mcp_hub.AUTO_PORT_SPAN + 2):
+            _write_connector(tmp_path, f"c{index:03d}_mcp", "x.")
+        ports = [c["port"] for c in discover_connectors(tmp_path)]
+        allocated = [port for port in ports if port]
+        assert len(allocated) == len(set(allocated))
+        assert all(
+            mcp_hub.AUTO_PORT_BASE <= port < mcp_hub.AUTO_PORT_BASE + mcp_hub.AUTO_PORT_SPAN
+            for port in allocated
+        )
+        # More connectors than range slots: the surplus reports port 0.
+        assert len(ports) - len(allocated) >= 2
+
+    def test_foreign_occupancy_shifts_the_allocation(self, tmp_path):
+        _write_connector(tmp_path, "solo_mcp", "Solo connector.")
+        [before] = discover_connectors(tmp_path)
+        hog = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            hog.bind(("127.0.0.1", before["port"]))
+            [after] = discover_connectors(tmp_path)
+        finally:
+            hog.close()
+        assert after["port"] != before["port"]
+        assert (
+            mcp_hub.AUTO_PORT_BASE
+            <= after["port"]
+            < mcp_hub.AUTO_PORT_BASE + mcp_hub.AUTO_PORT_SPAN
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -230,18 +304,21 @@ def _manager(connector_ids=("console_mcp",)) -> McpManager:
 
 
 def discover_connectors_stub(connector_ids) -> List[Dict[str, Any]]:
-    from src.core.mcp_hub import CONNECTOR_PORTS
-
-    return [
-        {
-            "id": cid,
-            "label": cid,
-            "description": "",
-            "port": CONNECTOR_PORTS.get(cid, 0),
-            "endpoint": f"http://127.0.0.1:{CONNECTOR_PORTS.get(cid, 0)}/mcp",
-        }
-        for cid in connector_ids
-    ]
+    # Explicit literal ports: the manager tests never exercise discovery or
+    # allocation, they only exercise McpManager bookkeeping.
+    connectors = []
+    for index, cid in enumerate(connector_ids):
+        port = 8940 + index
+        connectors.append(
+            {
+                "id": cid,
+                "label": cid,
+                "description": "",
+                "port": port,
+                "endpoint": f"http://127.0.0.1:{port}/mcp",
+            }
+        )
+    return connectors
 
 
 class TestMcpManager:
@@ -265,7 +342,7 @@ class TestMcpManager:
         manager = _manager(("console_mcp", "playwright_mcp"))
         status = {s["id"]: s for s in manager.status()}
         assert status["console_mcp"]["status"] == "stopped"
-        assert status["playwright_mcp"]["port"] == 8934
+        assert status["playwright_mcp"]["port"] == 8941
 
     def test_stop_all_is_idempotent_without_start(self):
         manager = _manager()
@@ -273,6 +350,37 @@ class TestMcpManager:
 
         asyncio.run(manager.stop_all())
         asyncio.run(manager.stop_all())  # second call must not raise
+
+
+class TestStartBuiltinPortHandoff:
+    def test_subprocess_receives_the_allocated_port(self, tmp_path, monkeypatch):
+        # The hub is the port authority: the child must be launched with
+        # --port set to the hub-allocated value, never left to its own
+        # module default.
+        import asyncio
+
+        manager = McpManager(
+            discover_connectors_stub(("console_mcp",)), logs_dir=tmp_path
+        )
+        # Only the lazy ``from mcp import Client`` inside _start_builtin needs
+        # a module; patching after __init__ keeps find_spec() untouched.
+        monkeypatch.setitem(sys.modules, "mcp", SimpleNamespace(Client=object))
+        captured: List[List[str]] = []
+
+        async def fake_exec(*args, **kwargs):
+            captured.append([str(arg) for arg in args])
+            return SimpleNamespace(returncode=1)  # exit -> retry loop breaks at once
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+        info = manager._connectors["console_mcp"]
+        asyncio.run(manager._start_builtin("console_mcp", info))
+
+        assert captured, "connector subprocess was never spawned"
+        argv = captured[0]
+        assert f"--port={info['port']}" in argv
+        assert "--host=127.0.0.1" in argv
+        assert info["status"] == "error"  # fake process exited immediately
+        assert "exited" in (info["error"] or "")
 
 
 def _external_manager() -> McpManager:

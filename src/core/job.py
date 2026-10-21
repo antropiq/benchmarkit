@@ -34,11 +34,19 @@ class RunJob:
             self.failed_questions.append(question_number)
 
     def failed_label(self) -> str:
-        """Return the ``Failed: ...`` label for the current failed questions."""
+        """Return the ``Failed: ...`` label for the current failed questions.
+
+        The number in parentheses is the count of failed questions; the
+        ``#``-prefixed values are the question numbers, so ``Failed (1): #3``
+        cannot be misread as three failures.
+        """
         failed = self.get_failed_questions()
         if not failed:
             return "Failed: none"
-        return "Failed: " + ",".join(str(n) for n in failed)
+        return (
+            f"Failed ({len(failed)}): "
+            + ",".join(f"#{n}" for n in failed)
+        )
 
     # -- aggregate stats ----------------------------------------------------
 

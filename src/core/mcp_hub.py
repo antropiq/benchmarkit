@@ -16,10 +16,12 @@ keep working when the optional ``[mcp]`` extra is not installed.
 
 import ast
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
 import shlex
+import socket
 import sys
 import tempfile
 import threading
@@ -36,12 +38,13 @@ MCP_LOGS_DIR = PROJECT_ROOT / "logs" / "mcp"
 # contents are never returned by the API.
 EXTERNALS_PATH = MCP_CONNECTORS_DIR / "externals.json"
 
-# Connector id -> default listen port, kept in sync with each connector
-# module's ``--port`` argparse default.
-CONNECTOR_PORTS: Dict[str, int] = {
-    "console_mcp": 9999,
-    "playwright_mcp": 8934,
-}
+# Auto-allocated listen ports for built-in connectors. The hub derives a
+# stable preferred port per connector id inside this range, probes it for
+# availability, and passes the result to the child process as ``--port``.
+# A connector module must accept ``--port`` and never assume a port of its
+# own; its internal default is only a fallback for manual runs.
+AUTO_PORT_BASE = 8940
+AUTO_PORT_SPAN = 60
 
 # Connection retry policy for a freshly spawned connector process.
 CONNECT_RETRIES = 20
@@ -68,17 +71,61 @@ def _description_from_docstring(docstring: str) -> str:
     return " ".join(paragraph.split())
 
 
+def _preferred_port(connector_id: str) -> int:
+    """Deterministic preferred port for a connector id inside the auto range.
+
+    Hashes with blake2b, never ``hash()``: Python randomises
+    ``PYTHONHASHSEED``, so ``hash()`` would reshuffle the ports at every
+    app start.
+    """
+    digest = hashlib.blake2b(connector_id.encode("utf-8"), digest_size=4).hexdigest()
+    return AUTO_PORT_BASE + int(digest, 16) % AUTO_PORT_SPAN
+
+
+def _port_is_free(port: int, claimed: Set[int]) -> bool:
+    """True when the port is unclaimed by this hub run and bindable locally."""
+    if port in claimed:
+        return False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _allocate_port(connector_id: str, claimed: Set[int]) -> Optional[int]:
+    """Probe forward from the preferred port (wrapping) until one is free.
+
+    Returns the port after adding it to ``claimed`` so connectors of this
+    run never collide with each other, or ``None`` when the whole range is
+    occupied (foreign processes included).
+    """
+    preferred = _preferred_port(connector_id)
+    for offset in range(AUTO_PORT_SPAN):
+        port = AUTO_PORT_BASE + (preferred - AUTO_PORT_BASE + offset) % AUTO_PORT_SPAN
+        if _port_is_free(port, claimed):
+            claimed.add(port)
+            return port
+    return None
+
+
 def discover_connectors(directory: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Scan ``mcp_connectors/`` for ``*_mcp.py`` connector modules.
 
     Reads each module's docstring (via ``ast``, never imports it) for the
     panel description. Returns ``{id, label, description, port, endpoint}``
-    dicts sorted by id.
+    dicts sorted by id. ``port``/``endpoint`` are hub-assigned, not
+    connector-declared: a stable preferred port is derived from the
+    connector id and probed for availability (:func:`_allocate_port`), so
+    adding a connector needs no registry edit. ``port`` is ``0`` only when
+    the whole auto range is exhausted.
     """
     root = directory or MCP_CONNECTORS_DIR
     connectors: List[Dict[str, Any]] = []
     if not root.is_dir():
         return connectors
+    claimed: Set[int] = set()
     for path in sorted(root.glob("*_mcp.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -86,7 +133,7 @@ def discover_connectors(directory: Optional[Path] = None) -> List[Dict[str, Any]
             continue
         docstring = ast.get_docstring(tree) or ""
         connector_id = path.stem
-        port = CONNECTOR_PORTS.get(connector_id, 0)
+        port = _allocate_port(connector_id, claimed) or 0
         endpoint = f"http://127.0.0.1:{port}/mcp" if port else ""
         connectors.append(
             {
@@ -445,8 +492,8 @@ class McpManager:
         if not info["port"]:
             info["status"] = "error"
             info["error"] = (
-                f"Unknown default port for {connector_id} — "
-                "add it to CONNECTOR_PORTS in src/core/mcp_hub.py"
+                f"No free port in range {AUTO_PORT_BASE}-"
+                f"{AUTO_PORT_BASE + AUTO_PORT_SPAN - 1} for {connector_id}"
             )
             return
         info["status"] = "starting"
@@ -460,6 +507,8 @@ class McpManager:
                     self._python_exe,
                     "-m",
                     f"mcp_connectors.{connector_id}",
+                    "--host=127.0.0.1",
+                    f"--port={info['port']}",
                     cwd=str(self._project_root),
                     env=env,
                     stdout=log_file,

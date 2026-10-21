@@ -311,8 +311,15 @@ function connectorDetail(connector) {
                   {{ connector.label }}
                   <span v-if="connector.external" class="mcp-external-tag">[external]</span>
                 </label>
-                <span class="badge" :class="MCP_STATUS_CLASS[connector.status]">
-                  {{ connector.status }}
+                <span class="mcp-panel-badges">
+                  <span
+                    v-if="connector.port"
+                    class="badge mcp-port-badge"
+                    :title="connector.endpoint"
+                  >:{{ connector.port }}</span>
+                  <span class="badge" :class="MCP_STATUS_CLASS[connector.status]">
+                    {{ connector.status }}
+                  </span>
                 </span>
               </div>
               <p class="caption mcp-description">{{ connectorDetail(connector) }}</p>

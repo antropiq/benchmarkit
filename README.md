@@ -74,11 +74,14 @@ pip install -e ".[mcp]"          # adds the mcp SDK + playwright
 playwright install chromium      # Linux: playwright install --with-deps chromium
 ```
 
-Both connector servers — `console_mcp` on `http://127.0.0.1:9999/mcp` and
-`playwright_mcp` on `http://127.0.0.1:8934/mcp` — start when the app starts
-and stop when it quits. Nothing is exposed to the model until you tick a
-connector in **Settings → MCP** (persisted as `MCP_ENABLED` in `.env`);
-benchmark runs never use tools. The **Max tool iterations** field
+The connector servers start when the app starts and stop when it quits. The
+hub assigns every built-in connector a listen port automatically — derived
+deterministically from its id inside the `8940–8999` range, checked for
+availability, and passed to the connector as `--port` — so a new
+`*_mcp.py` file needs no port registration anywhere; the assigned port is
+shown as a badge in **Settings → MCP**. Nothing is exposed to the model until
+you tick a connector in **Settings → MCP** (persisted as `MCP_ENABLED` in
+`.env`); benchmark runs never use tools. The **Max tool iterations** field
 (`MAX_MCP_ITERATION`, default 25) caps the tool-calling loop of a single
 chat reply and is shared by all connectors. Connector stdout/stderr is
 captured in `logs/mcp/`. Without the extra installed everything keeps

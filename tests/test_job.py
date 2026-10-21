@@ -126,7 +126,7 @@ class TestFailedQuestions:
         job.mark_question_failed(1)
         job.mark_question_failed(3)
         assert job.get_failed_questions() == [1, 3]
-        assert job.failed_label() == "Failed: 1,3"
+        assert job.failed_label() == "Failed (2): #1,#3"
 
 
 class TestReset:
