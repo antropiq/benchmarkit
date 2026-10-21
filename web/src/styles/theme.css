@@ -19,6 +19,10 @@
   --bi-appbar-height: 60px;
   /* Shared width of the Chat left column (tool-call log + stats panel). */
   --bi-chat-panel-width: 12rem;
+  /* Conversation-scoped MCP toggle panel (input row): wider than the
+     shared column so connector names fit next to their switch (also wide
+     enough that the vertical scrollbar never squeezes a row sideways). */
+  --bi-chat-mcp-width: 15.5rem;
 
   /* Gradient gauge ramp: green → yellow → orange → red (theme-independent). */
   --bi-gauge-low: #22c55e;
@@ -1153,6 +1157,71 @@ body {
   gap: 0.5rem;
 }
 
+/* Conversation-scoped MCP toggles, between the stats panel and the
+   textarea. Own fixed width (not --bi-chat-panel-width); scrolls vertically
+   when the list outgrows the input row's (splitter-bounded) height. */
+.chat-mcp-panel {
+  flex: 0 0 var(--bi-chat-mcp-width);
+  min-width: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  overflow-y: auto;
+  /* The vertical scrollbar eats a few pixels: rows must never spill
+     sideways (labels ellipsize instead of triggering a horizontal bar). */
+  overflow-x: hidden;
+  padding-right: 0.25rem;
+}
+
+.chat-mcp-title {
+  margin: 0;
+}
+
+.chat-mcp-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.chat-mcp-row .chat-mcp-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status dot between the switch and the label: green running, red
+   (configuration/startup) error, gray stopped/disabled/starting. */
+.chat-mcp-dot {
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+
+.chat-mcp-dot--green {
+  background: var(--bi-success);
+}
+
+.chat-mcp-dot--red {
+  background: var(--bi-danger);
+}
+
+.chat-mcp-dot--gray {
+  background: var(--pico-muted-color);
+}
+
+/* Activated in Settings but not running: its tools are unavailable. */
+.chat-mcp-row--dim {
+  opacity: 0.45;
+}
+
 .chat-stop,
 .chat-stop:hover {
   color: var(--bi-danger);
@@ -1500,6 +1569,7 @@ body {
 @media (max-width: 640px) {
   .chat-shell {
     --bi-chat-panel-width: 8.5rem;
+    --bi-chat-mcp-width: 10rem;
   }
 }
 

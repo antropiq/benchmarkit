@@ -207,6 +207,11 @@ class ChatIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     messages: List[ChatMessage]
+    # Conversation-scoped MCP filter: ids of the connectors whose tools this
+    # conversation may use (intersection with the Settings-activated set).
+    # ``None`` means "no filter" — every activated connector stays eligible,
+    # which keeps older clients and the existing chat tests unchanged.
+    mcpEnabled: Optional[List[str]] = None
 
     @field_validator("messages")
     @classmethod
@@ -338,17 +343,28 @@ def _active_connector_ids() -> List[str]:
     return ids
 
 
-def _mcp_tool_kwargs(request: Request) -> Dict[str, Any]:
+def _mcp_tool_kwargs(
+    request: Request, enabled: Optional[List[str]] = None
+) -> Dict[str, Any]:
     """Extra ``stream_chat`` kwargs when MCP connectors are active for chat.
 
+    ``enabled`` is the conversation-scoped connector allowlist from the chat
+    body (the Chat tab's per-conversation MCP toggles); it is intersected
+    with the Settings-activated ids so Settings stays the authority — unknown
+    or stale ids silently drop and a connector deactivated in Settings can
+    never leak back into a running conversation. ``None`` means no filter.
     Returns ``{}`` when nothing is active so the no-MCP call shape (and the
     existing chat tests that stub ``stream_chat``) stays untouched.
     """
     manager = getattr(request.app.state, "mcp", None)
     if manager is None:
         return {}
+    connector_ids = _active_connector_ids()
+    if enabled is not None:
+        allowed = set(enabled)
+        connector_ids = [cid for cid in connector_ids if cid in allowed]
     try:
-        tools, tool_to_server = manager.active_tool_defs(_active_connector_ids())
+        tools, tool_to_server = manager.active_tool_defs(connector_ids)
     except Exception:  # noqa: BLE001 — never block chat because of the hub
         return {}
     if not tools:
@@ -623,7 +639,7 @@ def build_router(state: RunState) -> APIRouter:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         cancel_event = threading.Event()
-        tool_kwargs = _mcp_tool_kwargs(request)
+        tool_kwargs = _mcp_tool_kwargs(request, body.mcpEnabled)
 
         def emit(event: Any) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, event)

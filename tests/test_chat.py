@@ -611,3 +611,85 @@ class TestAgentDocInjection:
         )
         assert "Answer in French." in captured[0]["content"]
         assert chat_core.TOOL_NOTICE.strip() in captured[0]["content"]
+
+
+class TestChatMcpFilter:
+    """``mcpEnabled`` (Chat tab conversation toggles) intersects the active ids."""
+
+    class RecordingManager:
+        installed = True
+
+        def __init__(self):
+            self.requested_ids = None
+
+        def status(self):
+            return []
+
+        def active_tool_defs(self, ids):
+            self.requested_ids = list(ids)
+            tools = [
+                {"type": "function", "function": {"name": f"use_{cid}"}}
+                for cid in ids
+            ]
+            return tools, {f"use_{cid}": cid for cid in ids}
+
+        def call_tool_sync(self, cid, name, args):
+            return "ok"
+
+    @pytest.fixture
+    def mcp_setup(self, client, monkeypatch):
+        monkeypatch.setattr(routes, "_active_connector_ids", lambda: ["alpha", "beta"])
+        manager = self.RecordingManager()
+        client.app.state.mcp = manager
+
+        seen = {}
+
+        def fake(messages, model, server_url, emit, sampling=None,
+                 cancel_event=None, api_key="none", sysprompt=None, **kwargs):
+            seen.update(kwargs)
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        return client, manager, seen
+
+    @staticmethod
+    def _post(client, extra=None):
+        body = {"messages": [{"role": "user", "content": "hi"}]}
+        body.update(extra or {})
+        response = client.post("/api/chat", json=body)
+        assert response.status_code == 200
+        return response
+
+    def test_mcp_enabled_intersects_active_ids(self, mcp_setup):
+        client, manager, seen = mcp_setup
+        self._post(client, {"mcpEnabled": ["beta"]})
+        assert manager.requested_ids == ["beta"]
+        assert seen["tool_servers"] == {"use_beta": "beta"}
+
+    def test_mcp_enabled_absent_keeps_all_active(self, mcp_setup):
+        client, manager, seen = mcp_setup
+        self._post(client)
+        assert manager.requested_ids == ["alpha", "beta"]
+        assert set(seen["tool_servers"]) == {"use_alpha", "use_beta"}
+
+    def test_empty_mcp_enabled_disables_all_tools(self, mcp_setup):
+        client, manager, seen = mcp_setup
+        self._post(client, {"mcpEnabled": []})
+        assert manager.requested_ids == []
+        # No tools at all: the no-MCP stream_chat call shape is preserved.
+        assert "tools" not in seen
+
+    def test_unknown_ids_are_dropped_by_the_intersection(self, mcp_setup):
+        client, manager, _seen = mcp_setup
+        self._post(client, {"mcpEnabled": ["beta", "gone_mcp"]})
+        assert manager.requested_ids == ["beta"]
+
+    def test_mcp_enabled_wrong_type_returns_422(self, mcp_setup):
+        client, _manager, _seen = mcp_setup
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}],
+                  "mcpEnabled": "beta"},
+        )
+        assert response.status_code == 422

@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
+import { loadChatMcp } from './useChat'
 
 const state = reactive({
   config: null,
@@ -611,6 +612,10 @@ export function useBenchmark() {
         .filter((connector) => connector.active)
         .map((connector) => connector.id)
       state.settingsOpen = false
+      // Keep the Chat tab's conversation-scoped MCP panel in sync with the
+      // just-saved activation set (kept OFF switches survive; a locked
+      // conversation keeps its frozen list — loadChatMcp is a no-op then).
+      loadChatMcp()
     } catch (exc) {
       state.mcpError = `Could not reach the API: ${exc}`
     } finally {

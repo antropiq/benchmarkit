@@ -9,16 +9,21 @@ import { useAutoScroll } from '../composables/useAutoScroll'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useSplitter } from '../composables/useSplitter'
 
-const { state, editLast, clearImage } = useChat()
+const { state, editLast, clearImage, loadChatMcp } = useChat()
 const { state: benchmarkState, loadConfig } = useBenchmark()
 
-// Keep config.supportsVision (which gates the attach button) fresh when the
-// chat tab is opened: settings may have been saved or .env edited meanwhile
-// (App.vue's initial loadConfig covers the first render).
+// Keep config.supportsVision (which gates the attach button) and the
+// conversation-scoped MCP snapshot fresh when the chat tab is opened:
+// settings may have been saved or .env edited meanwhile (App.vue's initial
+// loadConfig covers the first render). A locked (started) conversation
+// keeps its frozen list — loadChatMcp ignores locked state.
 watch(
   () => benchmarkState.activeTab,
   (tab) => {
-    if (tab === 'chat') loadConfig()
+    if (tab === 'chat') {
+      loadConfig()
+      loadChatMcp()
+    }
   },
 )
 

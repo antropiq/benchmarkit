@@ -10,6 +10,15 @@ const state = reactive({
   draft: { raw: '', html: '', renderedRaw: '' },
   // Image picked for the next message: { dataUrl, name, size } | null.
   pendingImage: null,
+  // Conversation-scoped MCP toggles (independent from the SettingsDialog):
+  // the Settings-activated connectors snapshotted on tab entry, each ON by
+  // default, frozen once the first message is accepted by the server.
+  mcp: {
+    connectors: [], // { id, label, status } — only connectors active in Settings
+    enabled: {}, // id -> boolean (this conversation only, never persisted)
+    loaded: false, // GET /api/mcp snapshot succeeded (panel + filter usable)
+    locked: false, // sticky: first accepted send locks the toggles
+  },
 })
 
 let controller = null
@@ -87,6 +96,46 @@ function attachImage(file) {
 
 function clearImage() {
   state.pendingImage = null
+}
+
+// Snapshot the Settings-activated connectors for a new conversation. Never
+// touches a locked (already-started) conversation; on failure the panel
+// stays hidden and send() omits the mcpEnabled filter, so chat keeps
+// working with every activated connector — a failed load must not silently
+// disable connectors the user never got to toggle. Toggle choices survive
+// the refresh (restart, tab re-entry and MCP settings saves): previously
+// switched-off connectors come back off, freshly appearing ones default to
+// ON. Exported for useBenchmark's saveMcp() so saving the MCP settings
+// refreshes the panel right away (no cycle: useChat imports useBenchmark
+// nowhere).
+export async function loadChatMcp() {
+  if (state.mcp.locked) return
+  try {
+    const res = await fetch('/api/mcp')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const body = await res.json()
+    state.mcp.connectors = (body.connectors || [])
+      .filter((connector) => connector.active)
+      .map(({ id, label, status }) => ({ id, label, status }))
+    const previous = state.mcp.enabled
+    const enabled = {}
+    for (const connector of state.mcp.connectors) {
+      enabled[connector.id] =
+        connector.id in previous ? previous[connector.id] : true
+    }
+    state.mcp.enabled = enabled
+    state.mcp.loaded = true
+  } catch {
+    state.mcp.connectors = []
+    state.mcp.enabled = {}
+    state.mcp.loaded = false
+  }
+}
+
+function setChatMcp(id, on) {
+  if (state.mcp.locked || state.phase !== 'idle') return
+  if (!(id in state.mcp.enabled)) return
+  state.mcp.enabled[id] = !!on
 }
 
 function scheduleMarkdownRender() {
@@ -307,10 +356,19 @@ export function useChat() {
     state.phase = 'waiting'
     controller = new AbortController()
     try {
+      const payload = { messages: history }
+      if (state.mcp.loaded) {
+        // Conversation-scoped allowlist: only the toggles currently on may
+        // contribute tools (intersected with the Settings-activated ids
+        // server-side). Omitted when the snapshot failed to load.
+        payload.mcpEnabled = Object.keys(state.mcp.enabled).filter(
+          (id) => state.mcp.enabled[id],
+        )
+      }
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       })
       if (!res.ok || !res.body) {
@@ -322,6 +380,10 @@ export function useChat() {
         finish(assistant)
         return
       }
+      // Accepted send: the conversation has started, so the MCP toggles
+      // freeze until the restart button resets them (sticky by design —
+      // edit-and-resend of the last message does not unlock them again).
+      state.mcp.locked = true
       await readStream(res, assistant)
     } catch (exc) {
       if (exc?.name !== 'AbortError') {
@@ -370,7 +432,23 @@ export function useChat() {
     state.messages = []
     state.error = null
     state.pendingImage = null
+    // New conversation: MCP toggles unlock against a freshly fetched
+    // snapshot, keeping the previous on/off choices (loadChatMcp seeds the
+    // new connector list from them).
+    state.mcp.locked = false
+    loadChatMcp()
   }
 
-  return { state, send, stop, reset, setDraft, editLast, attachImage, clearImage }
+  return {
+    state,
+    send,
+    stop,
+    reset,
+    setDraft,
+    editLast,
+    attachImage,
+    clearImage,
+    loadChatMcp,
+    setChatMcp,
+  }
 }

@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import ChatMcpPanel from './ChatMcpPanel.vue'
 import ChatSidePanel from './ChatSidePanel.vue'
 import { useChat } from '../composables/useChat'
 
@@ -33,6 +34,7 @@ function onKeydown(event) {
       :streaming="streaming"
       @send="submit"
     />
+    <ChatMcpPanel />
     <textarea
       :value="state.draft.raw"
       class="chat-textarea"
