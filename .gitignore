@@ -12,3 +12,4 @@ web/dist
 .kilo/plans/
 logs/
 mcp_connectors/externals.json
+resources/memory_registration.json
