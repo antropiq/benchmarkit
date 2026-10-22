@@ -13,3 +13,4 @@ web/dist
 logs/
 mcp_connectors/externals.json
 resources/memory_registration.json
+pyrightconfig.json

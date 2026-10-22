@@ -1,0 +1,26 @@
+# Kilo Code ignore - controls the agent's file access (reads, edits, context),
+# independently of Git. Syntax is .gitignore-style.
+# Ignored files are still checkpointed, so agent changes stay revertible.
+
+# --- build output & dependencies ---
+node_modules/
+web/dist/
+*.pyc
+__pycache__/
+
+# --- test / coverage artifacts ---
+.pytest_cache/
+.coverage
+coverage/
+
+# --- secrets & local state (some of these ARE git-tracked or outside .git) ---
+.env
+.env.*
+!.env.example
+resources/memory_registration.json
+mcp_connectors/externals.json
+
+# --- noisy runtime output (big, useless for reasoning) ---
+logs/
+results.json
+.playwright-mcp/
