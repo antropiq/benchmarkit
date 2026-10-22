@@ -239,13 +239,8 @@ function applyEvent(name, data, assistant) {
       // execution and inter-round gaps). 0 on payloads from an old server.
       assistant.decode = data.decode ?? 0
       assistant.tokensEstimated = !!data.tokensEstimated
-      // Tokens actually consumed (prompt + completion, summed per round —
-      // every tool round re-processes the whole history): what the badge
-      // shows, as opposed to `tokens` (completion only, the rate numerator).
-      assistant.consumed = data.consumed ?? 0
-      assistant.consumedEstimated = !!data.consumedEstimated
       // Context occupancy of the FINAL round: the figure to compare against
-      // the server window — unlike `consumed` it never accumulates.
+      // the server window: it never accumulates across rounds.
       if (typeof data.contextTokens === 'number' && data.contextTokens > 0) {
         assistant.contextTokens = data.contextTokens
         assistant.contextEstimated = !!data.contextEstimated
@@ -281,10 +276,6 @@ function applyEvent(name, data, assistant) {
       assistant.usageDecode = data.decode ?? assistant.usageDecode
       assistant.usageRawLen = assistant.raw.length
       assistant.usageAt = Date.now()
-      // Consumed tokens (prompt + completion) summed over the rounds ended
-      // so far — the exact baseline for the session token badge.
-      assistant.usageConsumed = data.consumed ?? assistant.usageConsumed
-      assistant.usageConsumedEstimated = !!data.consumedEstimated
       // Occupancy of the round that just ended: the tool loop refreshes the
       // context badge between rounds, right when generation stops.
       if (typeof data.contextTokens === 'number' && data.contextTokens > 0) {
@@ -369,18 +360,6 @@ function finish(assistant) {
       assistant.tokensEstimated = true
     }
   }
-  // Same for the consumed (prompt + completion) badge: exact baseline from
-  // the last `usage` event plus the estimated tail of the unfinished round.
-  if (!assistant.consumed) {
-    const carried = assistant.usageConsumed || 0
-    const tail = estimateCompletionTokens(
-      assistant.raw.slice(assistant.usageRawLen || 0),
-    )
-    if (carried + tail > 0) {
-      assistant.consumed = carried + tail
-      assistant.consumedEstimated = true
-    }
-  }
   // Stop/abort mid tool-execution: no tool_result will ever arrive, so never
   // leave a badge stuck on the pulsing "running" state in the tool panel.
   for (const tool of assistant.tools ?? []) {
@@ -449,11 +428,7 @@ export function useChat() {
       usageDecode: 0, // cumulative decode seconds per `usage` event
       usageRawLen: 0, // raw.length at the last `usage` event (estimate baseline)
       usageAt: 0, // client clock at the last `usage` event (live-rate anchor)
-      usageConsumed: 0, // cumulative consumed tokens per `usage` event
-      usageConsumedEstimated: false, // that consumed baseline is char-estimated
       decode: 0, // cumulative decode seconds from the `done` event
-      consumed: 0, // consumed tokens (prompt + completion) from `done`
-      consumedEstimated: false, // consumed figure involves a char estimate
       contextTokens: 0, // LAST round's prompt + completion = context occupancy
       contextEstimated: false, // occupancy figure involves a char estimate
     })

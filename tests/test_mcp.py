@@ -890,10 +890,11 @@ class TestChatToolLoop:
         assert events[2]["ok"] is True
         # Cumulative usage of the completed round, before the final answer.
         assert events[0]["tokens"] == 8
-        # usage.consumed: the round's prompt + completion (its total_tokens,
-        # char-estimated here since the stub reports completion only).
-        assert events[0]["consumed"] >= 8
-        assert events[0]["consumedEstimated"] is True
+        # usage.contextTokens: the just-ended round's prompt + completion
+        # (its total_tokens, char-estimated here since the stub reports
+        # completion only) — the round's own context occupancy figure.
+        assert events[0]["contextTokens"] >= 8
+        assert events[0]["contextEstimated"] is True
         # done carries the cumulative decode window for an accurate tok/s.
         assert events[-1]["decode"] >= 0
         # Second request carries the assistant tool_calls + tool result turn.
@@ -989,22 +990,19 @@ class TestChatToolLoop:
         usages = [e for e in events if e["event"] == "usage"]
         assert [e["tokens"] for e in usages] == [8, 13]  # cumulative
         assert all(e["decode"] >= 0 for e in usages)
-        # Consumed is cumulative too, and each round re-pays the growing
-        # history's prompt: strictly above the completion-only sum.
-        consumed = [e["consumed"] for e in usages]
-        assert consumed[1] > consumed[0]
-        assert events[-1]["consumed"] >= consumed[1]
-        # Occupancy is NOT the cumulative sum: each usage event carries its
-        # OWN round's prompt + completion (the consumed DELTA), never the
-        # running total.
-        assert usages[0]["contextTokens"] == consumed[0]
-        assert usages[1]["contextTokens"] == consumed[1] - consumed[0]
+        # Occupancy is NOT a cumulative sum: each usage event carries its
+        # OWN round's prompt + completion, never a running total — and is
+        # char-estimated here, since the stub reports completion only.
+        contexts = [e["contextTokens"] for e in usages]
         assert all(e["contextEstimated"] is True for e in usages)  # no totals
+        # Each figure covers its OWN round (round 1: 8 generated, round 2:
+        # 5 — not the cumulative 13), plus that round's estimated prompt.
+        assert all(c > t for c, t in zip(contexts, [8, 5]))
 
     def test_context_tokens_is_last_round_not_cumulative(self, monkeypatch):
-        # Both rounds report full usage: consumed sums the round totals
-        # (history re-billed), contextTokens is ONLY the final round's total
-        # — the figure comparable to the server's context window.
+        # Both rounds report full usage: contextTokens is ONLY the final
+        # round's total — the figure comparable to the server's context
+        # window, never the sum of the rounds' (re-billed) totals.
         events, _ = self._run(
             monkeypatch,
             [
@@ -1018,7 +1016,6 @@ class TestChatToolLoop:
         assert usage_event["contextTokens"] == 108
         assert usage_event["contextEstimated"] is False
         done = events[-1]
-        assert done["consumed"] == 233  # 108 + 125
         assert done["contextTokens"] == 125
         assert done["contextEstimated"] is False
 
@@ -1058,11 +1055,11 @@ class TestChatToolLoop:
         assert "done" not in [e["event"] for e in events]
         assert len(calls) == 1
 
-    def test_consumed_sums_prompt_per_round_with_total_usage(self, monkeypatch):
-        # Each round reports usage with a total: the consumed figure is the
-        # SUM of per-round totals — every tool round re-sends (and re-pays)
-        # the whole history, so its prompt counts again. Round totals here:
-        # 18 + 25 + 25 = 68, vs 13 completion tokens.
+    def test_context_is_round_total_with_full_usage(self, monkeypatch):
+        # Each round reports usage with a total: its occupancy figure is
+        # exactly that round's total (prompt re-billed every round, because
+        # each tool round re-sends the whole history). Round totals here:
+        # 18, then 25, then 25 — never the 68 sum across rounds.
         events, _ = self._run(
             monkeypatch,
             [
@@ -1075,12 +1072,12 @@ class TestChatToolLoop:
             ],
         )
         usages = [e for e in events if e["event"] == "usage"]
-        assert [e["consumed"] for e in usages] == [18, 43]
-        assert all(e["consumedEstimated"] is False for e in usages)
+        assert [e["contextTokens"] for e in usages] == [18, 25]
+        assert all(e["contextEstimated"] is False for e in usages)
         done = events[-1]
         assert done["tokens"] == 13
-        assert done["consumed"] == 68
-        assert done["consumedEstimated"] is False
+        assert done["contextTokens"] == 25
+        assert done["contextEstimated"] is False
 
     def test_tool_call_arguments_extend_decode_window(self, monkeypatch):
         # A pure tool-call round streams no content and no reasoning: the

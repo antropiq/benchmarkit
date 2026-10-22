@@ -740,6 +740,7 @@ body {
 .badge.green { color: var(--bi-success); }
 .badge.red { color: var(--bi-danger); }
 .badge.violet { color: var(--bi-violet); }
+.badge.info { color: var(--bi-info); }
 .badge.gray { color: var(--pico-muted-color); }
 
 /* -- run result banners -------------------------------------------------------------- */
@@ -1154,6 +1155,23 @@ body {
   justify-content: center;
   white-space: nowrap;
   box-sizing: border-box;
+}
+
+/* Stats row: the token-rate and context badges side by side, equally
+   wide, on a single line. */
+.chat-stat-badges {
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.chat-stat-badges .badge {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.3rem 0.35rem;
+  font-size: 0.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .chat-side-actions {

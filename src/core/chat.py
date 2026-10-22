@@ -135,16 +135,12 @@ def stream_chat(
     windows: tool-call argument deltas included, tool execution and
     inter-round re-prefill gaps excluded) so the client can compute an
     accurate tok/s with tools in play. ``tokens``/``usage.tokens`` count
-    **completion tokens only** (the tok/s numerator); ``consumed``/
-    ``usage.consumed`` count **tokens actually consumed** — prompt +
-    completion summed per round, since every tool round re-processes the
-    whole history (``consumedEstimated`` flags char-based fallbacks, e.g.
-    servers reporting no usage at all). ``contextTokens``/
+    **completion tokens only** (the tok/s numerator). ``contextTokens``/
     ``usage.contextTokens`` carry the LAST (resp. just-ended) round's
-    prompt + generation — the context-window occupancy figure, which (like
-    a round's own consumed share) can exceed nothing but is NOT summed
-    across rounds; ``contextEstimated`` flags it when a fallback estimate
-    was involved. Terminal event is exactly one of ``done`` or ``error``
+    prompt + generation — the context-window occupancy figure, which can
+    exceed nothing but is NOT summed across rounds; ``contextEstimated``
+    flags it when a fallback estimate was involved.
+    Terminal event is exactly one of ``done`` or ``error``
     (unless the call was cancelled — then the client is gone and nothing is
     emitted).
     """
@@ -179,18 +175,11 @@ def stream_chat(
     # prompt, so the per-round differences add up to the loop's completion
     # tokens; used only when no round reported completion_tokens itself.
     usage_derived_completion = 0
-    # "Consumed" tokens = prompt + completion, summed PER ROUND: every tool
-    # round re-sends and re-processes the whole history, so each round's own
-    # prompt counts again (a round's server-reported total_tokens is exactly
-    # that round's consumed figure). Completion tokens and the tok/s rate
-    # stay completion-only — prompt processing is prefill, not decode.
-    consumed_tokens = 0
-    consumed_estimated = False
     # Context occupancy of the LAST round: that round's prompt + generation,
     # i.e. exactly what the server slotted into its window (template and tool
-    # schemas included). Unlike ``consumed_tokens`` this never accumulates
-    # across rounds — every round re-processes the history, but only the
-    # latest round's figure says how full the context window is.
+    # schemas included). Never accumulated across rounds: every round
+    # re-processes the history, but only the latest round's figure says how
+    # full the context window is.
     context_tokens = 0
     context_estimated = False
     reasoning_emitted = False
@@ -279,24 +268,24 @@ def stream_chat(
         completion_tokens += iteration_completion
         if iter_first is not None and iter_last is not None:
             decode_seconds += iter_last - iter_first
-        round_consumed_est = round_prompt_est + max(
+        round_context_est = round_prompt_est + max(
             iteration_completion, estimate_completion_tokens(iteration_chars)
         )
-        # Per-round figure: this round's prompt + generation. Summing these
-        # gives ``consumed_tokens`` (cumulative work done); the LAST one is
-        # ``context_tokens`` — how full the server's window is right now.
+        # Per-round figure: this round's prompt + generation, which is
+        # ``context_tokens`` — how full the server's window is right now
+        # (the figure of the LAST round only, never the sum over rounds).
         round_estimated = False
         if iteration_usage is not None:
             total = iteration_usage.get("total_tokens")
             prompt = iteration_usage.get("prompt_tokens")
             if total:
                 # The server's per-round total covers its full prompt plus
-                # generation: the exact consumed figure for this round.
-                round_consumed = total
+                # generation: the exact occupancy figure for this round.
+                round_context = total
             elif prompt:
                 # Exact prompt without a total: keep it, add the completion
                 # (or its char estimate — then flagged).
-                round_consumed = prompt + (
+                round_context = prompt + (
                     iteration_completion
                     or estimate_completion_tokens(iteration_chars)
                 )
@@ -305,7 +294,7 @@ def stream_chat(
                 # Prompt unseen (completion-only or empty usage): estimate
                 # the round's prompt from the request we sent — flagged,
                 # never presented as a server-reported count.
-                round_consumed = round_consumed_est
+                round_context = round_context_est
                 round_estimated = True
             if not iteration_usage_from_completion and total and prompt:
                 # Only rounds that omitted completion_tokens contribute their
@@ -313,11 +302,9 @@ def stream_chat(
                 # report it is already counted in completion_tokens.
                 usage_derived_completion += max(total - prompt, 0)
         else:
-            round_consumed = round_consumed_est
+            round_context = round_context_est
             round_estimated = True
-        consumed_tokens += round_consumed
-        consumed_estimated = consumed_estimated or round_estimated
-        context_tokens = round_consumed
+        context_tokens = round_context
         context_estimated = round_estimated
 
         if not use_tools or not tool_calls:
@@ -335,8 +322,6 @@ def stream_chat(
                 "event": "usage",
                 "tokens": completion_tokens,
                 "decode": decode_seconds,
-                "consumed": consumed_tokens,
-                "consumedEstimated": consumed_estimated,
                 # Occupancy of the round that just ended (not cumulative):
                 # what the server had in its window for that round.
                 "contextTokens": context_tokens,
@@ -443,16 +428,11 @@ def stream_chat(
         "decode": decode_seconds,
         "tokens": completion_tokens or 0,
         "tokensEstimated": tokens_estimated,
-        # Consumed tokens (prompt + completion) summed over every round of
-        # the loop — what the conversation actually cost, as opposed to
-        # `tokens` (completion only, the tok/s numerator).
-        "consumed": consumed_tokens,
-        "consumedEstimated": consumed_estimated,
         # Context occupancy of the FINAL round (prompt + generation — what
         # the server slotted into its window, template and tool schemas
-        # included). Unlike `consumed` this does not accumulate across
-        # rounds, so it is the figure to compare against the server's
-        # context window (`meta.n_ctx` from /v1/models).
+        # included). It does not accumulate across rounds, so it is the
+        # figure to compare against the server's context window
+        # (`meta.n_ctx` from /v1/models).
         "contextTokens": context_tokens,
         "contextEstimated": context_estimated,
     })

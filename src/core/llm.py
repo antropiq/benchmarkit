@@ -58,8 +58,9 @@ def _extract_reasoning(chunk: Any) -> str:
 def _extract_usage(chunk: Any) -> Optional[Dict[str, Optional[int]]]:
     """Read the usage block from a streamed chunk, when the server sent one.
 
-    Returns ``{prompt_tokens, completion_tokens, total_tokens}`` with ``None``
-    for missing/zero fields, or ``None`` when the chunk carries no usage.
+    Returns ``{prompt_tokens, completion_tokens, total_tokens}`` with
+    ``None`` for missing/zero fields, ``None`` overall when the chunk
+    carries no usage.
     """
     usage = (
         chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)

@@ -40,68 +40,6 @@ const streamingMessage = computed(
   () => state.messages.find((m) => m.streaming) ?? null,
 )
 
-// Session badge: tokens actually CONSUMED (prompt + completion, summed per
-// round — every tool round re-sends and re-processes the whole history),
-// not the completion-only figure behind the tok/s badge.
-function historyChars(messages) {
-  // Rough char cost of the prompt the next request carries: the text of
-  // every message so far (state messages keep their `raw` text; the OpenAI
-  // content-parts shape is only built on send). Images are excluded, like
-  // the backend's own prompt estimate, which is text-only too.
-  let chars = 0
-  for (const message of messages) chars += message.raw?.length ?? 0
-  return chars
-}
-
-const totalTokens = computed(() => {
-  let total = 0
-  for (let i = 0; i < state.messages.length; i += 1) {
-    const message = state.messages[i]
-    if (message.role !== 'assistant') continue
-    if (!message.streaming) {
-      total += message.consumed || message.tokens
-      continue
-    }
-    // Live: exact cumulative consumed tokens from the last `usage` event
-    // (every ended round's prompt + generation, exact when the server
-    // reports usage) plus a ~4 chars/token estimate of the in-flight round:
-    // the prompt it carries — the conversation so far, the backend's own
-    // fallback — and the answer text streamed so far (thinking and tool
-    // arguments are invisible to the client either way).
-    if (message.usageConsumed > 0) {
-      total +=
-        message.usageConsumed +
-        estimateCompletionTokens(
-          historyChars(state.messages.slice(0, i)) +
-            message.raw.slice(message.usageRawLen || 0),
-        )
-    } else {
-      total += estimateCompletionTokens(
-        historyChars(state.messages.slice(0, i)) + message.raw,
-      )
-    }
-  }
-  return total
-})
-
-const tokensEstimated = computed(() => {
-  for (const message of state.messages) {
-    if (message.role !== 'assistant') continue
-    if (message.streaming) {
-      // The in-flight round always carries a client-side char estimate of
-      // its prompt and answer tail, however small: flag the total.
-      return true
-    }
-    if (
-      (message.consumed || message.tokens) > 0 &&
-      (message.consumedEstimated || message.tokensEstimated || !message.consumed)
-    ) {
-      return true
-    }
-  }
-  return false
-})
-
 // Same convention as the benchmark tokenRate: tokens / decode window.
 // The server-side `decode` (cumulative generation seconds across all tool
 // rounds, tool execution and re-prefill gaps excluded) is the preferred
@@ -177,17 +115,11 @@ const rateText = computed(() =>
     : '— t/s',
 )
 
-const tokensText = computed(() =>
-  totalTokens.value
-    ? `${tokensEstimated.value ? '≈ ' : ''}${totalTokens.value} tokens`
-    : '— tokens',
-)
-
 // Context-window occupancy: the LAST round's prompt + completion (exactly
 // what the server slots into its window — template, tool schemas and
-// thinking-round history included), never summed across rounds/turns like
-// the session "tokens" badge above. Fed by `done`, refreshed between tool
-// rounds by `usage`; the cap comes from /api/config (meta.n_ctx).
+// thinking-round history included), never summed across rounds/turns. Fed
+// by `done`, refreshed between tool rounds by `usage`; the cap comes from
+// /api/config (meta.n_ctx).
 const contextUsage = computed(() => {
   for (let i = state.messages.length - 1; i >= 0; i -= 1) {
     const message = state.messages[i]
@@ -226,7 +158,6 @@ const contextTitle = computed(() => {
   const fill = contextFill.value
   const parts = [
     'Tokens in the model context window (last round: prompt + generation, tool schemas included).',
-    'The "tokens" badge is different: session-processed tokens, re-counted every round.',
   ]
   if (fill !== null) {
     parts.push(
@@ -305,14 +236,13 @@ function restart() {
       aria-hidden="true"
       @change="onFilePicked"
     />
-    <span class="badge" :class="rate ? 'violet' : 'gray'" role="status">
-      {{ rateText }}
-    </span>
-    <span class="badge" :class="totalTokens ? 'green' : 'gray'" role="status">
-      {{ tokensText }}
-    </span>
-    <span class="badge" :class="contextClass" role="status" :title="contextTitle">
-      {{ contextText }}
+    <span class="chat-stat-badges">
+      <span class="badge" :class="rate ? 'violet' : 'gray'" role="status">
+        {{ rateText }}
+      </span>
+      <span class="badge" :class="contextClass" role="status" :title="contextTitle">
+        {{ contextText }}
+      </span>
     </span>
     <div class="chat-side-actions">
       <button
