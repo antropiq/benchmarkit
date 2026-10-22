@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import ChatLspPanel from './ChatLspPanel.vue'
 import ChatMcpPanel from './ChatMcpPanel.vue'
 import ChatSidePanel from './ChatSidePanel.vue'
 import MemoryBullets from './MemoryBullets.vue'
@@ -21,6 +22,20 @@ function openBulletDialog(index) {
   dialogIndex.value = index
   dialogOpen.value = true
 }
+
+// The left toggle column (MCP beside LSP) only takes horizontal space when
+// at least one of the two panels has something to show - mirrors the
+// per-panel `visible` conditions inside ChatMcpPanel/ChatLspPanel.
+const mcpVisible = computed(
+  () => state.mcp.loaded && state.mcp.connectors.length > 0,
+)
+const lspVisible = computed(
+  () => state.lsp.loaded && state.lsp.servers.length > 0,
+)
+const showToggleCol = computed(() => mcpVisible.value || lspVisible.value)
+// With only one of the two panels rendered the column shrinks to a single
+// panel — ChatToolPanel mirrors this so the two rows stay aligned.
+const singlePanel = computed(() => mcpVisible.value !== lspVisible.value)
 
 const streaming = computed(() => state.phase !== 'idle')
 const canSend = computed(
@@ -45,12 +60,14 @@ function onKeydown(event) {
 
 <template>
   <div class="chat-input">
-    <ChatSidePanel
-      :can-send="canSend"
-      :streaming="streaming"
-      @send="submit"
-    />
-    <ChatMcpPanel />
+    <div
+      v-if="showToggleCol"
+      class="chat-toggle-col"
+      :class="{ 'chat-toggle-col--single': singlePanel }"
+    >
+      <ChatMcpPanel />
+      <ChatLspPanel />
+    </div>
     <div class="chat-textarea-col">
       <textarea
         ref="draftEl"
@@ -68,6 +85,11 @@ function onKeydown(event) {
       :open="dialogOpen"
       :index="dialogIndex"
       @close="dialogOpen = false"
+    />
+    <ChatSidePanel
+      :can-send="canSend"
+      :streaming="streaming"
+      @send="submit"
     />
   </div>
 </template>

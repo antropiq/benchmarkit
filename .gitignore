@@ -12,5 +12,7 @@ web/dist
 .kilo/plans/
 logs/
 mcp_connectors/externals.json
+# LSP declaration file: may carry secrets in its per-entry `env` maps.
+lsp_connectors/lsp_servers.json
 resources/memory_registration.json
 pyrightconfig.json

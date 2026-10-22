@@ -11,6 +11,8 @@ const {
   loadQuestionSets,
   toggleMcp,
   saveMcp,
+  toggleLsp,
+  saveLsp,
 } = useBenchmark()
 
 const dialogEl = ref(null)
@@ -22,6 +24,7 @@ const SECTIONS = [
   { id: 'sampling', label: 'Sampling params' },
   { id: 'verifier', label: 'Verifier LLM' },
   { id: 'mcp', label: 'MCP' },
+  { id: 'lsp', label: 'LSP' },
 ]
 
 const MCP_STATUS_CLASS = {
@@ -70,6 +73,21 @@ function connectorDetail(connector) {
     return Array.isArray(connector.command) ? connector.command.join(' ') : ''
   }
   return connector.endpoint || ''
+}
+
+// Language-server row: what it handles and where it looks, then its argv
+// (secrets live in `env`, which the API never sends, so this is safe text).
+function serverDetail(server) {
+  const scope = [
+    server.extensions?.length
+      ? `handles ${server.extensions.join(' ')}`
+      : 'no extensions declared',
+    `root: ${server.workspaceRoot || '?'}`,
+  ]
+  const command = Array.isArray(server.command) ? server.command.join(' ') : ''
+  return [server.description, scope.join(' · '), command]
+    .filter(Boolean)
+    .join('\n')
 }
 </script>
 
@@ -337,7 +355,79 @@ function connectorDetail(connector) {
             </label>
             <p class="caption">
               Cap on the tool-calling loop of a single chat reply.
-              Shared by all connectors.
+              Shared by all connectors and language servers
+              (<code>MAX_TOOL_ITERATION</code>).
+            </p>
+          </section>
+
+          <section v-show="activeSection === 'lsp'">
+            <h3 class="settings-section-title">LSP language servers</h3>
+            <p class="caption">
+              Language servers start with the app (entries marked
+              <code>lazy</code> spawn on their first tool call) and stop when
+              it quits. Activated servers add their <code>lsp_*</code> tools
+              to the Chat tab only — benchmark runs never use them. Toggling
+              one updates <code>lsp_connectors/lsp_servers.json</code> and
+              starts or stops it right away. Both gates must agree: the
+              switch here and the entry's <code>enable</code> flag.
+            </p>
+            <p v-if="!state.lspInstalled" class="caption alert-error" role="alert">
+              The pygls package is not installed. Run
+              <code>pip install -e ".[lsp]"</code> and restart the app.
+            </p>
+            <p v-if="state.lspError" class="caption alert-error" role="alert">
+              {{ state.lspError }}
+            </p>
+            <p v-if="state.lspServersError" class="caption alert-error mcp-externals-error" role="alert">
+              {{ state.lspServersError }}
+            </p>
+            <p v-if="state.lspLoading" class="caption">Loading language servers…</p>
+            <p v-else-if="!state.lspServers.length" class="caption">
+              No language servers declared in
+              <code>lsp_connectors/lsp_servers.json</code> (copy
+              <code>lsp_servers.example.json</code> to get started).
+            </p>
+            <div v-for="server in state.lspServers" :key="server.id" class="mcp-panel">
+              <div class="mcp-panel-header">
+                <label class="mcp-activate">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    :checked="state.lspEnabled.includes(server.id)"
+                    :disabled="state.lspLoading"
+                    @change="toggleLsp(server.id, $event.target.checked)"
+                  />
+                  {{ server.label }}
+                  <span v-if="server.lazy" class="mcp-external-tag">[lazy]</span>
+                </label>
+                <span class="mcp-panel-badges">
+                  <span v-if="server.toolCount" class="badge mcp-port-badge"
+                    :title="`tools offered by ${server.id}`">
+                    {{ server.toolCount }} tools
+                  </span>
+                  <span class="badge" :class="MCP_STATUS_CLASS[server.status]">
+                    {{ server.status }}
+                  </span>
+                </span>
+              </div>
+              <p class="caption mcp-description">{{ serverDetail(server) }}</p>
+              <p v-if="server.error" class="caption alert-error">{{ server.error }}</p>
+            </div>
+            <label class="mcp-iterations">
+              Max tool iterations
+              <input
+                v-model="state.lspMaxIterations"
+                type="number"
+                min="1"
+                max="500"
+                placeholder="25"
+              />
+            </label>
+            <p class="caption">
+              Cap on the tool-calling loop of a single chat reply, MCP
+              connectors and language servers together
+              (<code>MAX_TOOL_ITERATION</code> — the same knob as the MCP
+              section).
             </p>
           </section>
         </div>
@@ -354,6 +444,14 @@ function connectorDetail(connector) {
           @click="saveMcp"
         >
           {{ state.mcpSaving ? 'Saving…' : 'Save' }}
+        </button>
+        <button
+          v-else-if="activeSection === 'lsp'"
+          type="button"
+          :disabled="state.lspSaving || state.lspLoading"
+          @click="saveLsp"
+        >
+          {{ state.lspSaving ? 'Saving…' : 'Save' }}
         </button>
         <button v-else type="button" :disabled="state.settingsSaving || state.settingsLoading" @click="saveSettings">
           {{ state.settingsSaving ? 'Saving…' : 'Save' }}

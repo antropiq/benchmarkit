@@ -30,12 +30,14 @@ from src.config import (
     load_questions,
     load_settings,
     mcp_enabled_ids,
-    max_mcp_iteration,
+    max_tool_iteration,
+    lsp_enabled_ids,
     save_memory_registration,
     save_settings,
     questions_path,
 )
 from src.core.mcp_hub import all_connectors, load_externals, set_externals_enabled
+from src.core.lsp_hub import all_servers, set_lsp_enabled
 from src.core.bench import run_benchmark
 from src.core.chat import stream_chat
 from src.core.job import RunJob
@@ -138,6 +140,19 @@ class MemorySlotIn(BaseModel):
 
 class McpIn(BaseModel):
     """MCP connector activation as sent by the settings dialog."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: List[str] = []
+    maxIterations: int = Field(default=25, ge=1, le=500)
+
+
+class LspIn(BaseModel):
+    """Language-server activation as sent by the settings dialog.
+
+    ``maxIterations`` is the same shared MCP+LSP tool-loop cap the MCP
+    section edits — posting it from either section keeps one value.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -249,6 +264,9 @@ class ChatIn(BaseModel):
     # ``None`` means "no filter" — every activated connector stays eligible,
     # which keeps older clients and the existing chat tests unchanged.
     mcpEnabled: Optional[List[str]] = None
+    # Same conversation-scoped filter for the LSP language servers (the Chat
+    # tab's per-conversation LSP toggles).
+    lspEnabled: Optional[List[str]] = None
 
     @field_validator("messages")
     @classmethod
@@ -418,6 +436,23 @@ def _active_connector_ids() -> List[str]:
     return ids
 
 
+def _active_server_ids() -> List[str]:
+    """Language-server ids whose tools chat may use.
+
+    Both gates must agree: the id is listed in ``LSP_ENABLED`` (the .env
+    switch that lets a whole prepared config file stay dormant) *and* its
+    ``enable`` flag is true in ``lsp_servers.json`` (the MCP-externals
+    precedent for file-declared entries).
+    """
+    enabled = set(lsp_enabled_ids())
+    servers, _errors = all_servers()
+    return [
+        server["id"]
+        for server in servers
+        if server["enable"] and server["id"] in enabled
+    ]
+
+
 def _mcp_tool_kwargs(
     request: Request, enabled: Optional[List[str]] = None
 ) -> Dict[str, Any]:
@@ -452,7 +487,97 @@ def _mcp_tool_kwargs(
         "tools": tools,
         "tool_executor": tool_executor,
         "tool_servers": tool_to_server,
-        "max_tool_iterations": max_mcp_iteration(),
+        "max_tool_iterations": max_tool_iteration(),
+    }
+
+
+# Chat-side budget for one LSP tool call: covers a lazy server's cold start
+# (initialize can take INIT_TIMEOUT seconds while it indexes the project)
+# plus the request itself and the diagnostics wait.
+LSP_TOOL_TIMEOUT = 90.0
+
+
+def _lsp_tool_kwargs(
+    request: Request, enabled: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Extra ``stream_chat`` kwargs when language servers are active for chat.
+
+    Same conversation-scoped filter as MCP: ``enabled`` is intersected with
+    the Settings-activated ids, so a server disabled in Settings can never
+    leak back into a running conversation. ``{}`` when nothing is active.
+    """
+    manager = getattr(request.app.state, "lsp", None)
+    if manager is None:
+        return {}
+    server_ids = _active_server_ids()
+    if enabled is not None:
+        allowed = set(enabled)
+        server_ids = [server_id for server_id in server_ids if server_id in allowed]
+    try:
+        tools, tool_to_server = manager.active_tool_defs(server_ids)
+    except Exception:  # noqa: BLE001 — never block chat because of the hub
+        return {}
+    if not tools:
+        return {}
+
+    def tool_executor(name: str, arguments: Dict[str, Any]) -> str:
+        return manager.call_tool_sync(
+            tool_to_server[name], name, arguments, timeout=LSP_TOOL_TIMEOUT
+        )
+
+    return {
+        "tools": tools,
+        "tool_executor": tool_executor,
+        "tool_servers": tool_to_server,
+    }
+
+
+def _chat_tool_kwargs(
+    request: Request,
+    mcp_enabled: Optional[List[str]] = None,
+    lsp_enabled: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """The single tool loop of ``stream_chat``, fed by both hubs.
+
+    The merge lives here (not in ``core/chat.py``): ``stream_chat`` keeps
+    taking one ``tools`` list, one executor and one iteration cap, and the
+    ``tool_servers`` map is what makes every tool call attributable to its
+    hub in the Chat UI. MCP tools win a name clash (LSP tool names are
+    namespaced, so in practice they cannot collide).
+    """
+    mcp_kwargs = _mcp_tool_kwargs(request, mcp_enabled)
+    lsp_kwargs = _lsp_tool_kwargs(request, lsp_enabled)
+    if not mcp_kwargs and not lsp_kwargs:
+        return {}
+    if not lsp_kwargs:
+        return mcp_kwargs
+    if not mcp_kwargs:
+        # _mcp_tool_kwargs owns the shared iteration cap; add it when only
+        # LSP contributes tools.
+        return {**lsp_kwargs, "max_tool_iterations": max_tool_iteration()}
+
+    tools = list(mcp_kwargs["tools"])
+    tool_to_server = dict(mcp_kwargs["tool_servers"])
+    for definition in lsp_kwargs["tools"]:
+        name = definition["function"]["name"]
+        if name in tool_to_server:
+            continue
+        tool_to_server[name] = lsp_kwargs["tool_servers"][name]
+        tools.append(definition)
+    mcp_executor = mcp_kwargs["tool_executor"]
+    lsp_executor = lsp_kwargs["tool_executor"]
+    lsp_tool_names = set(lsp_kwargs["tool_servers"])
+
+    def tool_executor(name: str, arguments: Dict[str, Any]) -> str:
+        if name in lsp_tool_names:
+            return lsp_executor(name, arguments)
+        return mcp_executor(name, arguments)
+
+    return {
+        "tools": tools,
+        "tool_executor": tool_executor,
+        "tool_servers": tool_to_server,
+        "max_tool_iterations": max_tool_iteration(),
     }
 
 
@@ -626,7 +751,7 @@ def build_router(state: RunState) -> APIRouter:
         return {
             "installed": bool(manager and manager.installed),
             "connectors": payload_connectors,
-            "maxIterations": max_mcp_iteration(),
+            "maxIterations": max_tool_iteration(),
             "externalsError": "\n".join(errors) if errors else None,
         }
 
@@ -639,7 +764,7 @@ def build_router(state: RunState) -> APIRouter:
     def post_mcp(body: McpIn, request: Request) -> Dict[str, Any]:
         """Activate MCP connectors for the Chat tab and set the iteration cap.
 
-        Built-in activations persist to ``MCP_ENABLED`` / ``MAX_MCP_ITERATION``
+        Built-in activations persist to ``MCP_ENABLED`` / ``MAX_TOOL_ITERATION``
         in ``.env``; external toggles write the ``enable`` flag back to
         ``mcp_connectors/externals.json`` and start/stop the connector right
         away (its process otherwise lives with the app).
@@ -666,7 +791,7 @@ def build_router(state: RunState) -> APIRouter:
         merged["MCP_ENABLED"] = ",".join(
             dict.fromkeys(item for item in requested if item in builtin_ids)
         )
-        merged["MAX_MCP_ITERATION"] = str(body.maxIterations)
+        merged["MAX_TOOL_ITERATION"] = str(body.maxIterations)
         save_settings(merged)
         write_errors = (
             set_externals_enabled({cid: cid in enabled for cid in external_ids})
@@ -685,6 +810,103 @@ def build_router(state: RunState) -> APIRouter:
                 elif connector_id not in enabled and current in ("running", "starting"):
                     manager.stop_connector(connector_id)
         return _mcp_payload(request, extra_errors=write_errors)
+
+    def _lsp_payload(
+        request: Request, extra_errors: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Language-server list (file scan + validation errors) + live status.
+
+        A server is active when its ``enable`` flag and ``LSP_ENABLED`` agree.
+        Secret material (``env``) is stripped.
+        """
+        manager = getattr(request.app.state, "lsp", None)
+        statuses = {s["id"]: s for s in (manager.status() if manager else [])}
+        servers, errors = all_servers()
+        if extra_errors:
+            errors = errors + list(extra_errors)
+        enabled_ids = set(lsp_enabled_ids())
+        payload_servers = []
+        for server in servers:
+            status = statuses.get(server["id"], {})
+            payload_servers.append(
+                {
+                    key: value
+                    for key, value in server.items()
+                    if key not in ("env", "initializationOptions")
+                }
+                | {
+                    "active": server["enable"] and server["id"] in enabled_ids,
+                    "status": status.get("status", "stopped"),
+                    "error": status.get("error"),
+                    "toolCount": status.get("toolCount", 0),
+                }
+            )
+        return {
+            "installed": bool(manager and manager.installed),
+            "servers": payload_servers,
+            "maxIterations": max_tool_iteration(),
+            "serversError": "\n".join(errors) if errors else None,
+        }
+
+    @router.get("/lsp")
+    def get_lsp(request: Request) -> Dict[str, Any]:
+        """List declared language servers with live status."""
+        return _lsp_payload(request)
+
+    @router.post("/lsp")
+    def post_lsp(body: LspIn, request: Request) -> Dict[str, Any]:
+        """Activate language servers for the Chat tab.
+
+        Activation writes both places: the ids persist to ``LSP_ENABLED`` in
+        ``.env`` and the ``enable`` flag is written back to
+        ``lsp_servers.json`` (both must agree for a server to run, so a
+        prepared config file can stay entirely dormant). Running servers are
+        hot-started/stopped right away; ``maxIterations`` updates the shared
+        MCP+LSP tool-loop cap.
+        """
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change LSP settings while a benchmark run is in progress",
+            )
+        requested = [item.strip() for item in body.enabled if item.strip()]
+        servers, _errors = all_servers()
+        known_ids = {server["id"] for server in servers}
+        unknown = [item for item in requested if item not in known_ids]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown LSP servers: {', '.join(unknown)}",
+            )
+        enabled = set(requested)
+        merged = dict(load_settings())
+        merged["LSP_ENABLED"] = ",".join(dict.fromkeys(requested))
+        merged["MAX_TOOL_ITERATION"] = str(body.maxIterations)
+        save_settings(merged)
+        write_errors = (
+            set_lsp_enabled({sid: sid in enabled for sid in known_ids})
+            if known_ids
+            else []
+        )
+        manager = getattr(request.app.state, "lsp", None)
+        if manager is not None and hasattr(manager, "start_server"):
+            for server in servers:
+                server_id = server["id"]
+                current = manager.server_status(server_id)
+                if server_id in enabled and current not in ("running", "starting"):
+                    manager.start_server(server_id)
+                elif server_id not in enabled and current in ("running", "starting"):
+                    manager.stop_server(server_id)
+        return _lsp_payload(request, extra_errors=write_errors)
+
+    @router.get("/lsp/log")
+    def get_lsp_log(request: Request, server: str = "") -> Dict[str, Any]:
+        """Tail of one language server's log file (for the settings panel)."""
+        manager = getattr(request.app.state, "lsp", None)
+        if manager is None or not server:
+            raise HTTPException(status_code=404, detail="No LSP log available")
+        log = manager.log_tail(server) if hasattr(manager, "log_tail") else ""
+        return {"server": server, "log": log}
 
     @router.get("/models")
     async def get_models(serverUrl: str = "", apiKey: str = "") -> Dict[str, Any]:
@@ -735,7 +957,7 @@ def build_router(state: RunState) -> APIRouter:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         cancel_event = threading.Event()
-        tool_kwargs = _mcp_tool_kwargs(request, body.mcpEnabled)
+        tool_kwargs = _chat_tool_kwargs(request, body.mcpEnabled, body.lspEnabled)
 
         def emit(event: Any) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, event)

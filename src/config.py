@@ -26,8 +26,9 @@ MEMORY_CONTENT_MAX_CHARS = 32000
 
 MEMORY_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
-# Cap on tool-calling iterations for one chat reply; shared by all connectors.
-DEFAULT_MAX_MCP_ITERATION = 25
+# Cap on tool-calling iterations for one chat reply; shared by MCP connectors
+# and LSP language servers alike (one knob, no split-brain).
+DEFAULT_MAX_TOOL_ITERATION = 25
 
 # Cap on the agent instruction document injected into the chat system prompt.
 # Deliberately far below the 2 MB the connectors accept elsewhere: this text is
@@ -57,7 +58,8 @@ SETTING_KEYS: Tuple[str, ...] = (
     "VERIFIER_AGENT_SERVERURL_API_KEY",
     "VERIFIER_AGENT_ENDPOINT",
     "MCP_ENABLED",
-    "MAX_MCP_ITERATION",
+    "MAX_TOOL_ITERATION",
+    "LSP_ENABLED",
 )
 
 # Keys always written to .env; the others are commented out when empty.
@@ -211,7 +213,7 @@ def load_settings() -> Dict[str, str]:
     defaults = {
         "QUESTION_SET": QUESTION_SET_DEFAULT,
         "LLM_SYSPROMPT": DEFAULT_LLM_SYSPROMPT,
-        "MAX_MCP_ITERATION": str(DEFAULT_MAX_MCP_ITERATION),
+        "MAX_TOOL_ITERATION": str(DEFAULT_MAX_TOOL_ITERATION),
     }
     return {
         key: os.environ.get(key) or defaults.get(key, "")
@@ -281,7 +283,12 @@ def _render_env(values: Dict[str, str]) -> str:
         "",
         "# MCP connectors (Chat tab only)",
         line("MCP_ENABLED"),
-        line("MAX_MCP_ITERATION"),
+        "# LSP language servers (Chat tab only) — ids of the servers in",
+        "# lsp_connectors/lsp_servers.json to activate on top of their",
+        "# per-entry ``enable`` flag (both must agree).",
+        line("LSP_ENABLED"),
+        "# Cap on the tool loop of one chat reply, MCP + LSP together.",
+        line("MAX_TOOL_ITERATION"),
         "",
     ]
     return "\n".join(lines)
@@ -300,16 +307,41 @@ def mcp_enabled_ids() -> List[str]:
     return ids
 
 
-def max_mcp_iteration() -> int:
+def max_tool_iteration() -> int:
     """Tool-iteration cap for one chat reply; invalid or unset values fall
-    back to ``DEFAULT_MAX_MCP_ITERATION``."""
-    raw = os.environ.get("MAX_MCP_ITERATION", "").strip()
+    back to ``DEFAULT_MAX_TOOL_ITERATION``.
+
+    The key was renamed ``MAX_TOOL_ITERATION`` because the cap covers the
+    whole tool loop of one chat reply — MCP connectors and LSP language
+    servers share the single counter (and the UI's progress gauge).
+    ``MAX_MCP_ITERATION`` is still honoured so an existing .env keeps working.
+    """
+    raw = (
+        os.environ.get("MAX_TOOL_ITERATION", "")
+        or os.environ.get("MAX_MCP_ITERATION", "")
+    ).strip()
     if not raw:
-        return DEFAULT_MAX_MCP_ITERATION
+        return DEFAULT_MAX_TOOL_ITERATION
     try:
         return max(1, int(raw))
     except ValueError:
-        return DEFAULT_MAX_MCP_ITERATION
+        return DEFAULT_MAX_TOOL_ITERATION
+
+
+def lsp_enabled_ids() -> List[str]:
+    """Language-server ids activated for the Chat tab from ``LSP_ENABLED``.
+
+    Comma-separated, deduplicated, order-preserving; empty entries ignored.
+    A server is only actually started when this list contains its id *and*
+    its ``enable`` flag is true in ``lsp_servers.json`` — the env key lets a
+    whole prepared config file stay dormant.
+    """
+    ids: List[str] = []
+    for part in os.environ.get("LSP_ENABLED", "").split(","):
+        part = part.strip()
+        if part and part not in ids:
+            ids.append(part)
+    return ids
 
 
 def agent_doc_dir() -> Path:

@@ -35,6 +35,20 @@ const lastAssistant = computed(() => {
 const gaugeValue = computed(() => lastAssistant.value?.mcpIteration ?? 0)
 const gaugeMax = computed(() => lastAssistant.value?.mcpMax ?? 0)
 
+// Width follows the input row's toggle column below (same `visible`
+// conditions as ChatInput.vue): two panels wide only when both the MCP and
+// the LSP panel are rendered, one panel wide when just one of them is, and
+// one panel wide when neither is (no column to align with).
+const singlePanel = computed(
+  () =>
+    !(
+      state.mcp.loaded &&
+      state.mcp.connectors.length > 0 &&
+      state.lsp.loaded &&
+      state.lsp.servers.length > 0
+    ),
+)
+
 const list = ref(null)
 const signature = computed(() => {
   const last = blocks.value[blocks.value.length - 1]
@@ -45,7 +59,11 @@ const { onScroll } = useAutoScroll(list, signature)
 </script>
 
 <template>
-  <aside class="chat-tool-panel" aria-label="Model reasoning and MCP tool calls">
+  <aside
+    class="chat-tool-panel"
+    :class="{ 'chat-tool-panel--single': singlePanel }"
+    aria-label="Model reasoning and MCP tool calls"
+  >
     <div
       ref="list"
       class="chat-tool-scroll"
@@ -74,7 +92,7 @@ const { onScroll } = useAutoScroll(list, signature)
       class="chat-tool-gauge"
       :value="gaugeValue"
       :max="gaugeMax"
-      label="Tool-loop iterations of the current reply vs MAX_MCP_ITERATION — one iteration may run several calls (badges count individual calls)"
+      label="Tool-loop iterations of the current reply vs MAX_TOOL_ITERATION — MCP tools and language servers share the counter; one iteration may run several calls (badges count individual calls)"
     />
   </aside>
 </template>

@@ -17,16 +17,17 @@
   --bi-space-3: 1.25rem;
   --bi-space-4: 2rem;
   --bi-appbar-height: 60px;
-  /* Stats panel of the input row (counters + actions): +50% vs before, in
-     lockstep with the widened tool/reasoning timeline above it. */
-  --bi-chat-panel-width: 18rem;
-  /* Conversation-scoped MCP toggle panel (input row): sized so connector
-     names fit next to their switch (also wide enough that the vertical
-     scrollbar never squeezes a row sideways). */
-  --bi-chat-mcp-width: 15.5rem;
-  /* Flex gap inside the input row (.chat-input) — feeds the left-zone
-     alignment math in the chat-screen section below. */
-  --bi-chat-input-gap: 0.75rem;
+  /* Width of ONE chat toggle panel (MCP or LSP). In the input row the MCP
+     and LSP panels sit side by side inside `.chat-toggle-col`, and the
+     tool/reasoning timeline of the row above spans that whole column, so
+     both rows line up edge to edge through --bi-chat-toggle-col-width.
+     Sized so connector names fit next to their switch (also wide enough
+     that the vertical scrollbar never squeezes a row sideways). The input
+     row's stats panel no longer participates (it moved to the right of the
+     textarea and hugs its content). Keep the calc's gap in sync with
+     `.chat-toggle-col`'s gap. */
+  --bi-chat-panel-width: 15.5rem;
+  --bi-chat-toggle-col-width: calc(2 * var(--bi-chat-panel-width) + 0.5rem);
 
   /* Gradient gauge ramp: green → yellow → orange → red (theme-independent). */
   --bi-gauge-low: #22c55e;
@@ -614,6 +615,16 @@ body {
   padding: 0;
 }
 
+/* Tool-line icon: prefixes each post-tool-round continuation line in the
+   chat answer (useChat arms it after a tool_result, lib/markdown.js swaps
+   the sentinel for the inline wrench SVG at render time). */
+.answer .tool-line-icon {
+  display: inline-block;
+  vertical-align: -0.15em;
+  margin-right: 0.35rem;
+  color: var(--pico-muted-color);
+}
+
 .answer .mermaid-block {
   display: block;
   margin: 0.75rem 0;
@@ -1137,10 +1148,11 @@ body {
   cursor: default;
 }
 
-/* Stats/actions panel left of the chat textarea, same height (stretch) and
-   the same fixed width as the tool-call panel above it. */
+/* Stats/actions panel right of the chat textarea, same height (stretch);
+   hugs its content (no fixed basis - the left column is the toggle column
+   and the tool panel now aligns with that instead). */
 .chat-side-panel {
-  flex: 0 0 var(--bi-chat-panel-width);
+  flex: 0 0 auto;
   min-width: 0;
   box-sizing: border-box;
   display: flex;
@@ -1265,11 +1277,39 @@ body {
   padding: 0.15rem;
 }
 
-/* Conversation-scoped MCP toggles, between the stats panel and the
-   textarea. Own fixed width (not --bi-chat-panel-width); scrolls vertically
-   when the list outgrows the input row's (splitter-bounded) height. */
-.chat-mcp-panel {
-  flex: 0 0 var(--bi-chat-mcp-width);
+/* Left column of the input row: the conversation-scoped MCP panel next to
+   the LSP panel, sitting directly under the tool/reasoning timeline of the
+   row above. Width comes from --bi-chat-toggle-col-width (two panels plus
+   the gap), the same basis as `.chat-tool-panel`, so the two rows line up
+   edge to edge. The panels split the column's width equally and stretch to
+   its full height; each scrolls vertically when its list outgrows that
+   height (the input row itself is splitter-bounded).
+   `--single` (only one of the two panels has something to show) narrows the
+   column to one panel — `.chat-tool-panel` gets the matching modifier so
+   the alignment holds either way.
+   `.chat-lsp-panel` (ChatLspPanel.vue) reuses every rule of this column —
+   rows, dots, labels. */
+.chat-toggle-col {
+  flex: 0 0 var(--bi-chat-toggle-col-width);
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 0.5rem;
+}
+
+.chat-toggle-col--single {
+  flex-basis: var(--bi-chat-panel-width);
+}
+
+.chat-mcp-panel,
+.chat-lsp-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  /* The vertical scrollbar eats a few pixels: rows must never spill
+     sideways (labels ellipsize instead of triggering a horizontal bar). */
   min-width: 0;
   box-sizing: border-box;
   display: flex;
@@ -1277,8 +1317,6 @@ body {
   align-items: stretch;
   gap: 0.35rem;
   overflow-y: auto;
-  /* The vertical scrollbar eats a few pixels: rows must never spill
-     sideways (labels ellipsize instead of triggering a horizontal bar). */
   overflow-x: hidden;
   padding-right: 0.25rem;
 }
@@ -1560,23 +1598,14 @@ body {
    scrolls inside `.chat-tool-scroll` so the iteration gauge stays
    bottom-pinned and always visible.
 
-   Width: the timeline spans the whole left zone of the input row, so both
-   rows share one left column — with the MCP panel visible it covers the
-   stats panel + MCP panel + their gap, putting the timeline's right edge
-   on the MCP panel's right edge: the input row's left zone is
-   panel + gap + MCP panel + gap, but only the first gap lies right of the
-   timeline (the second one sits between the MCP panel and the textarea
-   column, i.e. beyond the timeline's edge), hence one gap is subtracted.
-   Without a visible MCP panel it equals the stats panel's width. */
-.chat-shell:has(.chat-mcp-panel) {
-  --bi-chat-tool-width: calc(
-    var(--bi-chat-panel-width) + var(--bi-chat-mcp-width)
-      - var(--bi-chat-input-gap)
-  );
-}
-
+   Width: the input row's MCP + LSP toggle column below it
+   (`--bi-chat-toggle-col-width` — the two panels side by side plus their
+   gap), so the two rows line up edge to edge as one left column. When only
+   one of the two toggle panels is rendered, `.chat-toggle-col--single`
+   narrows that column to a single panel and this panel follows with the
+   matching `--single` modifier. */
 .chat-tool-panel {
-  flex: 0 0 var(--bi-chat-tool-width, var(--bi-chat-panel-width));
+  flex: 0 0 var(--bi-chat-toggle-col-width);
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1585,6 +1614,12 @@ body {
   background-color: var(--bi-surface);
   border: 1px solid var(--bi-border);
   border-radius: var(--bi-radius-lg);
+}
+
+/* Mirrors `.chat-toggle-col--single` below (only one of the two tool
+   panels is rendered): one panel's width instead of two. */
+.chat-tool-panel--single {
+  flex-basis: var(--bi-chat-panel-width);
 }
 
 .chat-tool-scroll {
@@ -1702,11 +1737,18 @@ body {
   color: var(--bi-danger);
 }
 
-/* Narrow screens: the two Chat left panels shrink together (shared token). */
-@media (max-width: 640px) {
+/* Narrow screens: the Chat left column (tool panel + toggle column) shrinks.
+   The toggle column's width is derived from the per-panel token, so one
+   override keeps both rows aligned. */
+@media (max-width: 1100px) {
   .chat-shell {
-    --bi-chat-panel-width: 8.5rem;
-    --bi-chat-mcp-width: 10rem;
+    --bi-chat-panel-width: 11rem;
+  }
+}
+
+@media (max-width: 820px) {
+  .chat-shell {
+    --bi-chat-panel-width: 7rem;
   }
 }
 

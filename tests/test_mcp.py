@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from src.api import routes
 from src.api.server import create_app
-from src.config import mcp_enabled_ids, max_mcp_iteration
+from src.config import mcp_enabled_ids, max_tool_iteration
 from src.core import chat as chat_core
 from src.core import mcp_hub
 from src.core.mcp_hub import (
@@ -475,15 +475,16 @@ class TestMcpEnvHelpers:
         monkeypatch.delenv("MCP_ENABLED", raising=False)
         assert mcp_enabled_ids() == []
 
-    def test_max_mcp_iteration_default_and_fallbacks(self, monkeypatch):
+    def test_max_tool_iteration_default_and_fallbacks(self, monkeypatch):
+        monkeypatch.delenv("MAX_TOOL_ITERATION", raising=False)
         monkeypatch.delenv("MAX_MCP_ITERATION", raising=False)
-        assert max_mcp_iteration() == 25
-        monkeypatch.setenv("MAX_MCP_ITERATION", "7")
-        assert max_mcp_iteration() == 7
-        monkeypatch.setenv("MAX_MCP_ITERATION", "nope")
-        assert max_mcp_iteration() == 25
-        monkeypatch.setenv("MAX_MCP_ITERATION", "0")
-        assert max_mcp_iteration() == 1
+        assert max_tool_iteration() == 25
+        monkeypatch.setenv("MAX_TOOL_ITERATION", "7")
+        assert max_tool_iteration() == 7
+        monkeypatch.setenv("MAX_TOOL_ITERATION", "nope")
+        assert max_tool_iteration() == 25
+        monkeypatch.setenv("MAX_TOOL_ITERATION", "0")
+        assert max_tool_iteration() == 1
 
 
 class TestConnectorEnvironment:
@@ -602,10 +603,10 @@ class TestMcpEndpoints:
         assert [c["id"] for c in body["connectors"] if c["active"]] == ["console_mcp"]
         assert body["maxIterations"] == 7
         assert os.environ["MCP_ENABLED"] == "console_mcp"
-        assert os.environ["MAX_MCP_ITERATION"] == "7"
+        assert os.environ["MAX_TOOL_ITERATION"] == "7"
         file_values = dotenv_values(config_module.ENV_PATH)
         assert file_values["MCP_ENABLED"] == "console_mcp"
-        assert file_values["MAX_MCP_ITERATION"] == "7"
+        assert file_values["MAX_TOOL_ITERATION"] == "7"
 
     def test_post_unknown_connector_returns_422(self, mcp_client):
         client, _ = mcp_client

@@ -1,6 +1,6 @@
 import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
-import { loadChatMcp } from './useChat'
+import { loadChatLsp, loadChatMcp } from './useChat'
 
 const state = reactive({
   config: null,
@@ -43,6 +43,14 @@ const state = reactive({
   mcpSaving: false,
   mcpError: null,
   mcpExternalsError: null, // externals.json validation errors from the backend
+  lspInstalled: false, // pygls/lsprotocol importable server-side
+  lspServers: [],
+  lspEnabled: [], // server ids ticked in the dialog, saved via saveLsp()
+  lspMaxIterations: 25, // shared MCP+LSP tool-loop cap (one knob)
+  lspLoading: false,
+  lspSaving: false,
+  lspError: null,
+  lspServersError: null, // lsp_servers.json validation errors from the backend
 })
 
 let eventSource = null
@@ -415,9 +423,14 @@ export function useBenchmark() {
       state.mcpEnabled = []
       state.mcpError = null
       state.mcpExternalsError = null
+      state.lspServers = []
+      state.lspEnabled = []
+      state.lspError = null
+      state.lspServersError = null
       refreshModelLists()
       loadQuestionSets()
       loadMcp()
+      loadLsp()
     } catch (exc) {
       state.settingsError = `Could not reach the API: ${exc}`
     } finally {
@@ -558,6 +571,81 @@ export function useBenchmark() {
     }
   }
 
+  async function loadLsp() {
+    state.lspLoading = true
+    state.lspError = null
+    try {
+      const res = await fetch('/api/lsp')
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.lspError = describeError(body, `Could not load LSP servers (${res.status})`)
+        return
+      }
+      state.lspInstalled = !!body.installed
+      state.lspServers = body.servers || []
+      // One shared counter: whichever section is opened last mirrors the
+      // server-side value, so both inputs always show the truth.
+      state.lspMaxIterations = body.maxIterations ?? 25
+      state.mcpMaxIterations = body.maxIterations ?? 25
+      state.lspServersError = body.serversError || null
+      state.lspEnabled = state.lspServers
+        .filter((server) => server.active)
+        .map((server) => server.id)
+    } catch (exc) {
+      state.lspError = `Could not reach the API: ${exc}`
+    } finally {
+      state.lspLoading = false
+    }
+  }
+
+  function toggleLsp(id, checked) {
+    const enabled = new Set(state.lspEnabled)
+    if (checked) enabled.add(id)
+    else enabled.delete(id)
+    // Keep declaration order so the saved list stays stable.
+    state.lspEnabled = state.lspServers
+      .map((server) => server.id)
+      .filter((serverId) => enabled.has(serverId))
+  }
+
+  async function saveLsp() {
+    if (state.lspSaving) return
+    state.lspError = null
+    state.lspSaving = true
+    try {
+      const res = await fetch('/api/lsp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: state.lspEnabled,
+          maxIterations: Number(state.lspMaxIterations) || 25,
+        }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.lspError = describeError(body, `Could not save LSP settings (${res.status})`)
+        return
+      }
+      state.lspInstalled = !!body.installed
+      state.lspServers = body.servers || []
+      state.lspMaxIterations = body.maxIterations ?? 25
+      state.mcpMaxIterations = body.maxIterations ?? 25
+      state.lspServersError = body.serversError || null
+      state.lspEnabled = state.lspServers
+        .filter((server) => server.active)
+        .map((server) => server.id)
+      state.settingsOpen = false
+      // Keep the Chat tab's conversation-scoped LSP panel in sync with the
+      // just-saved activation set (kept-OFF switches survive; a locked
+      // conversation keeps its frozen list — loadChatLsp is a no-op then).
+      loadChatLsp()
+    } catch (exc) {
+      state.lspError = `Could not reach the API: ${exc}`
+    } finally {
+      state.lspSaving = false
+    }
+  }
+
   async function loadMcp() {
     state.mcpLoading = true
     state.mcpError = null
@@ -571,6 +659,7 @@ export function useBenchmark() {
       state.mcpInstalled = !!body.installed
       state.mcpConnectors = body.connectors || []
       state.mcpMaxIterations = body.maxIterations ?? 25
+      state.lspMaxIterations = body.maxIterations ?? 25
       state.mcpExternalsError = body.externalsError || null
       state.mcpEnabled = state.mcpConnectors
         .filter((connector) => connector.active)
@@ -613,6 +702,7 @@ export function useBenchmark() {
       state.mcpInstalled = !!body.installed
       state.mcpConnectors = body.connectors || []
       state.mcpMaxIterations = body.maxIterations ?? 25
+      state.lspMaxIterations = body.maxIterations ?? 25
       state.mcpExternalsError = body.externalsError || null
       state.mcpEnabled = state.mcpConnectors
         .filter((connector) => connector.active)
@@ -645,5 +735,8 @@ export function useBenchmark() {
     loadMcp,
     toggleMcp,
     saveMcp,
+    loadLsp,
+    toggleLsp,
+    saveLsp,
   }
 }

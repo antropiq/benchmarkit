@@ -1,0 +1,14 @@
+# Absolute workspace roots that lsp_servers.json may NOT point a language
+# server at. Same idea as mcp_connectors/restricted-fqdn.txt: one prefix per
+# line, '#' starts a comment. A declared workspaceRoot resolving to one of
+# these (or inside one) is rejected with a validation note instead of
+# loading — a language server indexing a secret tree would put its contents
+# in the model's context window.
+
+/etc
+/root
+/proc
+/sys
+/home/vgr/.ssh
+/home/vgr/.aws
+/home/vgr/.config/gcloud

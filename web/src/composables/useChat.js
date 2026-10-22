@@ -1,5 +1,5 @@
 import { nextTick, reactive } from 'vue'
-import { renderMarkdown } from '../lib/markdown'
+import { renderMarkdown, TOOL_LINE_MARKER } from '../lib/markdown'
 
 const state = reactive({
   messages: [], // { role, raw, html, streaming, images } in conversation order
@@ -18,6 +18,15 @@ const state = reactive({
     enabled: {}, // id -> boolean (this conversation only, never persisted)
     loaded: false, // GET /api/mcp snapshot succeeded (panel + filter usable)
     locked: false, // sticky: first accepted send locks the toggles
+  },
+  // Conversation-scoped LSP toggles — the exact MCP slice pattern, fed by
+  // GET /api/lsp instead. Shared `locked` flag semantics: the first accepted
+  // send freezes both panels until restart resets them.
+  lsp: {
+    servers: [], // { id, label, status } — only language servers active in Settings
+    enabled: {}, // id -> boolean (this conversation only, never persisted)
+    loaded: false, // GET /api/lsp snapshot succeeded (panel + filter usable)
+    locked: false, // sticky: first accepted send locks the toggles (as mcp)
   },
 })
 
@@ -161,6 +170,40 @@ function setChatMcp(id, on) {
   state.mcp.enabled[id] = !!on
 }
 
+// Conversation-scoped twin of loadChatMcp, for the LSP language servers
+// (GET /api/lsp). Same rules: never touches a locked conversation, a failed
+// load hides the panel and send() omits the lspEnabled filter (chat keeps
+// working with every Settings-activated server), and previous on/off
+// choices survive the refresh. Exported for useBenchmark's saveLsp().
+export async function loadChatLsp() {
+  if (state.lsp.locked) return
+  try {
+    const res = await fetch('/api/lsp')
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const body = await res.json()
+    state.lsp.servers = (body.servers || [])
+      .filter((server) => server.active)
+      .map(({ id, label, status }) => ({ id, label, status }))
+    const previous = state.lsp.enabled
+    const enabled = {}
+    for (const server of state.lsp.servers) {
+      enabled[server.id] = server.id in previous ? previous[server.id] : true
+    }
+    state.lsp.enabled = enabled
+    state.lsp.loaded = true
+  } catch {
+    state.lsp.servers = []
+    state.lsp.enabled = {}
+    state.lsp.loaded = false
+  }
+}
+
+function setChatLsp(id, on) {
+  if (state.lsp.locked || state.phase !== 'idle') return
+  if (!(id in state.lsp.enabled)) return
+  state.lsp.enabled[id] = !!on
+}
+
 function scheduleMarkdownRender() {
   if (renderScheduled) return
   renderScheduled = true
@@ -195,9 +238,11 @@ export function conversationMarkdown(messages) {
 // image is attached (image-only messages omit the text part entirely).
 function messagePayload(message) {
   const images = message.images ?? []
-  if (!images.length) return { role: message.role, content: message.raw }
+  // The rendering-only tool-line sentinel never reaches the model.
+  const raw = message.raw.split(TOOL_LINE_MARKER).join('')
+  if (!images.length) return { role: message.role, content: raw }
   const parts = []
-  if (message.raw.trim()) parts.push({ type: 'text', text: message.raw })
+  if (raw.trim()) parts.push({ type: 'text', text: raw })
   for (const image of images) {
     parts.push({ type: 'image_url', image_url: { url: image.dataUrl } })
   }
@@ -223,6 +268,16 @@ function applyEvent(name, data, assistant) {
   switch (name) {
     case 'token': {
       if (state.phase !== 'answering') state.phase = 'answering'
+      // Tool-loop continuation: the first token after a tool_result opens a
+      // fresh line prefixed with the tool icon (sentinel replaced at render
+      // time by lib/markdown.js, after a blank line) so each post-tool
+      // message starts on its own line in ChatView instead of running onto
+      // the previous round's text. Flag consumed once per tool round (the
+      // round's later tokens keep flowing on that icon line).
+      if (assistant.pendingStreamQuote) {
+        assistant.pendingStreamQuote = false
+        assistant.raw += assistant.raw ? `\n\n${TOOL_LINE_MARKER}` : TOOL_LINE_MARKER
+      }
       assistant.raw += data.text ?? ''
       const now = Date.now()
       if (!assistant.firstTokenAt) assistant.firstTokenAt = now
@@ -289,6 +344,9 @@ function applyEvent(name, data, assistant) {
         tool.state = data.ok ? 'ok' : 'error'
         tool.resultPreview = data.preview ?? ''
       }
+      // Arm the tool-icon line prefix: the next round's first streamed token
+      // starts on a fresh line in ChatView (see the 'token' case).
+      assistant.pendingStreamQuote = true
       break
     }
     case 'reasoning':
@@ -416,6 +474,9 @@ export function useChat() {
       streaming: true,
       tools: [], // MCP tool calls: { id, tool, server, preview, state, resultPreview }
       blocks: [], // panel timeline: { kind: 'reasoning', text } | { kind: 'tool', tool }
+      // true between a tool_result and the next round's first answer token:
+      // the token case then opens a tool-icon line in ChatView.
+      pendingStreamQuote: false,
       tokens: 0,
       took: 0,
       ttft: 0,
@@ -423,7 +484,7 @@ export function useChat() {
       firstTokenAt: 0,
       lastTokenAt: 0,
       mcpIteration: 0, // server tool-loop position (gauge)
-      mcpMax: 0, // MAX_MCP_ITERATION reported by the server
+      mcpMax: 0, // MAX_TOOL_ITERATION reported by the server
       usageTokens: 0, // cumulative completion tokens per `usage` event
       usageDecode: 0, // cumulative decode seconds per `usage` event
       usageRawLen: 0, // raw.length at the last `usage` event (estimate baseline)
@@ -448,6 +509,12 @@ export function useChat() {
           (id) => state.mcp.enabled[id],
         )
       }
+      if (state.lsp.loaded) {
+        // Same conversation-scoped filter for the LSP language servers.
+        payload.lspEnabled = Object.keys(state.lsp.enabled).filter(
+          (id) => state.lsp.enabled[id],
+        )
+      }
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -463,10 +530,12 @@ export function useChat() {
         finish(assistant)
         return
       }
-      // Accepted send: the conversation has started, so the MCP toggles
-      // freeze until the restart button resets them (sticky by design —
-      // edit-and-resend of the last message does not unlock them again).
+      // Accepted send: the conversation has started, so the MCP and LSP
+      // toggles freeze until the restart button resets them (sticky by
+      // design — edit-and-resend of the last message does not unlock them
+      // again).
       state.mcp.locked = true
+      state.lsp.locked = true
       await readStream(res, assistant)
     } catch (exc) {
       if (exc?.name !== 'AbortError') {
@@ -515,11 +584,13 @@ export function useChat() {
     state.messages = []
     state.error = null
     state.pendingImage = null
-    // New conversation: MCP toggles unlock against a freshly fetched
-    // snapshot, keeping the previous on/off choices (loadChatMcp seeds the
-    // new connector list from them).
+    // New conversation: MCP and LSP toggles unlock against freshly fetched
+    // snapshots, keeping the previous on/off choices (the loaders seed the
+    // new lists from them).
     state.mcp.locked = false
     loadChatMcp()
+    state.lsp.locked = false
+    loadChatLsp()
   }
 
   return {
@@ -535,5 +606,7 @@ export function useChat() {
     clearImage,
     loadChatMcp,
     setChatMcp,
+    loadChatLsp,
+    setChatLsp,
   }
 }

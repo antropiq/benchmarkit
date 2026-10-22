@@ -10,6 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from src.api.routes import RunState, build_router
 from src.config import ENV_PATH, load_dotenv_once, PROJECT_ROOT, questions_path
 from src.core.mcp_hub import McpManager, all_connectors
+from src.core.lsp_hub import LspManager, all_servers
+from src.config import lsp_enabled_ids
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
 
@@ -31,9 +33,27 @@ def create_app() -> FastAPI:
         manager = McpManager(connectors)
         app.state.mcp = manager
         await manager.start_all()
+        # Language servers follow the same rule (own env-var switch, own log
+        # dir): spawned with the app, shut down (shutdown/exit then
+        # SIGTERM/SIGKILL) when it quits. Servers marked ``"lazy": true`` in
+        # lsp_servers.json spawn on their first tool call instead, so the app
+        # stays snappy and tsserver does not sit in RAM for nothing.
+        servers = (
+            [] if os.environ.get("BENCHMARKIT_DISABLE_LSP") else all_servers()[0]
+        )
+        # Two gates must agree for a server to run: its ``enable`` flag in
+        # lsp_servers.json and the LSP_ENABLED key in .env, so a prepared
+        # config file can stay entirely dormant.
+        active_ids = {
+            server["id"] for server in servers if server["enable"]
+        } & set(lsp_enabled_ids())
+        lsp = LspManager(servers)
+        app.state.lsp = lsp
+        await lsp.start_enabled(sorted(active_ids))
         try:
             yield
         finally:
+            await lsp.stop_all()
             await manager.stop_all()
 
     app = FastAPI(title="benchmarkit", version="0.2.0", lifespan=lifespan)

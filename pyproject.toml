@@ -22,6 +22,10 @@ mcp = [
     "mcp>=2.0",
     "playwright>=1.45",
 ]
+lsp = [
+    "pygls>=2.0",       # LSP client: JSON-RPC framing + stdio session handling
+    "lsprotocol>=2024.0",  # typed LSP messages (pulled in by pygls anyway)
+]
 test = [
     "httpx",
     "pytest",

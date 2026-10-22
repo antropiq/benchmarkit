@@ -1,5 +1,5 @@
 import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.job import RunJob
 from src.core.llm import (
@@ -11,8 +11,6 @@ from src.core.llm import (
 )
 from src.core.models import EndpointsConfig
 from src.core.utils import save_results
-
-Emit = Callable[[Dict[str, Any]], None]
 
 
 def _check_cancelled(cancel_event: Optional[threading.Event]) -> None:

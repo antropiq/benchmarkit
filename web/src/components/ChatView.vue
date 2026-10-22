@@ -10,7 +10,7 @@ import { useAutoScroll } from '../composables/useAutoScroll'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useSplitter } from '../composables/useSplitter'
 
-const { state, editLast, clearImage, loadChatMcp } = useChat()
+const { state, editLast, clearImage, loadChatLsp, loadChatMcp } = useChat()
 const { state: benchmarkState, loadConfig } = useBenchmark()
 const { loadMemory } = useMemory()
 
@@ -26,6 +26,7 @@ watch(
     if (tab === 'chat') {
       loadConfig()
       loadChatMcp()
+      loadChatLsp()
       loadMemory()
     }
   },

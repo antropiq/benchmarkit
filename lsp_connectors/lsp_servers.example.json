@@ -1,0 +1,42 @@
+{
+  "pyright": {
+    "enable": false,
+    "label": "Pyright (Python)",
+    "extensions": [".py", ".pyi"],
+    "command": ["pyright-langserver", "--stdio"],
+    "workspaceRoot": "/absolute/path/to/your/python/root",
+    "env": { "PATH": "/usr/local/bin:/usr/bin:/bin" },
+    "initializationOptions": { "typeCheckingMode": "standard" },
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols"],
+    "maxDiagnostics": 40,
+    "idleShutdownSeconds": 300
+  },
+  "typescript": {
+    "enable": false,
+    "label": "TypeScript",
+    "extensions": [".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"],
+    "command": ["typescript-language-server", "--stdio"],
+    "workspaceRoot": "/absolute/path/to/your/web",
+    "lazy": true,
+    "initializationOptions": {
+      "tsserver": { "path": "/absolute/path/to/typescript" }
+    },
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols", "completion", "signature_help", "formatting"],
+    "idleShutdownSeconds": 300
+  },
+  "vue": {
+    "enable": false,
+    "label": "Vue",
+    "extensions": [".vue"],
+    "command": [
+      "vue-language-server",
+      "--stdio",
+      "--tsdk=/absolute/path/to/web/node_modules/typescript/lib"
+    ],
+    "workspaceRoot": "/absolute/path/to/your/web",
+    "lazy": true,
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols", "completion", "formatting"],
+    "_note": "Volar delegates TypeScript semantics to its client over the private 'tsserver/request' protocol; core/lsp_hub.py answers _vue:projectInfo with the workspaceRoot's own tsconfig/jsconfig, which is what unblocks every other request. It does not run a tsserver, so <script> type errors come from the 'typescript' server, not from this one. Needs web/node_modules/typescript and a matching --tsdk.",
+    "idleShutdownSeconds": 300
+  }
+}
