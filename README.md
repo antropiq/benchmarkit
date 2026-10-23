@@ -162,6 +162,6 @@ If you have good questions to add please share them! 🙏
 - **Single run.** One benchmark run at a time, state in memory; the run and
   the chat share the configured endpoint and refuse to overlap.
 - **MCP lifecycle.** Connector servers live inside the app lifespan
-  (`src/core/mcp_hub.py`): one subprocess each, one persistent MCP client
+  (`src/core/mcphub/`): one subprocess each, one persistent MCP client
   per connector on a private asyncio thread that chat worker threads call
   through synchronously; everything is terminated on shutdown.

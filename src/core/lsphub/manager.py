@@ -22,7 +22,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.core.mcp_hub import connector_environment
+from src.core.mcphub import connector_environment
 
 from . import actions, constants
 from .discovery import lsp_installed

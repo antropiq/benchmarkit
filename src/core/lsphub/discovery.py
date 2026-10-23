@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.core.mcp_hub import _argv_from_command, _str_map
+from src.core.mcphub.validation import argv_from_command, str_map
 
 from . import constants
 
@@ -73,11 +73,11 @@ def load_lsp_servers(
         if not isinstance(entry, dict):
             errors.append(f"{prefix}: entry must be a JSON object — skipped")
             continue
-        command = _argv_from_command(entry.get("command"), entry.get("args"))
+        command = argv_from_command(entry.get("command"), entry.get("args"))
         if command is None:
             errors.append(f"{prefix}: an LSP server needs a command — skipped")
             continue
-        env = _str_map(entry.get("env"))
+        env = str_map(entry.get("env"))
         if env is None:
             errors.append(f"{prefix}: env must be an object of string values — skipped")
             continue

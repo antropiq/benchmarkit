@@ -8,7 +8,7 @@ per activated server, performs the LSP handshake (``initialize`` ->
 the server's advertised capabilities into OpenAI-format tool definitions so
 the Chat tab's tool loop can call them.
 
-Like ``mcp_hub.py`` (which this package deliberately mirrors), all LSP I/O
+Like the ``mcphub`` package (which this package deliberately mirrors), all LSP I/O
 runs on a private asyncio thread so synchronous callers (chat worker
 threads) can bridge onto it with :meth:`LspManager.call_tool_sync`. The
 language servers themselves are only ever spoken to over stdio JSON-RPC by

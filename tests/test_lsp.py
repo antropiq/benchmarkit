@@ -36,7 +36,7 @@ from src.core.lsphub import (
     tools_for_server,
 )
 
-from src.core.mcp_hub import tools_to_openai_format
+from src.core.mcphub import tools_to_openai_format
 
 FAKE_SERVER = str(Path(__file__).parent / "fake_langserver.py")
 # The loader requires an existing workspaceRoot; the repo itself always does.
@@ -248,7 +248,7 @@ class TestToolSynthesis:
             "lsp_pyright_diagnostics",
             "lsp_pyright_hover",
         ]
-        # Matches the exact shape mcp_hub.tools_to_openai_format() produces,
+        # Matches the exact shape mcphub.tools_to_openai_format() produces,
         # so the routes merge is trivial.
         assert set(defs[0]) == {"type", "function"}
         assert set(defs[0]["function"]) == {"name", "description", "parameters"}

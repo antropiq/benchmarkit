@@ -36,7 +36,7 @@ from src.config import (
     save_settings,
     questions_path,
 )
-from src.core.mcp_hub import all_connectors, load_externals, set_externals_enabled
+from src.core.mcphub import all_connectors, load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, set_lsp_enabled
 from src.core.bench import run_benchmark
 from src.core.chat import stream_chat

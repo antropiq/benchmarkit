@@ -17,8 +17,8 @@ from src.api import routes
 from src.api.server import create_app
 from src.config import mcp_enabled_ids, max_tool_iteration
 from src.core import chat as chat_core
-from src.core import mcp_hub
-from src.core.mcp_hub import (
+from src.core import mcphub
+from src.core.mcphub import (
     McpManager,
     all_connectors,
     connector_environment,
@@ -51,9 +51,9 @@ class TestDiscoverConnectors:
         assert connector["label"] == "Console"
         assert connector["description"] == "Console MCP Server - Allows LLMs."
         assert (
-            mcp_hub.AUTO_PORT_BASE
+            mcphub.AUTO_PORT_BASE
             <= connector["port"]
-            < mcp_hub.AUTO_PORT_BASE + mcp_hub.AUTO_PORT_SPAN
+            < mcphub.AUTO_PORT_BASE + mcphub.AUTO_PORT_SPAN
         )
         assert connector["endpoint"] == f"http://127.0.0.1:{connector['port']}/mcp"
 
@@ -80,11 +80,11 @@ class TestDiscoverConnectors:
         # hash() is randomised per process via PYTHONHASHSEED — the port
         # derivation must use a stable digest, so two interpreter runs
         # with different seeds must agree on the preferred port.
-        project_root = str(Path(mcp_hub.__file__).resolve().parents[2])
+        project_root = str(Path(mcphub.__file__).resolve().parents[3])
         code = (
             f"import sys; sys.path.insert(0, {project_root!r}); "
-            "from src.core.mcp_hub import _preferred_port; "
-            "print(_preferred_port('console_mcp'))"
+            "from src.core.mcphub.ports import preferred_port; "
+            "print(preferred_port('console_mcp'))"
         )
         outputs = []
         for seed in ("1", "2"):
@@ -97,7 +97,7 @@ class TestDiscoverConnectors:
             )
             assert result.returncode == 0, result.stderr
             outputs.append(result.stdout.strip())
-        assert outputs[0] == outputs[1] == str(mcp_hub._preferred_port("console_mcp"))
+        assert outputs[0] == outputs[1] == str(mcphub.preferred_port("console_mcp"))
 
     def test_no_registry_entry_is_required_for_a_new_connector(self, tmp_path):
         _write_connector(tmp_path, "foo_mcp", "Fresh connector, no port declared.")
@@ -106,13 +106,13 @@ class TestDiscoverConnectors:
         assert connector["endpoint"] == f"http://127.0.0.1:{connector['port']}/mcp"
 
     def test_allocated_ports_never_collide_within_a_run(self, tmp_path):
-        for index in range(mcp_hub.AUTO_PORT_SPAN + 2):
+        for index in range(mcphub.AUTO_PORT_SPAN + 2):
             _write_connector(tmp_path, f"c{index:03d}_mcp", "x.")
         ports = [c["port"] for c in discover_connectors(tmp_path)]
         allocated = [port for port in ports if port]
         assert len(allocated) == len(set(allocated))
         assert all(
-            mcp_hub.AUTO_PORT_BASE <= port < mcp_hub.AUTO_PORT_BASE + mcp_hub.AUTO_PORT_SPAN
+            mcphub.AUTO_PORT_BASE <= port < mcphub.AUTO_PORT_BASE + mcphub.AUTO_PORT_SPAN
             for port in allocated
         )
         # More connectors than range slots: the surplus reports port 0.
@@ -129,9 +129,9 @@ class TestDiscoverConnectors:
             hog.close()
         assert after["port"] != before["port"]
         assert (
-            mcp_hub.AUTO_PORT_BASE
+            mcphub.AUTO_PORT_BASE
             <= after["port"]
-            < mcp_hub.AUTO_PORT_BASE + mcp_hub.AUTO_PORT_SPAN
+            < mcphub.AUTO_PORT_BASE + mcphub.AUTO_PORT_SPAN
         )
 
 
@@ -546,8 +546,8 @@ def mcp_client(monkeypatch, tmp_path):
     connectors_dir.mkdir()
     _write_connector(connectors_dir, "console_mcp", "Console MCP Server.")
     _write_connector(connectors_dir, "playwright_mcp", "Playwright MCP Server.")
-    monkeypatch.setattr(mcp_hub, "MCP_CONNECTORS_DIR", connectors_dir)
-    monkeypatch.setattr(mcp_hub, "EXTERNALS_PATH", connectors_dir / "externals.json")
+    monkeypatch.setattr(mcphub.constants, "MCP_CONNECTORS_DIR", connectors_dir)
+    monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH", connectors_dir / "externals.json")
     monkeypatch.setattr(
         routes,
         "load_endpoints_config",
