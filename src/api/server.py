@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from src.api.routes import RunState, build_router
 from src.config import ENV_PATH, load_dotenv_once, PROJECT_ROOT, questions_path
 from src.core.mcp_hub import McpManager, all_connectors
-from src.core.lsp_hub import LspManager, all_servers
+from src.core.lsphub import LspManager, all_servers
 from src.config import lsp_enabled_ids
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"

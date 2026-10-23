@@ -20,16 +20,22 @@ from fastapi.testclient import TestClient
 
 from src.api import routes
 from src.api.server import create_app
-from src.core import lsp_hub
-from src.core.lsp_hub import (
+from src.core.lsphub import constants as lsp_constants
+from src.core.lsphub import (
     LspManager,
     action_of_tool_name,
     all_servers,
+    TOOL_SPECS,
+    find_project_config,
+    parse_tsserver_request,
+    tsserver_project_info,
+    tsserver_response_params,
     load_lsp_servers,
     set_lsp_enabled,
     tool_name_for,
     tools_for_server,
 )
+
 from src.core.mcp_hub import tools_to_openai_format
 
 FAKE_SERVER = str(Path(__file__).parent / "fake_langserver.py")
@@ -155,7 +161,7 @@ class TestLoadLspServers:
     def test_denied_workspace_root_is_skipped(self, tmp_path, monkeypatch):
         deny = tmp_path / "restricted-paths.txt"
         deny.write_text(f"{tmp_path}/secret\n# comment\n", encoding="utf-8")
-        monkeypatch.setattr(lsp_hub, "LSP_RESTRICTED_PATHS", deny)
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
         secret = tmp_path / "secret"
         secret.mkdir()  # exists — the deny-list, not existence, must reject it
         path = tmp_path / "lsp_servers.json"
@@ -183,7 +189,7 @@ class TestLoadLspServers:
     def test_all_servers_reads_the_local_declaration_file(self):
         # lsp_servers.json is gitignored (per-machine, may hold env secrets),
         # so this only runs where one is configured — like the real app.
-        if not lsp_hub.LSP_SERVERS_PATH.is_file():
+        if not lsp_constants.LSP_SERVERS_PATH.is_file():
             pytest.skip("no local lsp_connectors/lsp_servers.json on this machine")
         servers, errors = all_servers()
         assert errors == []
@@ -250,7 +256,7 @@ class TestToolSynthesis:
     def test_undeclared_tools_default_to_the_full_catalogue(self):
         server = {"id": "s", "tools": None}
         names = [d["function"]["name"] for d in tools_for_server(server)]
-        assert names == [f"lsp_s_{action}" for action in lsp_hub.TOOL_SPECS]
+        assert names == [f"lsp_s_{action}" for action in TOOL_SPECS]
 
     def test_unknown_declared_names_are_dropped(self):
         defs = tools_for_server({"id": "s", "tools": ["hover", "write_file"]})
@@ -546,48 +552,48 @@ class TestTsserverRelayShapes:
     """
 
     def test_request_is_unwrapped_from_its_positional_argument_array(self):
-        parsed = lsp_hub.parse_tsserver_request(
+        parsed = parse_tsserver_request(
             [[1, "_vue:projectInfo", {"file": "/w/src/App.vue"}]]
         )
         assert parsed == (1, "_vue:projectInfo", {"file": "/w/src/App.vue"})
 
     def test_request_flat_and_object_forms_are_also_accepted(self):
-        assert lsp_hub.parse_tsserver_request([2, "_vue:getComponentNames", None]) == (
+        assert parse_tsserver_request([2, "_vue:getComponentNames", None]) == (
             2, "_vue:getComponentNames", None,
         )
-        assert lsp_hub.parse_tsserver_request(
+        assert parse_tsserver_request(
             {"id": 3, "command": "_vue:projectInfo", "args": {"file": "x"}}
         ) == (3, "_vue:projectInfo", {"file": "x"})
 
     def test_unrecognisable_request_is_reported_not_raised(self):
         # A payload the hub cannot make sense of must not kill the session:
         # it is logged and skipped.
-        assert lsp_hub.parse_tsserver_request(["not-an-int", 7]) is None
-        assert lsp_hub.parse_tsserver_request(None) is None
-        assert lsp_hub.parse_tsserver_request([]) is None
+        assert parse_tsserver_request(["not-an-int", 7]) is None
+        assert parse_tsserver_request(None) is None
+        assert parse_tsserver_request([]) is None
 
     def test_response_pairs_the_id_inside_the_params_array(self):
         # Volar's handler is onNotification('tsserver/response', ([id, res]) …)
         # so the pair must be nested one level inside params.
-        assert lsp_hub.tsserver_response_params(4, {"a": 1}) == [[4, {"a": 1}]]
-        assert lsp_hub.tsserver_response_params(5, None) == [[5, None]]
+        assert tsserver_response_params(4, {"a": 1}) == [[4, {"a": 1}]]
+        assert tsserver_response_params(5, None) == [[5, None]]
 
     def test_project_config_prefers_tsconfig_over_jsconfig(self, tmp_path):
         (tmp_path / "jsconfig.json").write_text("{}", encoding="utf-8")
         (tmp_path / "tsconfig.json").write_text("{}", encoding="utf-8")
-        assert lsp_hub.find_project_config(tmp_path) == str(tmp_path / "tsconfig.json")
+        assert find_project_config(tmp_path) == str(tmp_path / "tsconfig.json")
 
     def test_project_config_missing_is_none(self, tmp_path):
-        assert lsp_hub.find_project_config(tmp_path) is None
+        assert find_project_config(tmp_path) is None
 
     def test_project_info_answer_names_the_config_as_external(self):
-        info = lsp_hub.tsserver_project_info("/w/a.vue", "/w/tsconfig.json")
+        info = tsserver_project_info("/w/a.vue", "/w/tsconfig.json")
         assert info["configFileName"] == "/w/tsconfig.json"
         assert info["projectKind"] == "external"
         assert info["languageServiceEnabled"] is True
 
     def test_project_info_without_a_config_is_an_explicit_null(self):
-        assert lsp_hub.tsserver_project_info("/w/a.vue", None) is None
+        assert tsserver_project_info("/w/a.vue", None) is None
 
     @pytest.mark.anyio
     async def test_config_walk_stops_at_the_workspace_root(self, hub, tmp_path):
@@ -771,9 +777,9 @@ def lsp_client(monkeypatch, tmp_path):
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr(lsp_hub, "LSP_CONNECTORS_DIR", servers_dir)
-    monkeypatch.setattr(lsp_hub, "LSP_SERVERS_PATH", servers_path)
-    monkeypatch.setattr(lsp_hub, "LSP_RESTRICTED_PATHS", servers_dir / "restricted-paths.txt")
+    monkeypatch.setattr(lsp_constants, "LSP_CONNECTORS_DIR", servers_dir)
+    monkeypatch.setattr(lsp_constants, "LSP_SERVERS_PATH", servers_path)
+    monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", servers_dir / "restricted-paths.txt")
     monkeypatch.setattr(
         routes,
         "load_endpoints_config",
@@ -838,7 +844,7 @@ class TestLspEndpoints:
         file_values = dotenv_values(config_module.ENV_PATH)
         assert file_values["LSP_ENABLED"] == "pyright"
         # enable flag written back for every declared server, both gates move.
-        data = json.loads(lsp_hub.LSP_SERVERS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(lsp_constants.LSP_SERVERS_PATH.read_text(encoding="utf-8"))
         assert data["pyright"]["enable"] is True
         assert data["vue"]["enable"] is False
         assert data["pyright"]["env"] == {"SECRET": "do-not-leak"}  # keys kept
@@ -850,7 +856,7 @@ class TestLspEndpoints:
         assert response.status_code == 200
         assert "LSP_ENABLED" not in os.environ
         assert not [s for s in response.json()["servers"] if s["active"]]
-        data = json.loads(lsp_hub.LSP_SERVERS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(lsp_constants.LSP_SERVERS_PATH.read_text(encoding="utf-8"))
         assert data["pyright"]["enable"] is False
 
     def test_post_unknown_server_returns_422(self, lsp_client):
