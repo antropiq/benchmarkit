@@ -1,7 +1,8 @@
+import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 import pytest
@@ -588,3 +589,112 @@ class TestModelsEndpoint:
             "/api/models", params={"serverUrl": "http://llm:8080/v1"}
         )
         assert response.status_code == 502
+
+
+class _RecordingHub:
+    """Minimal hub double: records restarts, answers what the payload needs."""
+
+    installed = True
+
+    def __init__(self) -> None:
+        self.restarts: List[Any] = []
+
+    async def restart(self, *args) -> None:
+        self.restarts.append(args)
+
+    def status(self) -> List[Dict[str, Any]]:
+        return []
+
+
+@pytest.fixture
+def hub_client(client, monkeypatch, tmp_path):
+    """``client`` with recording hubs and the declaration files redirected.
+
+    ``BENCHMARKIT_PATH_LOCATION`` is cleared so each test starts from the boot
+    default (the install dir) rather than a value another test left behind.
+    """
+    from src.core import lsphub
+    from src.core import mcphub
+
+    monkeypatch.delenv("BENCHMARKIT_PATH_LOCATION", raising=False)
+    empty = tmp_path / "externals.json"
+    empty.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH", empty)
+    servers_dir = tmp_path / "lsp_connectors"
+    servers_dir.mkdir()
+    # Hermetic copy of the workspace-root deny-list: the real file's contents
+    # belong to the developer's machine, /etc is the stand-in tests assert on.
+    (servers_dir / "restricted-paths.txt").write_text("/etc\n", encoding="utf-8")
+    monkeypatch.setattr(lsphub.constants, "LSP_CONNECTORS_DIR", servers_dir)
+    monkeypatch.setattr(
+        lsphub.constants, "LSP_SERVERS_PATH", servers_dir / "lsp_servers.json"
+    )
+    monkeypatch.setattr(
+        lsphub.constants, "LSP_RESTRICTED_PATHS", servers_dir / "restricted-paths.txt"
+    )
+    client.app.state.mcp = _RecordingHub()
+    client.app.state.lsp = _RecordingHub()
+    return client
+
+
+class TestPathLocationEndpoint:
+    def test_get_defaults_to_the_install_dir(self, hub_client):
+        from src.config import default_path_location
+
+        body = hub_client.get("/api/path-location").json()
+        assert body["key"] == "BENCHMARKIT_PATH_LOCATION"
+        assert body["path"] == default_path_location()
+        assert body["default"] == default_path_location()
+
+    def test_post_sets_the_env_and_restarts_both_hubs(self, hub_client, tmp_path):
+        target = tmp_path / "other-project"
+        target.mkdir()
+        response = hub_client.post("/api/path-location", json={"path": str(target)})
+        assert response.status_code == 200
+        assert os.environ["BENCHMARKIT_PATH_LOCATION"] == str(target.resolve())
+        assert response.json()["path"] == str(target.resolve())
+        assert len(hub_client.app.state.mcp.restarts) == 1
+        assert len(hub_client.app.state.lsp.restarts) == 1
+        # Both hub payloads ride back in the response so the dialog can
+        # repaint its panels without a second round-trip.
+        assert "connectors" in response.json()["mcp"]
+        assert "servers" in response.json()["lsp"]
+
+    def test_post_canonicalises_symlinks_and_dots(self, hub_client, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+        response = hub_client.post("/api/path-location", json={"path": f"{link}/."})
+        assert response.status_code == 200
+        assert response.json()["path"] == str(real.resolve())
+
+    def test_rejects_missing_relative_empty_and_denied(self, hub_client, tmp_path):
+        before = os.environ.get("BENCHMARKIT_PATH_LOCATION")
+        assert hub_client.post("/api/path-location", json={"path": ""}).status_code == 422
+        assert hub_client.post("/api/path-location", json={"path": "rel"}).status_code == 422
+        assert (
+            hub_client.post(
+                "/api/path-location", json={"path": str(tmp_path / "ghost")}
+            ).status_code
+            == 422
+        )
+        assert (
+            hub_client.post("/api/path-location", json={"path": "/etc"}).status_code
+            == 422
+        )
+        # Nothing was touched: the hubs never saw a restart, env is unchanged.
+        assert os.environ.get("BENCHMARKIT_PATH_LOCATION") == before
+        assert hub_client.app.state.mcp.restarts == []
+        assert hub_client.app.state.lsp.restarts == []
+
+    def test_refused_during_a_run_leaves_env_untouched(self, hub_client, tmp_path):
+        before = os.environ.get("BENCHMARKIT_PATH_LOCATION")
+        hub_client.app.state.run_state.status = "running"
+        try:
+            response = hub_client.post("/api/path-location", json={"path": str(tmp_path)})
+        finally:
+            hub_client.app.state.run_state.status = "idle"
+        assert response.status_code == 409
+        assert os.environ.get("BENCHMARKIT_PATH_LOCATION") == before
+

@@ -23,7 +23,8 @@ from src.config import (
     MEMORY_DEFAULT_COLOR,
     MEMORY_SLOT_COUNT,
     QUESTION_SET_DEFAULT,
-    chat_sysprompt,
+    PATH_LOCATION_KEY,
+    agent_instructions_block,
     list_question_sets,
     load_endpoints_config,
     load_memory_registrations,
@@ -31,12 +32,14 @@ from src.config import (
     load_settings,
     max_tool_iteration,
     lsp_enabled_ids,
+    path_location,
+    default_path_location,
     save_memory_registration,
     save_settings,
     questions_path,
 )
 from src.core.mcphub import load_externals, set_externals_enabled
-from src.core.lsphub import all_servers, set_lsp_enabled
+from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
 from src.core.bench import run_benchmark
 from src.core.chat import stream_chat
 from src.core.job import RunJob
@@ -104,6 +107,12 @@ class QuestionSetIn(SettingsFieldsMixin):
     """Question set selection as sent by the settings dialog."""
 
     questionSet: str = ""
+
+
+class PathLocationIn(SettingsFieldsMixin):
+    """Working-location change as sent by the settings dialog."""
+
+    path: str = ""
 
 
 class MemorySlotIn(BaseModel):
@@ -795,20 +804,12 @@ def build_router(state: RunState) -> APIRouter:
                     manager.stop_connector(connector_id)
         return _mcp_payload(request, extra_errors=write_errors)
 
-    @router.post("/mcp/restart")
-    async def post_mcp_restart(request: Request) -> Dict[str, Any]:
-        """Restart the MCP hub: re-read ``externals.json`` and reconnect.
+    async def _restart_mcp_hub(request: Request) -> Dict[str, Any]:
+        """Tear the MCP hub down and rebuild it from a fresh file scan.
 
-        Everything is torn down (client sessions and, with them, every local
-        stdio child process) and rebuilt from a fresh scan of the declaration
-        file, so an edit made by hand — a new connector, a changed ``command``,
-        another ``cwd`` — takes effect without restarting the web app.
-        Validation problems do not abort the restart: the connectors that did
-        parse come back up and the errors are returned in ``externalsError``.
-
-        Awaited, so the response carries the real post-restart status of every
-        connector (a failing one burns its whole retry window — the button
-        stays busy while that happens).
+        Shared by ``POST /mcp/restart`` and the working-location endpoint: a
+        changed ``${BENCHMARKIT_PATH_LOCATION}`` only takes effect once every
+        connector is relaunched with the new argv.
         """
         if state.status == "running":
             raise HTTPException(
@@ -833,6 +834,23 @@ def build_router(state: RunState) -> APIRouter:
         # The payload re-scans the file, so it re-derives the same validation
         # errors — they must not be passed as extra_errors or they appear twice.
         return _mcp_payload(request)
+
+    @router.post("/mcp/restart")
+    async def post_mcp_restart(request: Request) -> Dict[str, Any]:
+        """Restart the MCP hub: re-read ``externals.json`` and reconnect.
+
+        Everything is torn down (client sessions and, with them, every local
+        stdio child process) and rebuilt from a fresh scan of the declaration
+        file, so an edit made by hand — a new connector, a changed ``command``,
+        another ``cwd`` — takes effect without restarting the web app.
+        Validation problems do not abort the restart: the connectors that did
+        parse come back up and the errors are returned in ``externalsError``.
+
+        Awaited, so the response carries the real post-restart status of every
+        connector (a failing one burns its whole retry window — the button
+        stays busy while that happens).
+        """
+        return await _restart_mcp_hub(request)
 
     def _lsp_payload(
         request: Request, extra_errors: Optional[List[str]] = None
@@ -922,21 +940,12 @@ def build_router(state: RunState) -> APIRouter:
                     manager.stop_server(server_id)
         return _lsp_payload(request, extra_errors=write_errors)
 
-    @router.post("/lsp/restart")
-    async def post_lsp_restart(request: Request) -> Dict[str, Any]:
-        """Restart the LSP hub: re-read ``lsp_servers.json`` and respawn.
+    async def _restart_lsp_hub(request: Request) -> Dict[str, Any]:
+        """Tear the LSP hub down and rebuild it from a fresh file scan.
 
-        Every language server is shut down (``shutdown``/``exit``, then
-        SIGTERM/SIGKILL) and respawned from a fresh scan of the declaration
-        file, so a hand-edited entry — a new server, a changed ``command``,
-        another ``workspaceRoot`` — takes effect without restarting the web
-        app. The two activation gates (the entry ``enable`` flag and
-        ``LSP_ENABLED``) are re-applied exactly as at startup, so a dormant
-        file stays dormant. Invalid entries never spawn: the valid ones come
-        back up and the problems are reported in ``serversError``.
-
-        Awaited, so the response carries real post-restart status (a cold
-        language-server start is multi-second — the button stays busy).
+        Shared by ``POST /lsp/restart`` and the working-location endpoint: a
+        changed ``${BENCHMARKIT_PATH_LOCATION}`` only takes effect once every
+        language server is respawned on the new ``workspaceRoot``.
         """
         if state.status == "running":
             raise HTTPException(
@@ -963,6 +972,122 @@ def build_router(state: RunState) -> APIRouter:
         # The payload re-scans the file, so it re-derives the same validation
         # errors — they must not be passed as extra_errors or they appear twice.
         return _lsp_payload(request)
+
+    @router.post("/lsp/restart")
+    async def post_lsp_restart(request: Request) -> Dict[str, Any]:
+        """Restart the LSP hub: re-read ``lsp_servers.json`` and respawn.
+
+        Every language server is shut down (``shutdown``/``exit``, then
+        SIGTERM/SIGKILL) and respawned from a fresh scan of the declaration
+        file, so a hand-edited entry — a new server, a changed ``command``,
+        another ``workspaceRoot`` — takes effect without restarting the web
+        app. The two activation gates (the entry ``enable`` flag and
+        ``LSP_ENABLED``) are re-applied exactly as at startup, so a dormant
+        file stays dormant. Invalid entries never spawn: the valid ones come
+        back up and the problems are reported in ``serversError``.
+
+        Awaited, so the response carries real post-restart status (a cold
+        language-server start is multi-second — the button stays busy).
+        """
+        return await _restart_lsp_hub(request)
+
+    def _path_location_payload() -> Dict[str, Any]:
+        return {
+            "key": PATH_LOCATION_KEY,
+            "path": path_location(),
+            "default": default_path_location(),
+        }
+
+    @router.get("/path-location")
+    def get_path_location() -> Dict[str, Any]:
+        """Effective working location of the MCP/LSP hubs.
+
+        The value ``${BENCHMARKIT_PATH_LOCATION}`` expands to in
+        ``mcp_connectors/externals.json`` and ``lsp_connectors/lsp_servers.json``
+        — read live from the environment, so it reflects a change made through
+        ``POST /path-location`` rather than a stale startup snapshot.
+        """
+        return _path_location_payload()
+
+    @router.post("/path-location")
+    async def post_path_location(
+        body: PathLocationIn, request: Request
+    ) -> Dict[str, Any]:
+        """Point both hubs at another directory and reload their tools.
+
+        Sets ``BENCHMARKIT_PATH_LOCATION`` in this process' environment, then
+        restarts the MCP and LSP hubs so both declaration files are re-read and
+        every connector/language server is relaunched against the new value —
+        the same effect as the refresh buttons, in one call.
+
+        The value is deliberately *not* persisted: it is process state, and the
+        next boot always re-seeds it to the install directory (see
+        ``config.setup_path_location``), so a machine move can never be broken
+        by a remembered path. Rejected with 422 when the directory is missing
+        or sits on the LSP workspace-root deny-list (a language server indexing
+        a secret tree would hand its contents to the model); in that case the
+        environment is left untouched and nothing is restarted.
+        """
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change the working location while a benchmark run is in progress",
+            )
+        # Every precondition of the two restarts is checked *before* the
+        # environment is touched: an env value the hubs never picked up is the
+        # worst possible outcome (the panel would disagree with the tools).
+        if _CHAT_TASKS:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot change the working location while a chat reply is streaming",
+            )
+        for attr, label in (("mcp", "MCP"), ("lsp", "LSP")):
+            hub = getattr(request.app.state, attr, None)
+            if hub is None or not hasattr(hub, "restart"):
+                raise HTTPException(
+                    status_code=503, detail=f"{label} hub is not available"
+                )
+        raw = (body.path or "").strip()
+        if not raw:
+            raise HTTPException(
+                status_code=422, detail="Working location must not be empty"
+            )
+        if not os.path.isabs(raw):
+            raise HTTPException(
+                status_code=422, detail="Working location must be an absolute path"
+            )
+        # Expanduser + realpath: a '~' or a symlinked checkout must land on the
+        # same canonical prefix the hubs compare against, and what the panel
+        # shows must be what the declaration files expand to.
+        expanded = os.path.realpath(os.path.expanduser(raw))
+        if not os.path.isdir(expanded):
+            raise HTTPException(
+                status_code=422, detail=f"Working location does not exist: {raw}"
+            )
+        for denied in restricted_lsp_roots():
+            entry = os.path.realpath(denied)
+            if expanded == entry or expanded.startswith(entry + os.sep):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Working location is on the deny-list: {denied}",
+                )
+        previous = os.environ.get(PATH_LOCATION_KEY)
+        os.environ[PATH_LOCATION_KEY] = expanded
+        try:
+            mcp = await _restart_mcp_hub(request)
+            lsp = await _restart_lsp_hub(request)
+        except BaseException:
+            # Guards above mean a refusal can no longer happen here, so this
+            # only fires on an unexpected hub failure: put the environment back
+            # so the panel and the next file scan agree. (If the MCP restart
+            # already landed, its live sessions keep the new argv until the
+            # next restart — a restart button or a reboot re-aligns them.)
+            if previous is None:
+                os.environ.pop(PATH_LOCATION_KEY, None)
+            else:
+                os.environ[PATH_LOCATION_KEY] = previous
+            raise
+        return _path_location_payload() | {"mcp": mcp, "lsp": lsp}
 
     @router.get("/lsp/log")
     def get_lsp_log(request: Request, server: str = "") -> Dict[str, Any]:
@@ -1038,10 +1163,12 @@ def build_router(state: RunState) -> APIRouter:
                     config.to_kwargs(),
                     cancel_event,
                     config.apiKey or "none",
-                    # Chat-only composition: the user's AGENTS.md is appended for
-                    # the Chat tab, while a benchmark run still sends
-                    # ``LLM_SYSPROMPT`` verbatim (see config.chat_sysprompt).
-                    chat_sysprompt(config.sysprompt),
+                    config.sysprompt,
+                    # Project instructions ride on the system message: when the
+                    # working location carries AGENTS.md, its text is appended
+                    # there so every conversation starts already knowing the
+                    # project's conventions (see ``config.load_agent_instructions``).
+                    agent_instructions=agent_instructions_block(),
                     **tool_kwargs,
                 )
             except Exception as exc:  # noqa: BLE001 — surface any failure to the UI

@@ -115,6 +115,7 @@ def stream_chat(
     tool_executor: Optional[ToolExecutor] = None,
     tool_servers: Optional[Dict[str, str]] = None,
     max_tool_iterations: int = 25,
+    agent_instructions: Optional[str] = None,
 ) -> None:
     """Stream one chat reply, emitting ``token`` / ``reasoning`` / ``done``.
 
@@ -143,6 +144,15 @@ def stream_chat(
     Terminal event is exactly one of ``done`` or ``error``
     (unless the call was cancelled — then the client is gone and nothing is
     emitted).
+
+    ``agent_instructions`` (when non-empty) is appended to the system message
+    after the configured prompt, so a conversation starts already carrying the
+    project's own instructions. It is deliberately a separate argument rather
+    than pre-concatenated into ``sysprompt``: ``TOOL_NOTICE`` below is skipped
+    when the prompt already mentions tools, and instruction files are full of
+    the word — keeping them apart lets that check judge only the prompt the
+    user configured. Like the notice above, it is appended to the text of the
+    system message (the Chat API only ever sends plain-text system messages).
     """
     if not messages or messages[0].get("role") != "system":
         messages = [
@@ -156,6 +166,13 @@ def stream_chat(
         messages[0] = {
             "role": "system",
             "content": _content_text(messages[0]) + TOOL_NOTICE,
+        }
+    if agent_instructions:
+        # Appended last, so the notice heuristic above never sees the
+        # instructions' own wording.
+        messages[0] = {
+            "role": "system",
+            "content": _content_text(messages[0]) + "\n\n" + agent_instructions,
         }
     sampling_kwargs: Dict[str, Any] = dict(sampling or {})
     # litellm gates reasoning_effort to OpenAI reasoning models only;

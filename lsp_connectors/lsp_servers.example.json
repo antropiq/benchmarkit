@@ -1,11 +1,12 @@
 {
+  "_note": "Copy to lsp_servers.json and adapt. Any value in command/args, env, workspaceRoot, initializationOptions or settings may reference an environment variable as ${NAME} (or ${NAME:-fallback}); it is expanded when the file is read, using the process environment including everything in .env. Only the braced form is special, so a bare $ stays literal. An unset name is left as written and reported as a validation note.",
   "pyright": {
     "enable": false,
     "label": "Pyright (Python)",
     "extensions": [".py", ".pyi"],
-    "command": ["pyright-langserver", "--stdio"],
-    "workspaceRoot": "/absolute/path/to/your/python/root",
-    "env": { "PATH": "/usr/local/bin:/usr/bin:/bin" },
+    "command": ["${VOLTA_BIN:-/usr/local/bin}/pyright-langserver", "--stdio"],
+    "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}",
+    "env": { "PATH": "${VOLTA_BIN:-/usr/local/bin}:/usr/local/bin:/usr/bin:/bin" },
     "initializationOptions": { "typeCheckingMode": "standard" },
     "tools": ["diagnostics", "hover", "definition", "references", "document_symbols"],
     "maxDiagnostics": 40,

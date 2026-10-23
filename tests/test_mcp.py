@@ -117,6 +117,81 @@ class TestLoadExternals:
         assert connectors[0]["description"] == "Docs."
         assert len(errors) == 1
 
+    def test_env_references_are_expanded(self, tmp_path, monkeypatch):
+        """``${NAME}`` in url/headers/env/command comes from the environment.
+
+        ``${NAME:-fallback}`` covers the optional-key case; an expanded value
+        never re-splits, so the ``--dir`` argument below stays one argument
+        even though it contains a space.
+        """
+        monkeypatch.setenv("CTX_KEY", "ctx7sk-real")
+        monkeypatch.setenv("VOLTA_BIN", "/home/vgr/.volta/bin")
+        monkeypatch.setenv("WS_DIR", str(tmp_path / "a dir"))
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {
+                "remote": {
+                    "type": "remote",
+                    "url": "https://mcp.example.com/${CTX_PATH:-mcp}",
+                    "headers": {"Authorization": "Bearer ${CTX_KEY}"},
+                    "env": {"TOKEN": "${CTX_KEY}"},
+                },
+                "local": {
+                    "type": "local",
+                    "command": ["${VOLTA_BIN}/npx", "-y", "pkg@$latest", "--dir=${WS_DIR}/sub"],
+                },
+            },
+        )
+        connectors, errors = load_externals(path)
+        assert errors == []
+        by_id = {c["id"]: c for c in connectors}
+        assert by_id["remote"]["endpoint"] == "https://mcp.example.com/mcp"
+        assert by_id["remote"]["headers"] == {"Authorization": "Bearer ctx7sk-real"}
+        assert by_id["remote"]["env"] == {"TOKEN": "ctx7sk-real"}
+        assert by_id["local"]["command"] == [
+            "/home/vgr/.volta/bin/npx",
+            "-y",
+            "pkg@$latest",
+            f"--dir={tmp_path / 'a dir'}/sub",
+        ]
+
+    def test_whole_url_can_be_an_env_reference(self, tmp_path, monkeypatch):
+        """Expansion runs before the http(s) check, so ``${VAR}`` may hold a URL."""
+        monkeypatch.setenv("MCP_BASE_URL", "https://mcp.example.com")
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {"ctx": {"type": "remote", "url": "${MCP_BASE_URL}/mcp"}},
+        )
+        connectors, errors = load_externals(path)
+        assert errors == []
+        assert connectors[0]["endpoint"] == "https://mcp.example.com/mcp"
+
+    def test_unresolved_env_reference_is_kept_and_reported(self, tmp_path, monkeypatch):
+        """An unset name is left written verbatim plus one note, never blanked."""
+        monkeypatch.delenv("NO_SUCH_CONNECTOR_KEY", raising=False)
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {"remote": {"type": "remote", "url": "https://x/mcp", "headers": {"K": "${NO_SUCH_CONNECTOR_KEY}"}}},
+        )
+        connectors, errors = load_externals(path)
+        assert len(connectors) == 1
+        assert connectors[0]["headers"] == {"K": "${NO_SUCH_CONNECTOR_KEY}"}
+        assert len(errors) == 1
+        assert "NO_SUCH_CONNECTOR_KEY" in errors[0]
+        assert "not set in the environment" in errors[0]
+
+    def test_secrets_survive_the_write_back_untouched(self, tmp_path, monkeypatch):
+        """Toggling ``enable`` must not persist an expanded value into the file."""
+        monkeypatch.setenv("CTX_KEY", "ctx7sk-real")
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {"a": {"type": "remote", "url": "https://a", "enable": False, "headers": {"K": "${CTX_KEY}"}}},
+        )
+        assert set_externals_enabled({"a": True}, path) == []
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["a"]["headers"] == {"K": "${CTX_KEY}"}
+        assert data["a"]["enable"] is True
+
 
 class TestSetExternalsEnabled:
     def test_missing_file_is_noop(self, tmp_path):
@@ -1108,7 +1183,7 @@ class TestChatMcpWiring:
         def fake_stream(messages, model, server_url, emit, sampling=None,
                         cancel_event=None, api_key="none", sysprompt=None,
                         tools=None, tool_executor=None, tool_servers=None,
-                        max_tool_iterations=25):
+                        max_tool_iterations=25, agent_instructions=None):
             captured["tools"] = tools
             captured["tool_servers"] = tool_servers
             captured["max"] = max_tool_iterations
@@ -1133,7 +1208,8 @@ class TestChatMcpWiring:
         captured = {}
 
         def fake_stream(messages, model, server_url, emit, sampling=None,
-                        cancel_event=None, api_key="none", sysprompt=None):
+                        cancel_event=None, api_key="none", sysprompt=None,
+                        agent_instructions=None):
             captured["ok"] = True
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})

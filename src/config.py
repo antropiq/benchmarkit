@@ -30,14 +30,6 @@ MEMORY_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 # and LSP language servers alike (one knob, no split-brain).
 DEFAULT_MAX_TOOL_ITERATION = 25
 
-# Cap on the agent instruction document injected into the chat system prompt.
-# Deliberately far below the 2 MB the connectors accept elsewhere: this text is
-# paid for on every chat round-trip, on top of the tool schemas.
-AGENT_DOC_MAX_BYTES = 8192
-
-# Document name read from the user config dir (see agent_doc_dir).
-AGENT_DOC_FILENAME = "AGENTS.md"
-
 # Managed .env keys, in the order they are written to the file.
 SETTING_KEYS: Tuple[str, ...] = (
     "SERVER_URL",
@@ -64,11 +56,102 @@ SETTING_KEYS: Tuple[str, ...] = (
 # Keys always written to .env; the others are commented out when empty.
 REQUIRED_SETTING_KEYS: Tuple[str, ...] = ("SERVER_URL", "ENDPOINT")
 
+# Environment variable holding the *working location* the MCP connectors and
+# language servers are pointed at. Both declaration files reference it
+# (``--root-dir`` / ``workspaceRoot`` as ``${BENCHMARKIT_PATH_LOCATION}``), so
+# one value moves every file-touching tool together.
+#
+# Deliberately NOT a managed ``SETTING_KEYS`` key: it is process state, not
+# run configuration, and keeping it out of ``.env`` means ``save_settings``
+# (which regenerates that file from a fixed template) can neither erase it nor
+# resurrect a stale value at the next boot. The boot default below is the
+# single persistence rule: a restart always lands on the install directory.
+PATH_LOCATION_KEY = "BENCHMARKIT_PATH_LOCATION"
+
 
 def load_dotenv_once() -> None:
     """Load the .env file once; existing environment variables take precedence."""
     if ENV_PATH.exists():
         load_dotenv(ENV_PATH)
+
+
+def default_path_location() -> str:
+    """The install directory, used as the working-location boot default."""
+    return str(PROJECT_ROOT)
+
+
+def setup_path_location() -> None:
+    """Ensure ``PATH_LOCATION_KEY`` is set, defaulting it to the install dir.
+
+    Called at startup, *after* ``load_dotenv_once``: an exported variable (or
+    one written in ``.env``) wins, which is what lets an operator pin the
+    location without touching the code. Never overwrites, so it stays
+    idempotent across the test suite and repeated app factories.
+    """
+    current = (os.environ.get(PATH_LOCATION_KEY) or "").strip()
+    if not current:
+        os.environ[PATH_LOCATION_KEY] = default_path_location()
+
+
+def path_location() -> str:
+    """Effective working location (the value the declaration files expand to).
+
+    Reads ``os.environ`` at call time, so a value set through the API is what
+    the next hub re-scan sees. Falls back to the boot default rather than
+    returning empty, so the settings dialog always shows a real path.
+    """
+    return (os.environ.get(PATH_LOCATION_KEY) or "").strip() or default_path_location()
+
+
+# Project agent instructions: when present at the root of the working
+# location, their text is appended to the Chat system prompt so a new
+# conversation starts already knowing the project's conventions.
+AGENT_INSTRUCTIONS_FILENAME = "AGENTS.md"
+
+
+def agent_instructions_filename() -> str:
+    """Name of the agent-instructions file looked for at the location root.
+
+    Read through a function (not the constant) so a test can point the lookup
+    at another filename without rewriting the module.
+    """
+    return AGENT_INSTRUCTIONS_FILENAME
+
+
+def load_agent_instructions(location: Optional[str] = None) -> str:
+    """Text of the working location's ``AGENTS.md``, "" when absent/unreadable.
+
+    Resolved against ``BENCHMARKIT_PATH_LOCATION`` (the same folder the
+    file-touching tools are pointed at) at call time, so moving the location
+    through the settings dialog also moves where the instructions are looked
+    for. Read per chat request rather than cached: editing ``AGENTS.md`` then
+    takes effect on the very next message.
+    """
+    root = Path(location) if location else Path(path_location())
+    try:
+        return (root / agent_instructions_filename()).read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def agent_instructions_block(text: Optional[str] = None) -> str:
+    """The instructions rendered as a system-prompt block ("" when no text).
+
+    The framing tells the model these are the project's own instructions —
+    they win over generic wording for anything project-specific — and pins
+    the project root to the working location, which is what makes the paths
+    the instructions mention (``src/``, ``resources/``, ``tests/``) and the
+    tool UIDs they describe resolve to the real project.
+    """
+    body = load_agent_instructions() if text is None else (text or "").strip()
+    if not body:
+        return ""
+    return (
+        "The current project root is {root}\n\n"
+        "The following are this project's own instructions (AGENTS.md at that "
+        "root). Follow them for anything project-specific; they take "
+        "precedence over generic wording.\n\n{body}"
+    ).format(root=path_location(), body=body)
 
 
 def questions_path() -> Path:
@@ -329,78 +412,6 @@ def lsp_enabled_ids() -> List[str]:
         if part and part not in ids:
             ids.append(part)
     return ids
-
-
-def agent_doc_dir() -> Path:
-    """User-scope config directory: ``$XDG_CONFIG_HOME/benchmarkit``.
-
-    Falls back to ``~/.config/benchmarkit`` when ``XDG_CONFIG_HOME`` is unset
-    or empty, per the XDG Base Directory specification. Resolved at call time
-    so a changed environment takes effect without a restart.
-    """
-    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    if not base:
-        base = str(Path.home() / ".config")
-    return Path(base).expanduser() / "benchmarkit"
-
-
-def agent_doc_path() -> Path:
-    """Path of the chat agent instruction document.
-
-    ``AGENT_DOC`` overrides the location outright (and may point at a
-    nonexistent file to disable the feature). Otherwise the conventional
-    ``AGENTS.md`` inside :func:`agent_doc_dir` is used.
-    """
-    explicit = os.environ.get("AGENT_DOC", "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    return agent_doc_dir() / AGENT_DOC_FILENAME
-
-
-def load_agent_doc() -> str:
-    """Read the user-scope agent instruction document, "" when unusable.
-
-    Called on every chat request, so it must never raise: a missing, unreadable
-    or empty document is reported as an empty string and chat proceeds normally.
-    The content is capped at ``AGENT_DOC_MAX_BYTES`` (bytes, not characters) so
-    an oversized document cannot inflate the system prompt; a document cut in the
-    middle of a multi-byte character decodes to U+FFFD rather than failing.
-    """
-    path = agent_doc_path()
-    try:
-        if not path.is_file():
-            return ""
-        raw = path.read_bytes()[:AGENT_DOC_MAX_BYTES]
-    except OSError:
-        return ""
-    return raw.decode("utf-8", errors="replace").strip()
-
-
-def chat_sysprompt(base: str) -> str:
-    """Compose the chat system prompt: the configured prompt plus the agent doc.
-
-    Used by the Chat endpoint only -- a benchmark run keeps sending
-    ``LLM_SYSPROMPT`` verbatim, so its measured behaviour stays comparable
-    across runs no matter what this file contains. Returns ``base`` unchanged
-    when no document is available.
-
-    The framing text deliberately avoids the word ``tool``: ``stream_chat``
-    appends its generic "you can call the provided tools" notice only when the
-    system prompt does not mention tools, so wording it here would suppress
-    that notice for every document, including one that says nothing about
-    tools. Whether the notice is replaced is left to the document's own text.
-    """
-    doc = load_agent_doc()
-    if not doc:
-        return base
-    return (
-        f"{base}\n\n"
-        "# Additional rules for this conversation\n"
-        "These instructions come from the user's agent configuration file. "
-        "Follow them unless they conflict with a direct instruction from the "
-        "user.\n\n"
-        f"{doc}\n"
-    )
 
 
 def _encode_value(value: str) -> str:

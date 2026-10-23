@@ -193,6 +193,60 @@ class TestStreamChat:
         )
         assert captured["messages"][0]["content"] == "be nice"
 
+    def test_agent_instructions_appended_to_the_system_message(self, monkeypatch):
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return iter([])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
+            sysprompt="Answer concisely.",
+            agent_instructions="project root is /srv/proj\n\nuse pytest",
+        )
+        system = captured["messages"][0]
+        assert system["role"] == "system"
+        assert system["content"].startswith("Answer concisely.")
+        assert system["content"].endswith("project root is /srv/proj\n\nuse pytest")
+
+    def test_blank_agent_instructions_leave_the_prompt_untouched(self, monkeypatch):
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return iter([])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
+            sysprompt="Answer concisely.", agent_instructions="",
+        )
+        assert captured["messages"][0]["content"] == "Answer concisely."
+
+    def test_agent_instructions_do_not_suppress_the_tool_notice(self, monkeypatch):
+        # Instruction files mention "tool" everywhere; the notice-skipping
+        # heuristic must judge only the configured prompt, so passing the
+        # instructions separately keeps the nudge alive.
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return iter([])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
+            sysprompt="Answer concisely.",
+            tools=[{"type": "function", "function": {"name": "use_thing"}}],
+            tool_executor=lambda name, args: "ok",
+            agent_instructions="tools are documented in AGENTS.md",
+        )
+        system = captured["messages"][0]["content"]
+        assert chat_core.TOOL_NOTICE.strip() in system
+        assert system.endswith("tools are documented in AGENTS.md")
+
     def test_call_failure_emits_error(self, monkeypatch):
         def boom(**kwargs):
             raise RuntimeError("down")
@@ -373,7 +427,7 @@ def _oversized_data_url() -> str:
 class TestChatEndpoint:
     def test_happy_path_streams_frames(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None):
+                 api_key="none", sysprompt=None, agent_instructions=None):
             emit({"event": "token", "text": "Hel"})
             emit({"event": "token", "text": "lo"})
             emit({"event": "done", "took": 1.0, "ttft": 0.1, "tokens": 3,
@@ -392,7 +446,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None):
+                 api_key="none", sysprompt=None, agent_instructions=None):
             seen["model"] = model
             seen["server_url"] = server_url
             seen["messages"] = messages
@@ -418,7 +472,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None):
+                 api_key="none", sysprompt=None, agent_instructions=None):
             seen["messages"] = messages
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -444,7 +498,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None):
+                 api_key="none", sysprompt=None, agent_instructions=None):
             seen["messages"] = messages
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -498,7 +552,7 @@ class TestChatEndpoint:
 
     def test_forwards_configured_api_key(self, monkeypatch, tmp_path):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None):
+                 api_key="none", sysprompt=None, agent_instructions=None):
             emit({"api_key_seen": api_key, "event": "done", "took": 0.0,
                   "ttft": 0.0, "tokens": 0, "tokensEstimated": False})
 
@@ -522,9 +576,46 @@ class TestChatEndpoint:
             )
         assert '"api_key_seen": "sk-42"' in response.text
 
+    def test_agent_instructions_reach_the_chat_call(
+        self, client, monkeypatch, tmp_path: Path
+    ):
+        # The working location's AGENTS.md is injected on every request, so a
+        # conversation starts knowing the project's conventions.
+        (tmp_path / "AGENTS.md").write_text("# rules\n\nrun pytest first\n", encoding="utf-8")
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
+        seen = {}
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none", sysprompt=None, agent_instructions=None):
+            seen["instructions"] = agent_instructions
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        client.post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert seen["instructions"].endswith("run pytest first")
+        assert f"project root is {tmp_path}" in seen["instructions"]
+
+    def test_agent_instructions_empty_without_the_file(
+        self, client, monkeypatch, tmp_path: Path
+    ):
+        # No AGENTS.md at the location: the configured prompt stands alone.
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
+        seen = {}
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none", sysprompt=None, agent_instructions=None):
+            seen["instructions"] = agent_instructions
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        client.post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert seen["instructions"] == ""
+
     def test_error_event_terminates_stream(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None):
+                 api_key="none", sysprompt=None, agent_instructions=None):
             emit({"event": "error", "message": "boom"})
 
         monkeypatch.setattr(routes, "stream_chat", fake)
@@ -574,119 +665,6 @@ class TestChatEndpoint:
             assert response.status_code == 409
         finally:
             gate.set()
-
-
-class TestAgentDocInjection:
-    """The user-scope AGENTS.md reaches chat, and only chat."""
-
-    @pytest.fixture
-    def doc(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        directory = tmp_path / "xdg" / "benchmarkit"
-        directory.mkdir(parents=True)
-        path = directory / "AGENTS.md"
-        # Mentions tools explicitly, which is what suppresses TOOL_NOTICE.
-        path.write_text(
-            "Tools are available for this conversation. "
-            "Never pipe inside execute_command.",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        return path
-
-    def test_chat_receives_the_agent_doc(self, client, monkeypatch, doc):
-        seen = {}
-
-        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None):
-            seen["sysprompt"] = sysprompt
-            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
-                  "tokensEstimated": False})
-
-        monkeypatch.setattr(routes, "stream_chat", fake)
-        response = client.post(
-            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
-        )
-        assert response.status_code == 200
-        assert "Never pipe inside execute_command." in seen["sysprompt"]
-        # The configured prompt is kept, not replaced.
-        assert seen["sysprompt"].startswith(DEFAULT_LLM_SYSPROMPT)
-
-    def test_benchmark_run_never_sees_the_agent_doc(self, client, monkeypatch, doc):
-        """Scores must stay comparable regardless of what the file contains."""
-        seen = {}
-
-        def fake_run(questions, config, job, emit, cancel_event=None):
-            seen["sysprompt"] = config.sysprompt
-
-        monkeypatch.setattr(routes, "run_benchmark", fake_run)
-        monkeypatch.setattr(
-            routes, "load_questions",
-            lambda: [{"uuid": "q", "question": "q?", "expected": "e"}],
-        )
-        assert client.post("/api/run").status_code == 202
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            if client.get("/api/run").json()["status"] != "running":
-                break
-            time.sleep(0.02)
-        assert seen["sysprompt"] == DEFAULT_LLM_SYSPROMPT
-
-    def test_doc_mentioning_tools_suppresses_the_notice(self, monkeypatch, doc):
-        """Documents stating tool availability take over from TOOL_NOTICE.
-
-        ``stream_chat`` appends TOOL_NOTICE only when the system prompt does not
-        already mention tools, so an agent doc that states tools are available
-        replaces the generic notice instead of doubling it.
-        """
-        captured = []
-
-        def fake_completion(**kwargs):
-            captured.append(kwargs["messages"][0])
-            return iter([{"choices": [{"delta": {"content": "hi"}}]}])
-
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
-        chat_core.stream_chat(
-            [{"role": "user", "content": "hi"}],
-            "m",
-            "http://s/v1",
-            lambda e: None,
-            sysprompt=routes.chat_sysprompt(DEFAULT_LLM_SYSPROMPT),
-            tools=[{"type": "function"}],
-            tool_executor=lambda name, args: "ok",
-        )
-        assert chat_core.TOOL_NOTICE.strip() not in captured[0]["content"]
-        assert "Never pipe inside execute_command." in captured[0]["content"]
-
-    def test_framing_text_alone_does_not_suppress_the_notice(self, monkeypatch, tmp_path):
-        """A document saying nothing about tools must not disable TOOL_NOTICE.
-
-        The wrapper around the document is worded to avoid the trigger word, so
-        suppression stays driven by the document's own content.
-        """
-        directory = tmp_path / "xdg" / "benchmarkit"
-        directory.mkdir(parents=True)
-        (directory / "AGENTS.md").write_text(
-            "Answer in French. Keep replies under five lines.", encoding="utf-8"
-        )
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        captured = []
-
-        def fake_completion(**kwargs):
-            captured.append(kwargs["messages"][0])
-            return iter([{"choices": [{"delta": {"content": "hi"}}]}])
-
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
-        chat_core.stream_chat(
-            [{"role": "user", "content": "hi"}],
-            "m",
-            "http://s/v1",
-            lambda e: None,
-            sysprompt=routes.chat_sysprompt(DEFAULT_LLM_SYSPROMPT),
-            tools=[{"type": "function"}],
-            tool_executor=lambda name, args: "ok",
-        )
-        assert "Answer in French." in captured[0]["content"]
-        assert chat_core.TOOL_NOTICE.strip() in captured[0]["content"]
 
 
 class TestChatMcpFilter:

@@ -942,6 +942,32 @@ body {
   column-gap: var(--bi-space-2);
 }
 
+/* Path input with its Set button on the same line. The button must not shrink
+   and must not stretch to the input's height, so it sits on the baseline of
+   the row instead of filling it. */
+.path-location-row {
+  display: flex;
+  align-items: center;
+  gap: var(--bi-space-1);
+}
+
+.path-location-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.path-location-set {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0.45rem 0.9rem;
+  white-space: nowrap;
+}
+
+.path-location-hint {
+  margin-bottom: var(--bi-space-2);
+}
+
 /* Password input with an inline show/hide (eye) toggle. */
 .password-field {
   position: relative;
@@ -1191,22 +1217,30 @@ body {
   gap: 0.5rem;
 }
 
-/* Textarea with its memory-bullet row below, so the bullets stay centered
-   under the textarea itself rather than the whole input row. */
+/* Container holding the memory-bullet row and the textarea below it, so the
+   bullets stay centered over the textarea itself rather than the whole input
+   row. Vertical spacing is pinned to 2px (gap, plus no padding/margin on
+   either child) so the bullets visually stick to the textarea. */
 .chat-textarea-col {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 2px;
+  padding: 0;
 }
 
 .chat-textarea-col .chat-textarea {
   height: auto;
   min-height: 0;
+  margin: 0;
 }
 
-/* Nine numbered registration slots under the textarea (MemoryBullets.vue).
+/* Nine numbered registration slots above the textarea (MemoryBullets.vue).
+   Pico's input-group rules (`[role=group] { margin-bottom: var(--pico-spacing) }`)
+   would otherwise push the row away from the textarea, so the margin and
+   padding are zeroed here and the 2px `.chat-textarea-col` gap is the only
+   space between the two.
    A filled bullet's background is set inline (the slot color), which also
    wins over Pico's button hover background; the number color follows the
    background luminance.
@@ -1222,6 +1256,8 @@ body {
   flex-wrap: wrap;
   justify-content: center;
   gap: 0.5rem;
+  margin: 0;
+  padding: 0;
 }
 
 .memory-bullets .memory-bullet {

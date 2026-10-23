@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import ApiKeyField from './ApiKeyField.vue'
 import { useBenchmark } from '../composables/useBenchmark'
 
@@ -13,19 +13,30 @@ const {
   saveMcp,
   toggleLsp,
   saveLsp,
+  setPathLocation,
 } = useBenchmark()
 
 const dialogEl = ref(null)
-const activeSection = ref('question-set')
+const activeSection = ref('working-dir')
 
 const SECTIONS = [
-  { id: 'question-set', label: 'Question set' },
+  { id: 'working-dir', label: 'Working directory' },
   { id: 'llm', label: 'LLM' },
+  { id: 'question-set', label: 'Question set' },
   { id: 'sampling', label: 'Sampling params' },
   { id: 'verifier', label: 'Verifier LLM' },
   { id: 'mcp', label: 'MCP' },
   { id: 'lsp', label: 'LSP' },
 ]
+
+// The Set button only makes sense while the field disagrees with what the
+// server has applied — comparing against ``pathLocationCurrent`` (the value
+// returned by GET/POST /api/path-location) rather than a snapshot taken here
+// means a canonicalised path (server realpath) does not leave the button
+// spuriously enabled.
+const pathLocationChanged = computed(
+  () => (state.pathLocation || '').trim() !== state.pathLocationCurrent,
+)
 
 const MCP_STATUS_CLASS = {
   running: 'green',
@@ -135,26 +146,41 @@ function serverDetail(server) {
         </nav>
 
         <div class="settings-editor">
-          <section v-show="activeSection === 'question-set'">
-            <h3 class="settings-section-title">Question set</h3>
+          <section v-show="activeSection === 'working-dir'">
+            <h3 class="settings-section-title">Working directory</h3>
+            <p class="caption path-location-hint" id="path-location-help">
+              The folder the MCP connectors and
+              language servers operate on. Applied to both hubs at once; it
+              resets to this install on the next server start.
+            </p>
             <label>
-              Source
-              <select
-                v-model="state.settings.questionSet"
-                :disabled="state.questionSetsLoading"
-              >
-                <option
-                  v-for="set in state.questionSets"
-                  :key="set.id"
-                  :value="set.id"
+              Path
+              <span class="path-location-row">
+                <input
+                  v-model="state.pathLocation"
+                  type="text"
+                  spellcheck="false"
+                  :disabled="state.pathLocationLoading"
+                  aria-describedby="path-location-help"
+                />
+                <button
+                  type="button"
+                  class="path-location-set"
+                  title="Point the MCP and LSP tools at this folder and reload them"
+                  :disabled="
+                    !pathLocationChanged ||
+                    state.pathLocationSaving ||
+                    state.pathLocationLoading
+                  "
+                  @click="setPathLocation"
                 >
-                  {{ set.label }} ({{ set.count }} questions)
-                </option>
-                <option v-if="!state.questionSets.length" value="" disabled>
-                  {{ state.questionSetsLoading ? 'Loading question sets…' : 'No question sets available' }}
-                </option>
-              </select>
+                  {{ state.pathLocationSaving ? 'Reloading…' : 'Set' }}
+                </button>
+              </span>
             </label>
+            <p v-if="state.pathLocationError" class="alert-error" role="alert">
+              {{ state.pathLocationError }}
+            </p>
           </section>
 
           <section v-show="activeSection === 'llm'">
@@ -210,6 +236,32 @@ function serverDetail(server) {
               when the model accepts image input; GIFs are sent as their first
               frame.
             </p>
+          </section>
+
+          <section v-show="activeSection === 'question-set'">
+            <h3 class="settings-section-title">Question set</h3>
+            <p class="caption">
+              The questions a benchmark run walks through: one
+              <code>resources/&lt;name&gt;.json</code> file per set.
+            </p>
+            <label>
+              Source
+              <select
+                v-model="state.settings.questionSet"
+                :disabled="state.questionSetsLoading"
+              >
+                <option
+                  v-for="set in state.questionSets"
+                  :key="set.id"
+                  :value="set.id"
+                >
+                  {{ set.label }} ({{ set.count }} questions)
+                </option>
+                <option v-if="!state.questionSets.length" value="" disabled>
+                  {{ state.questionSetsLoading ? 'Loading question sets…' : 'No question sets available' }}
+                </option>
+              </select>
+            </label>
           </section>
 
           <section v-show="activeSection === 'sampling'">

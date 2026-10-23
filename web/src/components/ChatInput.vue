@@ -69,6 +69,7 @@ function onKeydown(event) {
       <ChatLspPanel />
     </div>
     <div class="chat-textarea-col">
+      <MemoryBullets @configure="openBulletDialog" />
       <textarea
         ref="draftEl"
         :value="state.draft.raw"
@@ -79,7 +80,6 @@ function onKeydown(event) {
         @input="setDraft($event.target.value)"
         @keydown="onKeydown"
       ></textarea>
-      <MemoryBullets @configure="openBulletDialog" />
     </div>
     <RegistrationMemoryDlg
       :open="dialogOpen"

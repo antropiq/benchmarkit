@@ -174,6 +174,58 @@ class TestLoadLspServers:
         assert servers == []
         assert "deny-list" in errors[0]
 
+    def test_env_references_are_expanded_everywhere(self, tmp_path, monkeypatch):
+        """command, env, workspaceRoot and the option objects all expand.
+
+        ``workspaceRoot`` is expanded *before* the existence/deny-list checks,
+        so a per-machine path can be written as one ``${VAR}`` and the entry
+        still loads on every checkout. A value that expands to something with
+        a space stays a single argv element (no shell re-splitting).
+        """
+        root = tmp_path / "ws dir"
+        root.mkdir()
+        monkeypatch.setenv("LSP_TEST_BIN", str(tmp_path / "bin"))
+        monkeypatch.setenv("LSP_TEST_ROOT", str(root))
+        monkeypatch.setenv("LSP_TEST_PATH", "/usr/bin:/bin")
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(
+                srv=_entry(
+                    ["${LSP_TEST_BIN}/langserver", "--stdio", "--root=${LSP_TEST_ROOT}"],
+                    env={"PATH": "${LSP_TEST_PATH}"},
+                    workspaceRoot="${LSP_TEST_ROOT}",
+                    initializationOptions={"tsdk": "${LSP_TEST_ROOT}/lib", "n": 3, "on": True},
+                    settings={"html.format": {"indentScriptTags": False}},
+                )
+            ),
+            encoding="utf-8",
+        )
+        [server], errors = load_lsp_servers(path)
+        assert errors == []
+        assert server["command"] == [
+            f"{tmp_path / 'bin'}/langserver",
+            "--stdio",
+            f"--root={root}",
+        ]
+        assert server["workspaceRoot"] == str(root)
+        assert server["env"] == {"PATH": "/usr/bin:/bin"}
+        assert server["initializationOptions"] == {"tsdk": f"{root}/lib", "n": 3, "on": True}
+
+    def test_unresolved_env_reference_reports_and_explains_the_shape_error(
+        self, tmp_path, monkeypatch
+    ):
+        """One note names the unset variable, and it comes before the error it causes."""
+        monkeypatch.delenv("LSP_TEST_NOPE", raising=False)
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(srv=_entry(["x"], workspaceRoot="${LSP_TEST_NOPE}/web")),
+            encoding="utf-8",
+        )
+        servers, errors = load_lsp_servers(path)
+        assert servers == []
+        assert "LSP_TEST_NOPE" in errors[0] and "not set in the environment" in errors[0]
+        assert "workspaceRoot must be an absolute path" in errors[1]
+
     def test_reserved_id_and_underscore_comment_keys(self, tmp_path):
         path = tmp_path / "lsp_servers.json"
         path.write_text(
@@ -1071,7 +1123,7 @@ class TestChatLspWiring:
         def fake_stream(messages, model, server_url, emit, sampling=None,
                         cancel_event=None, api_key="none", sysprompt=None,
                         tools=None, tool_executor=None, tool_servers=None,
-                        max_tool_iterations=25):
+                        max_tool_iterations=25, agent_instructions=None):
             captured["tools"] = tools
             captured["tool_servers"] = tool_servers
             captured["max"] = max_tool_iterations

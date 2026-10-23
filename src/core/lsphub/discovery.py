@@ -12,7 +12,15 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.core.mcphub.validation import argv_from_command, str_map
+from src.core.mcphub.validation import (
+    argv_from_command,
+    expand_env,
+    expand_env_json,
+    expand_env_list,
+    expand_env_map,
+    str_map,
+    unresolved_env_note,
+)
 
 from . import constants
 
@@ -47,6 +55,14 @@ def load_lsp_servers(
     file-level error and no servers. A single malformed entry is skipped with
     a per-entry note; unknown keys are ignored. Entries keep their ``enable``
     flag; the caller decides what to do with disabled ones. Never raises.
+
+    ``command``/``args``, ``env``, ``workspaceRoot``, ``initializationOptions``
+    and ``settings`` may reference environment variables as ``${NAME}`` (or
+    ``${NAME:-fallback}``): they are expanded here, once, before any of the
+    path/shape checks below run, so the rest of the package never sees a
+    reference and one declaration file works on every machine. An entry that
+    references an unset name is still loaded (subject to the usual checks)
+    with a note saying so.
     """
     root = path or constants.LSP_SERVERS_PATH
     servers: List[Dict[str, Any]] = []
@@ -73,14 +89,52 @@ def load_lsp_servers(
         if not isinstance(entry, dict):
             errors.append(f"{prefix}: entry must be a JSON object — skipped")
             continue
+        # Everything that may carry a ``${NAME}`` reference is expanded here,
+        # in one block, before the checks that consume it — so an unresolved
+        # reference is reported by name *and* explains the shape error it
+        # causes below (an unset ``${ROOT}`` turns into a relative path, which
+        # would otherwise read like a typo in the file).
+        missing: List[str] = []
         command = argv_from_command(entry.get("command"), entry.get("args"))
         if command is None:
             errors.append(f"{prefix}: an LSP server needs a command — skipped")
             continue
+        command, names = expand_env_list(command)
+        missing.extend(names)
         env = str_map(entry.get("env"))
         if env is None:
             errors.append(f"{prefix}: env must be an object of string values — skipped")
             continue
+        env, names = expand_env_map(env)
+        missing.extend(names)
+        workspace_root = entry.get("workspaceRoot")
+        if isinstance(workspace_root, str):
+            workspace_root, names = expand_env(workspace_root)
+            missing.extend(names)
+        initialization_options = entry.get("initializationOptions")
+        if initialization_options is not None and not isinstance(
+            initialization_options, dict
+        ):
+            errors.append(
+                f"{prefix}: initializationOptions must be an object — skipped"
+            )
+            continue
+        initialization_options, names = expand_env_json(initialization_options)
+        missing.extend(names)
+        # Answers handed back to the server's own workspace/configuration
+        # requests, keyed by LSP section ('html.customData',
+        # 'vue.suggest.propNameCasing', …). Anything not listed is answered
+        # null, i.e. "not set", which is what the LSP spec prescribes and
+        # what makes a server's own ?? fallback land on its default.
+        settings = entry.get("settings")
+        if settings is not None and not isinstance(settings, dict):
+            errors.append(f"{prefix}: settings must be an object — skipped")
+            continue
+        settings, names = expand_env_json(settings)
+        missing.extend(names)
+        note = unresolved_env_note(prefix, missing)
+        if note is not None:
+            errors.append(note)
         extensions = entry.get("extensions")
         if extensions is None:
             extensions = []
@@ -91,7 +145,6 @@ def load_lsp_servers(
                 f"{prefix}: extensions must be a list of '.ext' strings — skipped"
             )
             continue
-        workspace_root = entry.get("workspaceRoot")
         if not isinstance(workspace_root, str) or not os.path.isabs(workspace_root):
             errors.append(f"{prefix}: workspaceRoot must be an absolute path — skipped")
             continue
@@ -104,23 +157,6 @@ def load_lsp_servers(
             for denied_entry in denied
         ):
             errors.append(f"{prefix}: workspaceRoot is on the deny-list — skipped")
-            continue
-        initialization_options = entry.get("initializationOptions")
-        if initialization_options is not None and not isinstance(
-            initialization_options, dict
-        ):
-            errors.append(
-                f"{prefix}: initializationOptions must be an object — skipped"
-            )
-            continue
-        # Answers handed back to the server's own workspace/configuration
-        # requests, keyed by LSP section ('html.customData',
-        # 'vue.suggest.propNameCasing', …). Anything not listed is answered
-        # null, i.e. "not set", which is what the LSP spec prescribes and
-        # what makes a server's own ?? fallback land on its default.
-        settings = entry.get("settings")
-        if settings is not None and not isinstance(settings, dict):
-            errors.append(f"{prefix}: settings must be an object — skipped")
             continue
         tools = entry.get("tools")
         if tools is not None and (

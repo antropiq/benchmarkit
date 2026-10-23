@@ -88,6 +88,31 @@ tool-calling loop of a single chat reply and is shared by all connectors and
 language servers. Without the extra installed everything keeps working — the
 MCP settings panel just shows an install hint.
 
+Any `url`, `command`, `headers` or `env` value may reference an environment
+variable as `${NAME}` (or `${NAME:-fallback}` when the variable is optional) —
+expanded when the file is read, so a per-machine path or an API key can live
+in the environment instead of in the file, and one declaration works on every
+checkout:
+
+```json
+{
+  "context7": {
+    "type": "remote",
+    "enable": true,
+    "url": "${MCP_BASE_URL:-https://mcp.context7.com/mcp}",
+    "headers": { "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}" }
+  }
+}
+```
+
+The environment is the process one, so anything exported before launch and
+everything in `.env` (loaded at startup) is available — `${HOME}`,
+`${CONTEXT7_API_KEY}`, … Only the braced `${…}` form is special, so a bare `$`
+stays literal and npm version pins (`pkg@$latest`) are untouched. An expansion
+never re-splits an argument, so a value containing spaces stays one argv
+element. An unset name is left written as-is and reported in the connector's
+validation note (visible in **Settings → MCP**) rather than silently blanked.
+
 ### 2. Build the frontend
 
 ```bash
@@ -108,6 +133,29 @@ ENDPOINT=my-model
 Sampling parameters, the question set, and the verifier agent are optional —
 see the comments in `.env.example`, or edit them later from the settings dialog
 in the UI.
+
+#### Tools working directory
+
+Both declaration files point their file-touching tools at a single folder
+through one environment variable, `BENCHMARKIT_PATH_LOCATION` (the
+`--root-dir` of the local connectors, and every `workspaceRoot`/`--tsdk` of the
+language servers). It is seeded at startup with the install directory, so a
+fresh checkout works with no configuration and moving the project needs no
+file edit.
+
+The **Settings → Working directory** field shows the live
+value; **Set** repoints the MCP and LSP tools at another folder and reloads
+them in one step (the same restart the refresh buttons do). The change is
+process-local on purpose: the next server start goes back to the install
+directory, so a remembered path can never break another machine's checkout.
+Export the variable (or set it in `.env`) to pin it permanently — an existing
+value is never overwritten. A folder must exist and must not sit under a
+`lsp_connectors/restricted-paths.txt` prefix, or the change is refused and
+nothing is restarted.
+
+Note the reference syntax: the closing brace goes right after the variable
+name, with the rest of the path outside it — `${BENCHMARKIT_PATH_LOCATION}/web`,
+never `${BENCHMARKIT_PATH_LOCATION/web}`.
 
 ### 4. Run
 

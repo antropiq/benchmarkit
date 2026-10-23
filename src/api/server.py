@@ -8,7 +8,13 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import RunState, build_router
-from src.config import ENV_PATH, load_dotenv_once, PROJECT_ROOT, questions_path
+from src.config import (
+    ENV_PATH,
+    load_dotenv_once,
+    PROJECT_ROOT,
+    questions_path,
+    setup_path_location,
+)
 from src.core.mcphub import McpManager, load_externals
 from src.core.lsphub import LspManager, all_servers
 from src.config import lsp_enabled_ids
@@ -19,6 +25,13 @@ WEB_DIST = PROJECT_ROOT / "web" / "dist"
 def create_app() -> FastAPI:
     """Build the FastAPI app: API routes first, static SPA fallback after."""
     load_dotenv_once()
+    # The working location the MCP connectors and language servers point at
+    # (``${BENCHMARKIT_PATH_LOCATION}`` in both declaration files) must exist
+    # before the very first scan of those files — which happens below, in the
+    # lifespan — so it is seeded here, right after the .env is read. Booting
+    # always lands on the install directory unless the environment already
+    # carries a value.
+    setup_path_location()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

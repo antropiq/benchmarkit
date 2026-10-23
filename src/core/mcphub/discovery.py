@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import constants
-from .validation import argv_from_command, str_map
+from .validation import (
+    argv_from_command,
+    expand_env,
+    expand_env_list,
+    expand_env_map,
+    str_map,
+    unresolved_env_note,
+)
 
 
 def mcp_installed() -> bool:
@@ -32,6 +39,13 @@ def load_externals(
     file-level error and no connectors. A single malformed entry is skipped
     with a per-entry note. Never raises. Entries keep their ``enable`` flag;
     the caller decides what to do with disabled ones.
+
+    ``url``, ``command``/``args``, ``headers`` and ``env`` may reference
+    environment variables as ``${NAME}`` (or ``${NAME:-fallback}``): they are
+    expanded here, once, so the rest of the package never sees a reference
+    and one declaration file works on every machine. An entry that references
+    an unset name is still loaded, with a note saying so (see
+    :func:`~mcphub.validation.expand_env`).
     """
     root = path or constants.EXTERNALS_PATH
     connectors: List[Dict[str, Any]] = []
@@ -55,6 +69,12 @@ def load_externals(
         if kind not in ("local", "remote"):
             errors.append(f"{prefix}: type must be \"local\" or \"remote\" — skipped")
             continue
+        # Every field that may carry a ``${NAME}`` reference is expanded here,
+        # in one block, *before* the shape checks below consume it — so a whole
+        # ``url`` can be an environment reference, and an unresolved name is
+        # reported by name before (and thereby explains) the shape error it
+        # causes. Values are read raw first, then checked after expansion.
+        missing: List[str] = []
         headers = str_map(entry.get("headers"))
         env = str_map(entry.get("env"))
         if headers is None or env is None:
@@ -62,10 +82,17 @@ def load_externals(
                 f"{prefix}: headers/env must be objects of string values — skipped"
             )
             continue
+        headers, names = expand_env_map(headers)
+        missing.extend(names)
+        env, names = expand_env_map(env)
+        missing.extend(names)
         endpoint = ""
         command: Optional[List[str]] = None
         if kind == "remote":
             url = entry.get("url")
+            if isinstance(url, str):
+                url, names = expand_env(url)
+                missing.extend(names)
             if not isinstance(url, str) or not url.lower().startswith(
                 ("http://", "https://")
             ):
@@ -81,6 +108,11 @@ def load_externals(
                     f"{prefix}: local connector needs a command — skipped"
                 )
                 continue
+            command, names = expand_env_list(command)
+            missing.extend(names)
+        note = unresolved_env_note(prefix, missing)
+        if note is not None:
+            errors.append(note)
         description = entry.get("description")
         connectors.append(
             {

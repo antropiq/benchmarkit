@@ -1,10 +1,19 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
 
-from src import config as app_config
-from src.config import load_endpoints_config, load_questions
+from src.config import (
+    PATH_LOCATION_KEY,
+    agent_instructions_block,
+    load_agent_instructions,
+    default_path_location,
+    load_endpoints_config,
+    load_questions,
+    path_location,
+    setup_path_location,
+)
 
 
 class TestLoadEndpointsConfig:
@@ -68,72 +77,91 @@ class TestLoadQuestions:
             load_questions(tmp_path / "nope.json")
 
 
-class TestAgentDoc:
-    """The user-scope chat agent document (XDG config dir)."""
+class TestPathLocation:
+    """The boot default of BENCHMARKIT_PATH_LOCATION (the hubs' working dir)."""
 
-    def _doc(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> Path:
-        directory = tmp_path / "xdg" / "benchmarkit"
-        directory.mkdir(parents=True)
-        path = directory / "AGENTS.md"
-        path.write_text(text, encoding="utf-8")
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        return path
+    def test_seeded_from_the_install_dir_when_unset(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv(PATH_LOCATION_KEY, raising=False)
+        setup_path_location()
+        assert os.environ[PATH_LOCATION_KEY] == default_path_location()
+        assert path_location() == default_path_location()
 
-    def test_dir_follows_xdg_config_home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        assert app_config.agent_doc_dir() == tmp_path / "xdg" / "benchmarkit"
-        assert app_config.agent_doc_path() == tmp_path / "xdg" / "benchmarkit" / "AGENTS.md"
+    def test_an_existing_value_wins(self, monkeypatch: pytest.MonkeyPatch):
+        # Exported by the launcher or written in .env: boot must not clobber
+        # it, which is what lets an operator pin the location.
+        monkeypatch.setenv(PATH_LOCATION_KEY, "/somewhere/else")
+        setup_path_location()
+        assert path_location() == "/somewhere/else"
 
-    def test_dir_falls_back_to_home_config(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-        expected = Path.home() / ".config" / "benchmarkit"
-        assert app_config.agent_doc_dir() == expected
+    def test_blank_value_is_treated_as_unset(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv(PATH_LOCATION_KEY, "   ")
+        setup_path_location()
+        assert path_location() == default_path_location()
 
-    def test_empty_xdg_falls_back_to_home_config(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("XDG_CONFIG_HOME", "  ")
-        assert app_config.agent_doc_dir() == Path.home() / ".config" / "benchmarkit"
+    def test_is_idempotent(self, monkeypatch: pytest.MonkeyPatch):
+        # create_app() runs per test; re-seeding must not drift the value.
+        monkeypatch.delenv(PATH_LOCATION_KEY, raising=False)
+        setup_path_location()
+        first = os.environ[PATH_LOCATION_KEY]
+        setup_path_location()
+        assert os.environ[PATH_LOCATION_KEY] == first
 
-    def test_missing_doc_loads_as_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "nothing"))
-        assert app_config.load_agent_doc() == ""
+    def test_read_live_after_an_api_style_change(self, monkeypatch: pytest.MonkeyPatch):
+        # The endpoint mutates os.environ directly; path_location() must see it
+        # without any reload, which is what makes the tool restart pick it up.
+        monkeypatch.setenv(PATH_LOCATION_KEY, "/before")
+        assert path_location() == "/before"
+        monkeypatch.setenv(PATH_LOCATION_KEY, "/after")
+        assert path_location() == "/after"
 
-    def test_doc_is_loaded_and_stripped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._doc(tmp_path, monkeypatch, "\n  never use pipes  \n")
-        assert app_config.load_agent_doc() == "never use pipes"
 
-    def test_env_var_overrides_location(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._doc(tmp_path, monkeypatch, "from xdg")
-        custom = tmp_path / "elsewhere.md"
-        custom.write_text("from override", encoding="utf-8")
-        monkeypatch.setenv("AGENT_DOC", str(custom))
-        assert app_config.load_agent_doc() == "from override"
+class TestAgentInstructions:
+    """The project instructions (AGENTS.md) injected into the Chat prompt."""
 
-    def test_env_var_can_disable_the_feature(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._doc(tmp_path, monkeypatch, "from xdg")
-        monkeypatch.setenv("AGENT_DOC", str(tmp_path / "absent.md"))
-        assert app_config.load_agent_doc() == ""
+    def test_reads_the_file_at_the_location_root(self, tmp_path: Path):
+        (tmp_path / "AGENTS.md").write_text("# rules\n\nUse pytest.\n", encoding="utf-8")
+        assert load_agent_instructions(str(tmp_path)) == "# rules\n\nUse pytest."
 
-    def test_oversized_doc_is_capped(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._doc(tmp_path, monkeypatch, "x" * (app_config.AGENT_DOC_MAX_BYTES + 500))
-        assert len(app_config.load_agent_doc()) == app_config.AGENT_DOC_MAX_BYTES
+    def test_missing_file_yields_empty(self, tmp_path: Path):
+        assert load_agent_instructions(str(tmp_path)) == ""
 
-    def test_unreadable_doc_degrades_to_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        # A directory where the document is expected must not raise out of chat.
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-        (tmp_path / "xdg").mkdir(parents=True)
-        (tmp_path / "xdg" / "benchmarkit").mkdir()
-        assert app_config.load_agent_doc() == ""
+    def test_unreadable_file_yields_empty(self, tmp_path: Path):
+        # A directory named AGENTS.md raises OSError: never propagate it, a
+        # chat request must work even when the lookup is broken.
+        (tmp_path / "AGENTS.md").mkdir()
+        assert load_agent_instructions(str(tmp_path)) == ""
 
-    def test_chat_sysprompt_appends_the_doc(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._doc(tmp_path, monkeypatch, "prefer fedit over sed")
-        prompt = app_config.chat_sysprompt("You are a helpful assistant.")
-        assert prompt.startswith("You are a helpful assistant.")
-        assert "prefer fedit over sed" in prompt
+    def test_resolves_the_location_live(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        # No explicit location: the working location is read at call time, so
+        # moving it through the settings dialog moves the lookup too.
+        (tmp_path / "AGENTS.md").write_text("from the env", encoding="utf-8")
+        monkeypatch.setenv(PATH_LOCATION_KEY, str(tmp_path))
+        assert load_agent_instructions() == "from the env"
 
-    def test_chat_sysprompt_unchanged_without_doc(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "nothing"))
-        assert app_config.chat_sysprompt("base prompt") == "base prompt"
+    def test_block_frames_the_text_with_the_project_root(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv(PATH_LOCATION_KEY, "/srv/proj")
+        block = agent_instructions_block("mind the conventions")
+        assert "The current project root is /srv/proj" in block
+        assert block.endswith("mind the conventions")
+        assert "AGENTS.md" in block
 
-    def test_empty_doc_leaves_sysprompt_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        self._doc(tmp_path, monkeypatch, "   \n\n  \n")
-        assert app_config.chat_sysprompt("base prompt") == "base prompt"
+    def test_block_is_empty_without_instructions(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        # No file (and no text) means the system prompt is left untouched.
+        monkeypatch.setenv(PATH_LOCATION_KEY, str(tmp_path))
+        assert agent_instructions_block() == ""
+        assert agent_instructions_block("   ") == ""
+
+    def test_block_reads_the_file_when_no_text_is_given(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        (tmp_path / "AGENTS.md").write_text("body text", encoding="utf-8")
+        monkeypatch.setenv(PATH_LOCATION_KEY, str(tmp_path))
+        assert agent_instructions_block().endswith("body text")
+
+    def test_a_renamed_file_is_not_picked_up(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        (tmp_path / "AGENTS.md").write_text("nope", encoding="utf-8")
+        monkeypatch.setattr("src.config.agent_instructions_filename", lambda: "OTHER.md")
+        monkeypatch.setenv(PATH_LOCATION_KEY, str(tmp_path))
+        assert load_agent_instructions() == ""

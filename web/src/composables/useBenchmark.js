@@ -51,6 +51,15 @@ const state = reactive({
   lspSaving: false,
   lspError: null,
   lspServersError: null, // lsp_servers.json validation errors from the backend
+  // Working location both hubs point at (${BENCHMARKIT_PATH_LOCATION} in
+  // externals.json and lsp_servers.json). ``pathLocation`` is what the input
+  // shows/edits, ``pathLocationCurrent`` the value the server confirmed — the
+  // Set button is enabled while the two differ.
+  pathLocation: '',
+  pathLocationCurrent: '',
+  pathLocationLoading: false,
+  pathLocationSaving: false,
+  pathLocationError: null,
 })
 
 let eventSource = null
@@ -427,10 +436,14 @@ export function useBenchmark() {
       state.lspEnabled = []
       state.lspError = null
       state.lspServersError = null
+      state.pathLocation = ''
+      state.pathLocationCurrent = ''
+      state.pathLocationError = null
       refreshModelLists()
       loadQuestionSets()
       loadMcp()
       loadLsp()
+      loadPathLocation()
     } catch (exc) {
       state.settingsError = `Could not reach the API: ${exc}`
     } finally {
@@ -719,6 +732,82 @@ export function useBenchmark() {
     }
   }
 
+  async function loadPathLocation() {
+    state.pathLocationLoading = true
+    state.pathLocationError = null
+    try {
+      const res = await fetch('/api/path-location')
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.pathLocationError = describeError(
+          body,
+          `Could not load the working location (${res.status})`,
+        )
+        return
+      }
+      state.pathLocationCurrent = body.path || ''
+      state.pathLocation = state.pathLocationCurrent
+    } catch (exc) {
+      state.pathLocationError = `Could not reach the API: ${exc}`
+    } finally {
+      state.pathLocationLoading = false
+    }
+  }
+
+  // Apply a new working location: the endpoint sets the env var and restarts
+  // both hubs in one call, so on return the MCP/LSP panels below already
+  // carry the post-restart statuses of the tools pointed at the new folder.
+  async function setPathLocation() {
+    if (state.pathLocationSaving) return
+    const next = (state.pathLocation || '').trim()
+    if (!next || next === state.pathLocationCurrent) return
+    state.pathLocationSaving = true
+    state.pathLocationError = null
+    try {
+      const res = await fetch('/api/path-location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: next }),
+      })
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.pathLocationError = describeError(
+          body,
+          `Could not set the working location (${res.status})`,
+        )
+        return
+      }
+      // The server canonicalises the path (realpath), so adopt what it stored
+      // rather than what was typed: field and Set button then agree.
+      state.pathLocationCurrent = body.path || ''
+      state.pathLocation = state.pathLocationCurrent
+      // The hubs just restarted: refresh both panels so the tool lists and
+      // status dots show the new location.
+      if (body.mcp) {
+        state.mcpInstalled = !!body.mcp.installed
+        state.mcpConnectors = body.mcp.connectors || []
+        state.mcpExternalsError = body.mcp.externalsError || null
+        state.mcpEnabled = state.mcpConnectors
+          .filter((connector) => connector.active)
+          .map((connector) => connector.id)
+        loadChatMcp()
+      }
+      if (body.lsp) {
+        state.lspInstalled = !!body.lsp.installed
+        state.lspServers = body.lsp.servers || []
+        state.lspServersError = body.lsp.serversError || null
+        state.lspEnabled = state.lspServers
+          .filter((server) => server.active)
+          .map((server) => server.id)
+        loadChatLsp()
+      }
+    } catch (exc) {
+      state.pathLocationError = `Could not reach the API: ${exc}`
+    } finally {
+      state.pathLocationSaving = false
+    }
+  }
+
   return {
     state,
     loadConfig,
@@ -738,5 +827,7 @@ export function useBenchmark() {
     loadLsp,
     toggleLsp,
     saveLsp,
+    loadPathLocation,
+    setPathLocation,
   }
 }

@@ -56,6 +56,20 @@ const signature = computed(() => {
   return `${blocks.value.length}:${reasoningChars.value}:${tail}`
 })
 const { onScroll } = useAutoScroll(list, signature)
+
+// Badge text: ``<tool>::<method>`` — the hub the call was routed to (MCP
+// connector id, or the language-server id for `lsp_<id>_<action>` tools)
+// then the callable name. Older payloads without a server fall back to the
+// bare method name. LSP tool names already carry their server id
+// (`lsp_vue_diagnostics`), so the redundant prefix is dropped there.
+function toolLabel(tool) {
+  if (!tool.server) return tool.tool
+  const namespaced = `lsp_${tool.server}_`
+  const method = tool.tool.startsWith(namespaced)
+    ? tool.tool.slice(namespaced.length)
+    : tool.tool
+  return `${tool.server}::${method}`
+}
 </script>
 
 <template>
@@ -80,7 +94,9 @@ const { onScroll } = useAutoScroll(list, signature)
             <span class="chat-tool-state" aria-hidden="true">
               {{ block.tool.state === 'running' ? '…' : block.tool.state === 'ok' ? '✓' : '✗' }}
             </span>
-            <span class="chat-tool-name">{{ block.tool.tool }}</span>
+            <span class="chat-tool-name">
+              {{ toolLabel(block.tool) }}
+            </span>
           </li>
           <li v-else class="chat-reasoning">
             {{ block.text }}
