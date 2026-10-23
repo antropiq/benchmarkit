@@ -10,6 +10,11 @@ const state = reactive({
   draft: { raw: '', html: '', renderedRaw: '' },
   // Image picked for the next message: { dataUrl, name, size } | null.
   pendingImage: null,
+  // Chat session stopwatch (rendered by ChatStopwatch): ms timestamp of when
+  // the running session started (0 = idle, so the clock reads 00:00:00).
+  // Covers the whole request — waiting, thinking and every MCP/LSP tool
+  // round — and is cleared when the reply ends, is stopped or errors out.
+  session: { startedAt: 0 },
   // Conversation-scoped MCP toggles (independent from the SettingsDialog):
   // the Settings-activated connectors snapshotted on tab entry, each ON by
   // default, frozen once the first message is accepted by the server.
@@ -267,10 +272,83 @@ function scheduleMarkdownRender() {
 }
 
 // Client-side mirror of the backend's estimate_completion_tokens() heuristic
-// (~4 chars/token), used for the live badges and abort fallbacks. Also used
-// on whole message histories to estimate a round's prompt cost.
-export function estimateCompletionTokens(text) {
-  return Math.ceil(text.length / 4)
+// (~4 chars/token): feeds the live tok/s badge and the abort fallbacks.
+function estimateTokens(count) {
+  return Math.ceil(Math.max(count, 0) / 4)
+}
+
+// Characters this reply generated and the client can actually see: answer text
+// (`raw`, minus the tool-line sentinels it only carries for rendering) plus
+// streamed thinking. Tool-call arguments never reach the client, so they are
+// only ever counted through the server's exact `usage` figures.
+function generatedChars(message) {
+  const answer = (message.raw ?? '').split(TOOL_LINE_MARKER).join('').length
+  return answer + (message.reasoningChars ?? 0)
+}
+
+// Generated text produced AFTER the last `usage` baseline: what the live
+// badges and the abort fallback must still add on top of the exact figures.
+function estimateGeneratedTail(message) {
+  const generated = generatedChars(message) - (message.usageGeneratedChars || 0)
+  return estimateTokens(generated)
+}
+
+// Every generated chunk (answer text or thinking delta) opens/extends the
+// generation window, mirroring the backend (see stream_chat): thinking deltas
+// are generated tokens too, so a reasoning phase is neither free to the
+// numerator nor to the tok/s denominator — which is what keeps the speed badge
+// ticking while the model thinks instead of freezing it on the previous reply.
+function noteGenerated(assistant) {
+  const now = Date.now()
+  if (!assistant.windowStartAt) assistant.windowStartAt = now
+  assistant.lastTokenAt = now
+}
+
+// Closes the open generation window so what follows it (tool execution, the
+// re-prefill of the next round) stays out of the measured seconds. Called on
+// `tool_call` / `usage` and when the reply ends; the next generated chunk
+// opens a fresh window.
+function closeGenerationWindow(assistant) {
+  if (!assistant.windowStartAt) return
+  assistant.generatedSeconds +=
+    Math.max((assistant.lastTokenAt || 0) - assistant.windowStartAt, 0) / 1000
+  assistant.windowStartAt = 0
+}
+
+// Seconds of generation measured client-side: every closed window plus the one
+// still open, ended at the last chunk seen — so an idle gap inside the stream
+// never inflates the live denominator.
+function measuredSeconds(message) {
+  const open = message.windowStartAt
+    ? Math.max((message.lastTokenAt || 0) - message.windowStartAt, 0) / 1000
+    : 0
+  return (message.generatedSeconds || 0) + open
+}
+
+// Live tok/s of a streaming reply, as `{ value, estimated }` or null.
+// Preferred basis: the server's cumulative exact figures from the last `usage`
+// frame (completion tokens — thinking and tool arguments included — over the
+// summed decode seconds), extended by whatever arrived since: those tokens are
+// char-estimated (flagging the result), and their seconds come from the
+// client-measured generation windows, so the tool loop's dead time stays out
+// of the rate. With no `usage` in the payload at all the whole reply is
+// measured client-side — answer text AND thinking over their own windows.
+export function liveTokenRate(message) {
+  if (!message) return null
+  const seconds = measuredSeconds(message)
+  if (message.usageTokens > 0 && message.usageDecode > 0) {
+    const tail = estimateGeneratedTail(message)
+    const tailSeconds = Math.max(seconds - (message.usageGeneratedSeconds || 0), 0)
+    const secs = message.usageDecode + tailSeconds
+    if (secs <= 0) return null
+    return {
+      value: (message.usageTokens + tail) / secs,
+      estimated: tail > 0,
+    }
+  }
+  const tokens = estimateTokens(generatedChars(message))
+  if (seconds <= 0 || tokens <= 0) return null
+  return { value: tokens / seconds, estimated: true }
 }
 
 export function conversationMarkdown(messages) {
@@ -331,9 +409,7 @@ function applyEvent(name, data, assistant) {
         assistant.raw += assistant.raw ? `\n\n${TOOL_LINE_MARKER}` : TOOL_LINE_MARKER
       }
       assistant.raw += data.text ?? ''
-      const now = Date.now()
-      if (!assistant.firstTokenAt) assistant.firstTokenAt = now
-      assistant.lastTokenAt = now
+      noteGenerated(assistant)
       scheduleMarkdownRender()
       break
     }
@@ -364,6 +440,10 @@ function applyEvent(name, data, assistant) {
       // Same reactive object in the panel timeline, at its chronological
       // slot: reasoning text flows around the badges, tool_result state
       // flips still re-render the badge in place.
+      // The round's generation is over: close the client-side window so the
+      // tool execution (which can take tens of seconds) never enters the
+      // live tok/s denominator.
+      closeGenerationWindow(assistant)
       assistant.blocks.push({
         kind: 'tool',
         tool: assistant.tools[assistant.tools.length - 1],
@@ -381,8 +461,13 @@ function applyEvent(name, data, assistant) {
       // exact baseline (never double-counted, never missed).
       assistant.usageTokens = data.tokens ?? assistant.usageTokens
       assistant.usageDecode = data.decode ?? assistant.usageDecode
-      assistant.usageRawLen = assistant.raw.length
-      assistant.usageAt = Date.now()
+      // Close the window opened by this round's chunks before snapshotting, so
+      // both baselines match the server's exact figures: what arrives after
+      // this frame is the only thing later estimates add on top (answer text
+      // AND thinking — never double-counted, never missed).
+      closeGenerationWindow(assistant)
+      assistant.usageGeneratedChars = generatedChars(assistant)
+      assistant.usageGeneratedSeconds = measuredSeconds(assistant)
       // Occupancy of the round that just ended: the tool loop refreshes the
       // context badge between rounds, right when generation stops.
       if (typeof data.contextTokens === 'number' && data.contextTokens > 0) {
@@ -406,13 +491,6 @@ function applyEvent(name, data, assistant) {
       if (state.phase === 'waiting' || state.phase === 'reasoning') {
         state.phase = 'reasoning'
       }
-      // Deliberately NOT anchoring firstTokenAt here: the client-side live
-      // estimate only ever sees answer text, so its numerator can never
-      // include thinking tokens — anchoring the window on the thinking
-      // start would divide answer-only tokens by thinking + answering time
-      // and underestimate. The exact accounting (thinking tokens AND time)
-      // arrives via the backend's usage/done events, which open the decode
-      // window on reasoning deltas server-side.
       break
     case 'reasoning_delta': {
       // Thinking text, streamed live: appended to the panel timeline. A
@@ -425,6 +503,11 @@ function applyEvent(name, data, assistant) {
       const last = blocks[blocks.length - 1]
       if (last && last.kind === 'reasoning') last.text += text
       else blocks.push({ kind: 'reasoning', text })
+      // Thinking is generated text the client DOES see: it feeds the live
+      // tok/s numerator and keeps the measurement window open, so a long
+      // reasoning phase ticks the speed badge instead of freezing it.
+      assistant.reasoningChars += text.length
+      noteGenerated(assistant)
       break
     }
     case 'error':
@@ -459,17 +542,18 @@ function finish(assistant) {
   // conversation totals stable — exact cumulative tokens from the last
   // `usage` event (covers every completed tool round, reasoning and tool
   // arguments included) plus the ~4 chars/token heuristic on the answer
-  // text streamed since then, flagged as estimated.
+  // text AND thinking streamed since then, flagged as estimated.
   if (!assistant.tokens) {
     const carried = assistant.usageTokens || 0
-    const tail = estimateCompletionTokens(
-      assistant.raw.slice(assistant.usageRawLen || 0),
-    )
+    const tail = estimateGeneratedTail(assistant)
     if (carried + tail > 0) {
       assistant.tokens = carried + tail
       assistant.tokensEstimated = true
     }
   }
+  // Freeze the measurement window: a finished reply's live rate is never
+  // recomputed, and the badge falls back to the server's exact figures.
+  closeGenerationWindow(assistant)
   // Stop/abort mid tool-execution: no tool_result will ever arrive, so never
   // leave a badge stuck on the pulsing "running" state in the tool panel.
   for (const tool of assistant.tools ?? []) {
@@ -477,6 +561,7 @@ function finish(assistant) {
   }
   assistant.streaming = false
   state.phase = 'idle'
+  state.session.startedAt = 0
   controller = null
 }
 
@@ -533,14 +618,18 @@ export function useChat() {
       took: 0,
       ttft: 0,
       tokensEstimated: false,
-      firstTokenAt: 0,
+      // Client-side generation timing (see noteGenerated/measuredSeconds):
+      // summed seconds of the closed windows, plus the open window's bounds.
+      generatedSeconds: 0,
+      windowStartAt: 0,
       lastTokenAt: 0,
       mcpIteration: 0, // server tool-loop position (gauge)
       mcpMax: 0, // MAX_TOOL_ITERATION reported by the server
       usageTokens: 0, // cumulative completion tokens per `usage` event
       usageDecode: 0, // cumulative decode seconds per `usage` event
-      usageRawLen: 0, // raw.length at the last `usage` event (estimate baseline)
-      usageAt: 0, // client clock at the last `usage` event (live-rate anchor)
+      reasoningChars: 0, // chars of streamed thinking (live tok/s numerator)
+      usageGeneratedChars: 0, // generated chars at the last `usage` baseline
+      usageGeneratedSeconds: 0, // client-measured seconds at that same baseline
       decode: 0, // cumulative decode seconds from the `done` event
       contextTokens: 0, // LAST round's prompt + completion = context occupancy
       contextEstimated: false, // occupancy figure involves a char estimate
@@ -550,6 +639,7 @@ export function useChat() {
     activeMessage = assistant
 
     state.phase = 'waiting'
+    state.session.startedAt = Date.now()
     controller = new AbortController()
     try {
       const payload = { messages: history }

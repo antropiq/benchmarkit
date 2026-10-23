@@ -1217,6 +1217,35 @@ body {
   gap: 0.5rem;
 }
 
+/* Session stopwatch (ChatStopwatch.vue), sitting under the action buttons.
+   Monospace tabular digits inside a pill, sized to the badges above so the
+   right-hand column reads as one stack. Idle is muted; a running session
+   takes the same violet the chat status uses. Only theme variables are used,
+   so it follows the light/dark palette on its own. */
+.chat-stopwatch {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--bi-border);
+  border-radius: 999px;
+  background-color: var(--bi-surface);
+  text-align: center;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  color: var(--pico-muted-color);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-stopwatch--running {
+  color: var(--bi-violet);
+  border-color: color-mix(in srgb, var(--bi-violet) 40%, transparent);
+}
+
 /* Container holding the memory-bullet row and the textarea below it, so the
    bullets stay centered over the textarea itself rather than the whole input
    row. Vertical spacing is pinned to 2px (gap, plus no padding/margin on

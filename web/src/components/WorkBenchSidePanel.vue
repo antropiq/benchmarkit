@@ -1,11 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
-import {
-  conversationMarkdown,
-  estimateCompletionTokens,
-  useChat,
-} from '../composables/useChat'
+import { conversationMarkdown, liveTokenRate, useChat } from '../composables/useChat'
 import { useBenchmark } from '../composables/useBenchmark'
+import ChatStopwatch from './ChatStopwatch.vue'
 
 const props = defineProps({
   canSend: { type: Boolean, default: false },
@@ -52,50 +49,17 @@ function exactRate(message) {
 
 const rate = computed(() => {
   const active = streamingMessage.value
-  if (active && !active.tokens) {
-    // MCP tool loop: cumulative usage from the last `usage` event — exact
-    // tokens over the exact decode window (reasoning and tool-argument
-    // tokens included), so tool execution time never enters the rate.
-    if (active.usageTokens > 0 && active.usageDecode > 0) {
-      return {
-        value: active.usageTokens / active.usageDecode,
-        estimated: false,
-      }
+  if (active) {
+    // `done` already arrived but the stream is still closing: exact figures.
+    if (active.tokens) {
+      const value = exactRate(active)
+      if (value !== null) return { value, estimated: active.tokensEstimated }
     }
-    // Answer text streaming: continue from the usage baseline when tool
-    // rounds ran (exact tokens + decode so far, extended by the estimated
-    // tail over the client-measured window), else pure client estimate
-    // over the answer window only — thinking tokens are unknown to the
-    // client, so the window starts at the first answer token too.
-    if (
-      state.phase === 'answering' &&
-      active.firstTokenAt &&
-      active.lastTokenAt > active.firstTokenAt
-    ) {
-      const tail = estimateCompletionTokens(
-        active.raw.slice(active.usageRawLen || 0),
-      )
-      if (active.usageTokens > 0 && active.usageAt) {
-        return {
-          value:
-            (active.usageTokens + tail) /
-            (active.usageDecode +
-              (active.lastTokenAt - active.usageAt) / 1000),
-          estimated: false,
-        }
-      }
-      const secs = (active.lastTokenAt - active.firstTokenAt) / 1000
-      return {
-        value: estimateCompletionTokens(active.raw) / secs,
-        estimated: true,
-      }
-    }
-  } else if (active && active.tokens) {
-    // done received but the stream is still closing: show the exact rate.
-    const value = exactRate(active)
-    if (value !== null) {
-      return { value, estimated: active.tokensEstimated }
-    }
+    // Still generating: the live rate covers the reasoning phase as well as
+    // the answer (see liveTokenRate), so the badge ticks while the model
+    // thinks instead of freezing on the previous reply's figure.
+    const live = liveTokenRate(active)
+    if (live) return live
   }
   const finished = [...state.messages]
     .reverse()
@@ -345,5 +309,6 @@ function restart() {
         </svg>
       </button>
     </div>
+    <ChatStopwatch />
   </aside>
 </template>

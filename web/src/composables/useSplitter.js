@@ -1,7 +1,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const STORAGE_KEY = 'benchmarkit:chatSplit'
-const MIN_INPUT_HEIGHT = 90
+// Enough room for the whole input column stack: the badges row, the action
+// buttons and the session stopwatch under them (plus the memory bullets and
+// a one-line textarea) — anything smaller would clip the stopwatch.
+const MIN_INPUT_HEIGHT = 124
 const MIN_OUTPUT_HEIGHT = 160
 const KEYBOARD_STEP = 24
 
