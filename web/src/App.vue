@@ -6,7 +6,7 @@ import MetricCard from './components/MetricCard.vue'
 import RunControls from './components/RunControls.vue'
 import Chronometer from './components/Chronometer.vue'
 import StreamPanel from './components/StreamPanel.vue'
-import ChatView from './components/ChatView.vue'
+import WorkBenchView from './components/WorkBenchView.vue'
 import { useBenchmark } from './composables/useBenchmark'
 
 const { state, loadConfig, start, stop } = useBenchmark()
@@ -103,5 +103,5 @@ const scorePercent = computed(() =>
     </section>
   </main>
 
-  <ChatView v-show="state.activeTab === 'chat'" />
+  <WorkBenchView v-show="state.activeTab === 'chat'" />
 </template>

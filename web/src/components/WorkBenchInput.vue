@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import ChatLspPanel from './ChatLspPanel.vue'
-import ChatMcpPanel from './ChatMcpPanel.vue'
-import ChatSidePanel from './ChatSidePanel.vue'
+import WorkBenchLspPanel from './WorkBenchLspPanel.vue'
+import WorkBenchMcpPanel from './WorkBenchMcpPanel.vue'
+import WorkBenchSidePanel from './WorkBenchSidePanel.vue'
 import MemoryBullets from './MemoryBullets.vue'
 import RegistrationMemoryDlg from './RegistrationMemoryDlg.vue'
 import { useChat } from '../composables/useChat'
@@ -25,7 +25,7 @@ function openBulletDialog(index) {
 
 // The left toggle column (MCP beside LSP) only takes horizontal space when
 // at least one of the two panels has something to show - mirrors the
-// per-panel `visible` conditions inside ChatMcpPanel/ChatLspPanel.
+// per-panel `visible` conditions inside WorkBenchMcpPanel/WorkBenchLspPanel.
 const mcpVisible = computed(
   () => state.mcp.loaded && state.mcp.connectors.length > 0,
 )
@@ -34,7 +34,7 @@ const lspVisible = computed(
 )
 const showToggleCol = computed(() => mcpVisible.value || lspVisible.value)
 // With only one of the two panels rendered the column shrinks to a single
-// panel — ChatToolPanel mirrors this so the two rows stay aligned.
+// panel — WorkBenchToolPanel mirrors this so the two rows stay aligned.
 const singlePanel = computed(() => mcpVisible.value !== lspVisible.value)
 
 const streaming = computed(() => state.phase !== 'idle')
@@ -65,8 +65,8 @@ function onKeydown(event) {
       class="chat-toggle-col"
       :class="{ 'chat-toggle-col--single': singlePanel }"
     >
-      <ChatMcpPanel />
-      <ChatLspPanel />
+      <WorkBenchMcpPanel />
+      <WorkBenchLspPanel />
     </div>
     <div class="chat-textarea-col">
       <MemoryBullets @configure="openBulletDialog" />
@@ -76,7 +76,7 @@ function onKeydown(event) {
         class="chat-textarea"
         rows="3"
         placeholder="Ask the model something… (Enter to send, Shift+Enter for a new line)"
-        :aria-label="streaming ? 'Chat input (reply streaming)' : 'Chat input'"
+        :aria-label="streaming ? 'WorkBench input (reply streaming)' : 'WorkBench input'"
         @input="setDraft($event.target.value)"
         @keydown="onKeydown"
       ></textarea>
@@ -86,7 +86,7 @@ function onKeydown(event) {
       :index="dialogIndex"
       @close="dialogOpen = false"
     />
-    <ChatSidePanel
+    <WorkBenchSidePanel
       :can-send="canSend"
       :streaming="streaming"
       @send="submit"

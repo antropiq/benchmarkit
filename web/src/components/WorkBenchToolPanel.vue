@@ -36,7 +36,7 @@ const gaugeValue = computed(() => lastAssistant.value?.mcpIteration ?? 0)
 const gaugeMax = computed(() => lastAssistant.value?.mcpMax ?? 0)
 
 // Width follows the input row's toggle column below (same `visible`
-// conditions as ChatInput.vue): two panels wide only when both the MCP and
+// conditions as WorkBenchInput.vue): two panels wide only when both the MCP and
 // the LSP panel are rendered, one panel wide when just one of them is, and
 // one panel wide when neither is (no column to align with).
 const singlePanel = computed(

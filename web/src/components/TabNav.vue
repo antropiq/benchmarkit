@@ -23,10 +23,10 @@ const { state, setTab } = useBenchmark()
       :class="{ active: state.activeTab === 'chat' }"
       :aria-selected="state.activeTab === 'chat'"
       :disabled="state.status === 'running'"
-      :title="state.status === 'running' ? 'Available when the benchmark is idle' : 'Chat'"
+      :title="state.status === 'running' ? 'Available when the benchmark is idle' : 'WorkBench'"
       @click="setTab('chat')"
     >
-      Chat
+      WorkBench
     </button>
   </nav>
 </template>

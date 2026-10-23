@@ -1,14 +1,14 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import ChatInput from './ChatInput.vue'
-import ChatToolPanel from './ChatToolPanel.vue'
+import WorkBenchInput from './WorkBenchInput.vue'
+import WorkBenchToolPanel from './WorkBenchToolPanel.vue'
 import ImageLightbox from './ImageLightbox.vue'
 import MarkdownStream from './MarkdownStream.vue'
-import { humanFileSize, useChat } from '../composables/useChat'
-import { useMemory } from '../composables/useMemory'
-import { useAutoScroll } from '../composables/useAutoScroll'
-import { useBenchmark } from '../composables/useBenchmark'
-import { useSplitter } from '../composables/useSplitter'
+import { humanFileSize, useChat } from '../composables/useChat.js'
+import { useMemory } from '../composables/useMemory.js'
+import { useAutoScroll } from '../composables/useAutoScroll.js'
+import { useBenchmark } from '../composables/useBenchmark.js'
+import { useSplitter } from '../composables/useSplitter.js'
 
 const { state, editLast, clearImage, loadChatLsp, loadChatMcp } = useChat()
 const { state: benchmarkState, loadConfig } = useBenchmark()
@@ -71,11 +71,11 @@ const {
 <template>
   <div ref="shell" class="chat-shell">
     <div class="chat-stream-row" :style="topStyle">
-      <ChatToolPanel />
+      <WorkBenchToolPanel />
       <div
         ref="panel"
         class="chat-output stream-panel"
-        aria-label="Chat conversation"
+        aria-label="WorkBench conversation"
         @scroll.passive="onScroll"
       >
         <template v-for="(message, i) in state.messages" :key="i">
@@ -199,7 +199,7 @@ const {
       @dblclick="onDoubleClick"
     ></div>
 
-    <ChatInput ref="input" :style="bottomStyle" />
+    <WorkBenchInput ref="input" :style="bottomStyle" />
 
     <ImageLightbox :image="preview" @close="preview = null" />
   </div>

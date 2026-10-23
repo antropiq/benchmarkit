@@ -5,7 +5,7 @@ const state = reactive({
   messages: [], // { role, raw, html, streaming, images } in conversation order
   phase: 'idle', // idle | waiting | reasoning | answering
   error: null,
-  // Composer draft mirrored as rendered markdown so ChatView can preview the
+  // Composer draft mirrored as rendered markdown so WorkBenchView can preview the
   // exact HTML that send() will attach to the user message (no re-parse).
   draft: { raw: '', html: '', renderedRaw: '' },
   // Image picked for the next message: { dataUrl, name, size } | null.
@@ -66,7 +66,7 @@ function setDraft(text) {
   }, 200)
 }
 
-// Composer textarea, registered by ChatInput so draft insertions (memory
+// Composer textarea, registered by WorkBenchInput so draft insertions (memory
 // bullets) can focus it after appending.
 let draftInputEl = null
 
@@ -323,7 +323,7 @@ function applyEvent(name, data, assistant) {
       // Tool-loop continuation: the first token after a tool_result opens a
       // fresh line prefixed with the tool icon (sentinel replaced at render
       // time by lib/markdown.js, after a blank line) so each post-tool
-      // message starts on its own line in ChatView instead of running onto
+      // message starts on its own line in WorkBenchView instead of running onto
       // the previous round's text. Flag consumed once per tool round (the
       // round's later tokens keep flowing on that icon line).
       if (assistant.pendingStreamQuote) {
@@ -397,7 +397,7 @@ function applyEvent(name, data, assistant) {
         tool.resultPreview = data.preview ?? ''
       }
       // Arm the tool-icon line prefix: the next round's first streamed token
-      // starts on a fresh line in ChatView (see the 'token' case).
+      // starts on a fresh line in WorkBenchView (see the 'token' case).
       assistant.pendingStreamQuote = true
       break
     }
@@ -527,7 +527,7 @@ export function useChat() {
       tools: [], // MCP tool calls: { id, tool, server, preview, state, resultPreview }
       blocks: [], // panel timeline: { kind: 'reasoning', text } | { kind: 'tool', tool }
       // true between a tool_result and the next round's first answer token:
-      // the token case then opens a tool-icon line in ChatView.
+      // the token case then opens a tool-icon line in WorkBenchView.
       pendingStreamQuote: false,
       tokens: 0,
       took: 0,

@@ -232,7 +232,7 @@ function serverDetail(server) {
               Endpoint supports image input (vision)
             </label>
             <p class="caption">
-              Enables the image attach button in the Chat tab. Only check it
+              Enables the image attach button in the WorkBench tab. Only check it
               when the model accepts image input; GIFs are sent as their first
               frame.
             </p>
@@ -350,7 +350,7 @@ function serverDetail(server) {
               Every connector is declared in
               <code>mcp_connectors/externals.json</code>; connected ones start
               with the app and stop when it quits. Activated connectors add
-              their tools to the Chat tab only — benchmark runs never use them.
+              their tools to the WorkBench tab only — benchmark runs never use them.
               Toggling one updates its <code>enable</code> flag in that file and
               starts or stops it right away (local connectors launched through
               <code>npx</code> may take a few seconds to run).
@@ -413,7 +413,7 @@ function serverDetail(server) {
               Language servers start with the app (entries marked
               <code>lazy</code> spawn on their first tool call) and stop when
               it quits. Activated servers add their <code>lsp_*</code> tools
-              to the Chat tab only — benchmark runs never use them. Toggling
+              to the WorkBench tab only — benchmark runs never use them. Toggling
               one updates <code>lsp_connectors/lsp_servers.json</code> and
               starts or stops it right away. Both gates must agree: the
               switch here and the entry's <code>enable</code> flag.
