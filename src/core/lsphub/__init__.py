@@ -32,7 +32,7 @@ discovery and the settings panel keep working when the optional ``[lsp]``
 extra is not installed.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .actions import fetch_diagnostics, position, run_action, sync_document, workspace_symbols
 from . import constants
@@ -94,6 +94,35 @@ from .tools import (
     tool_name_for,
     tools_for_server,
 )
+
+# Make the constants re-exported through ``__getattr__`` visible to type
+# checkers (they appear in ``__all__`` and are readable as ``lsphub.X``).
+# These imports are never executed at runtime, so the names are still
+# resolved dynamically by ``__getattr__`` and stay patchable on
+# ``lsphub.constants``.
+if TYPE_CHECKING:
+    from .constants import (
+        DEFAULT_IDLE_SHUTDOWN_SECONDS,
+        DEFAULT_MAX_DIAGNOSTICS,
+        DIAGNOSTICS_WAIT_SECONDS,
+        INIT_TIMEOUT,
+        LSP_CONNECTORS_DIR,
+        LSP_LOGS_DIR,
+        LSP_MISSING_HINT,
+        LSP_RESTRICTED_PATHS,
+        LSP_SERVERS_PATH,
+        MAX_DOCUMENT_BYTES,
+        MAX_RESULT_CHARS,
+        PROJECT_CONFIG_NAMES,
+        PROJECT_ROOT,
+        REAPER_INTERVAL_SECONDS,
+        REQUEST_TIMEOUT,
+        STOP_GRACE_SECONDS,
+        TSSERVER_COMMAND_PREFIX,
+        TSSERVER_PROJECT_INFO,
+        TSSERVER_REQUEST,
+        TSSERVER_RESPONSE,
+    )
 
 __all__ = [
     "DEFAULT_IDLE_SHUTDOWN_SECONDS",

@@ -113,6 +113,8 @@ class TestEndpointsConfig:
             "presence_penalty": 0.0,
             "reasoning_effort": "low",
         }
+        # The validated document carries a verifierAgent entry.
+        assert cfg.verifierAgent is not None
         assert cfg.verifierAgent.endpoint == "strata"
         assert cfg.verifierAgent.serverUrl == "http://192.168.1.4:8080/v1"
 
@@ -166,6 +168,8 @@ class TestFromEnv:
         })
         assert cfg.serverUrl == "http://host:8080/v1"
         assert cfg.model_list() == ["model-a"]
+        # The env carries the VERIFIER_AGENT_* block.
+        assert cfg.verifierAgent is not None
         assert cfg.temperature == 0.2
         assert cfg.top_k == 20
         assert cfg.reasoning_effort == "low"
@@ -190,6 +194,8 @@ class TestFromEnv:
             "VERIFIER_AGENT_ENDPOINT": "strata",
         })
         assert cfg.apiKey == "sk-target"
+        # The VERIFIER_AGENT_* keys create the verifier entry.
+        assert cfg.verifierAgent is not None
         assert cfg.verifierAgent.apiKey == "sk-judge"
 
     def test_verifier_created_from_key_only(self):

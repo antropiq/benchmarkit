@@ -22,7 +22,7 @@ The heavy ``mcp`` package is imported lazily so discovery and formatting
 keep working when the optional ``[mcp]`` extra is not installed.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import constants
 from .discovery import load_externals, mcp_installed, set_externals_enabled
@@ -30,6 +30,23 @@ from .formatting import extract_tool_result_text, tools_to_openai_format
 from .manager import McpManager
 from .process import connector_environment
 from .validation import argv_from_command, str_map
+
+# Make the constants re-exported through ``__getattr__`` visible to type
+# checkers (they appear in ``__all__`` and are readable as ``mcphub.X``).
+# These imports are never executed at runtime, so the names are still
+# resolved dynamically by ``__getattr__`` and stay patchable on
+# ``mcphub.constants``.
+if TYPE_CHECKING:
+    from .constants import (
+        CONNECT_INTERVAL,
+        CONNECT_RETRIES,
+        CONNECTORS_MISSING_HINT,
+        EXTERNALS_PATH,
+        EXTERNAL_CONNECT_RETRIES,
+        MCP_CONNECTORS_DIR,
+        PROJECT_ROOT,
+        STOP_GRACE_SECONDS,
+    )
 
 _MISSING = object()
 

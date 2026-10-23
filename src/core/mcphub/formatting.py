@@ -23,11 +23,20 @@ def tools_to_openai_format(tools: List[Any]) -> List[Dict[str, Any]]:
     ]
 
 
+# One content block of a CallToolResult: normally a typed object, but a plain
+# dict carries the same fields when the result came back un-modelled.
+def _content_text(item: Any) -> str:
+    """The ``text`` field of one content block, whatever its shape."""
+    if isinstance(item, dict):
+        return str(item.get("text", ""))
+    return str(getattr(item, "text", ""))
+
+
 def extract_tool_result_text(result: Any, max_length: int = 120_000) -> str:
     """Extract plain text from an MCP CallToolResult, truncating if needed."""
     if getattr(result, "is_error", False):
         error_texts = [
-            item.text if hasattr(item, "text") else item.get("text", "")
+            _content_text(item)
             for item in result.content
             if hasattr(item, "text") or (isinstance(item, dict) and "text" in item)
         ]

@@ -10,8 +10,9 @@ Usage:
 """
 
 import argparse
+import inspect
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from mcp.server import Server
@@ -20,6 +21,7 @@ from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
     ListToolsResult,
+    ContentBlock,
     TextContent,
     Tool,
 )
@@ -111,8 +113,8 @@ async def get_page():
         await _page.route("**/*", block_restricted_routes)
         # Set a shorter default timeout to prevent long hangs
         # (sync in playwright >= 1.63, coroutine in older versions)
-        timeout_result = _page.set_default_timeout(10000)
-        if hasattr(timeout_result, "__await__"):
+        timeout_result: object = _page.set_default_timeout(10000)
+        if inspect.isawaitable(timeout_result):
             await timeout_result
     return _page
 
@@ -135,7 +137,7 @@ TOOLS = [
     Tool(
         name="browser_navigate",
         description="Navigate to a URL in the browser.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "url": {"type": "string", "description": "The URL to navigate to."},
@@ -146,7 +148,7 @@ TOOLS = [
     Tool(
         name="browser_screenshot",
         description="Take a screenshot of the current page.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "full_page": {
@@ -161,7 +163,7 @@ TOOLS = [
     Tool(
         name="browser_click",
         description="Click an element on the page by its CSS selector.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "selector": {
@@ -175,7 +177,7 @@ TOOLS = [
     Tool(
         name="browser_type",
         description="Type text into an input element.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "selector": {
@@ -198,7 +200,7 @@ TOOLS = [
     Tool(
         name="browser_get_text",
         description="Get the text content of an element or the whole page.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "selector": {
@@ -214,7 +216,7 @@ TOOLS = [
     Tool(
         name="browser_evaluate",
         description="Execute JavaScript in the page context and return the result.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "expression": {
@@ -228,7 +230,7 @@ TOOLS = [
     Tool(
         name="browser_select_option",
         description="Select an option in a <select> element.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "selector": {
@@ -246,7 +248,7 @@ TOOLS = [
     Tool(
         name="browser_press_key",
         description="Press a keyboard key.",
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "key": {
@@ -260,27 +262,27 @@ TOOLS = [
     Tool(
         name="browser_scroll_down",
         description="Scroll the page down by one viewport.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
     Tool(
         name="browser_scroll_up",
         description="Scroll the page up by one viewport.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
     Tool(
         name="browser_go_back",
         description="Navigate back in browser history.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
     Tool(
         name="browser_go_forward",
         description="Navigate forward in browser history.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
     Tool(
         name="browser_close",
         description="Close the browser and end the session.",
-        inputSchema={"type": "object", "properties": {}},
+        input_schema={"type": "object", "properties": {}},
     ),
 ]
 
@@ -388,7 +390,7 @@ async def on_list_tools(ctx, params) -> ListToolsResult:
 
 async def on_call_tool(ctx, params: CallToolRequestParams) -> CallToolResult:
     content = await call_tool(params.name, params.arguments or {})
-    return CallToolResult(content=content)
+    return CallToolResult(content=cast(list[ContentBlock], content))
 
 
 server = Server(

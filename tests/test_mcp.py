@@ -756,6 +756,10 @@ def usage_chunk(completion=None, prompt=None, total=None):
 
 
 class TestChatToolLoop:
+    # Declared here so the fake `completion` below can record the tool
+    # definitions it was handed (also satisfies the type checker).
+    tools_arg: Optional[List[Dict[str, Any]]] = None
+
     def _run(self, monkeypatch, completions, executor=None, **kwargs):
         calls: List[List[Dict[str, Any]]] = []
         generators = iter(completions)
@@ -944,7 +948,10 @@ class TestChatToolLoop:
         assert done["contextEstimated"] is False
 
     def test_iteration_cap_stops_with_note(self, monkeypatch):
-        forever = [[tool_call_chunk(f"c{i}", "execute_command", "{}")] for i in range(5)]
+        # Loose element type: the rounds mix tool-call and content chunk shapes.
+        forever: List[List[Any]] = [
+            [tool_call_chunk(f"c{i}", "execute_command", "{}")] for i in range(5)
+        ]
         forever.append([content_chunk("never reached")])
         events, calls = self._run(
             monkeypatch,

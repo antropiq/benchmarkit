@@ -225,7 +225,10 @@ def stream_chat(
         if use_tools:
             kwargs["tools"] = tools
         try:
-            response_generator = completion(**kwargs)
+            # litellm's overloads type the `**kwargs` form as the union of the
+            # streaming and non-streaming shapes; with stream=True it is always
+            # the iterable stream.
+            response_generator: Any = completion(**kwargs)
         except Exception as exc:
             emit({"event": "error", "message": f"LLM call failed: {exc}"})
             return
@@ -324,7 +327,9 @@ def stream_chat(
         context_tokens = round_context
         context_estimated = round_estimated
 
-        if not use_tools or not tool_calls:
+        # `tool_executor is None` only narrows for the type checker: use_tools
+        # already implies the executor is set.
+        if not use_tools or tool_executor is None or not tool_calls:
             break
 
         iteration += 1

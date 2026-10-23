@@ -47,7 +47,9 @@ class TestLoadEndpointsConfig:
 
         config, error = load_endpoints_config()
         assert error is None
+        assert config is not None
         assert config.apiKey == "sk-target"
+        assert config.verifierAgent is not None
         assert config.verifierAgent.apiKey == "sk-judge"
 
     def test_invalid_env_returns_validation_error(

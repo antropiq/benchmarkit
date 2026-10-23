@@ -206,7 +206,8 @@ def call_llm_and_stream(
         buffer = ""
 
     t_end = time.monotonic()
-    if t_first is None:
+    # t_last is set whenever t_first is, but narrow both for the type checker.
+    if t_first is None or t_last is None:
         took, ttft, gen_duration = t_end - t0, 0.0, 0.0
     else:
         took = t_last - t0

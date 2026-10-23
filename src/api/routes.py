@@ -1271,8 +1271,11 @@ def build_router(state: RunState) -> APIRouter:
         if state.bus is None:
             raise HTTPException(status_code=404, detail="No benchmark run started yet")
 
+        # Local alias: pyright does not keep `state.bus` narrowed inside the
+        # closure below (it could be reassigned between the check and the call).
+        bus = state.bus
         async def event_stream() -> AsyncIterator[str]:
-            async for seq, event in state.bus.subscribe(since):
+            async for seq, event in bus.subscribe(since):
                 if await request.is_disconnected():
                     return
                 yield sse_format(seq, event)
@@ -1309,9 +1312,13 @@ async def _execute_run(
     """Run the benchmark in a worker thread, publishing events to the bus."""
     assert state.job is not None and state.bus is not None
     bus = state.bus
+
+    def emit(event: Dict[str, Any]) -> None:
+        bus.publish(event)
+
     try:
         await asyncio.to_thread(
-            run_benchmark, questions, config, state.job, bus.publish, state.cancel_event
+            run_benchmark, questions, config, state.job, emit, state.cancel_event
         )
         state.status = "finished"
     except RunCancelled:

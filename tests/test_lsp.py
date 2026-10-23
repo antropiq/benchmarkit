@@ -55,7 +55,9 @@ def _entry(command: Any, **overrides: Any) -> Dict[str, Any]:
     return entry
 
 
-def _servers_doc(**entries: Dict[str, Any]) -> str:
+# Values are typed loosely on purpose: the validation tests feed deliberately
+# malformed entries (a bare string, ...) to check the loader rejects them.
+def _servers_doc(**entries: Any) -> str:
     return json.dumps(entries, indent=2)
 
 
@@ -391,6 +393,8 @@ def _declare(hub: LspManager, entry: Dict[str, Any]) -> None:
 
 async def _run(hub: LspManager, coroutine: Any) -> None:
     """Run one hub coroutine on the hub's own thread (like the API does)."""
+    # ``start_all`` (the hub fixture) always set the loop before this runs.
+    assert hub._loop is not None
     await asyncio.wrap_future(
         asyncio.run_coroutine_threadsafe(coroutine, hub._loop)
     )
@@ -699,6 +703,8 @@ class TestTsserverRelayShapes:
 
     def test_project_info_answer_names_the_config_as_external(self):
         info = tsserver_project_info("/w/a.vue", "/w/tsconfig.json")
+        # The config path was supplied, so an answer object is expected.
+        assert info is not None
         assert info["configFileName"] == "/w/tsconfig.json"
         assert info["projectKind"] == "external"
         assert info["languageServiceEnabled"] is True
