@@ -52,5 +52,8 @@ function toolLineIcons(raw) {
 export function renderMarkdown(raw, { mermaid = false } = {}) {
   const source = toolLineIcons(raw || '')
   const text = mermaid ? mermaidPlaceholders(source) : source
-  return DOMPurify.sanitize(marked.parse(text))
+  // `async: false` pins the synchronous overload: every extension registered
+  // above (katex, highlight, brackets) renders strings, so `parse` returns a
+  // string and never a Promise -- which DOMPurify.sanitize requires.
+  return DOMPurify.sanitize(marked.parse(text, { async: false }))
 }

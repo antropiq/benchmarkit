@@ -72,7 +72,13 @@ function fallbackToCode(block, src) {
 // renderMarkdown when mermaid mode is on) with rendered SVGs. `isValid`
 // is checked after every await so renders superseded by a newer stream
 // re-render are dropped instead of touching replaced DOM nodes.
-export async function hydrateMermaid(rootEl, { isValid = () => true } = {}) {
+//
+// `ALWAYS_VALID` is a named const rather than an inline `() => true`
+// default: the const's inferred return type is `boolean`, so the option
+// stays a `() => boolean` for the boolean-returning predicates callers pass.
+const ALWAYS_VALID = () => true
+
+export async function hydrateMermaid(rootEl, { isValid = ALWAYS_VALID } = {}) {
   const blocks = rootEl.querySelectorAll('.mermaid-block[data-src]')
   for (const block of blocks) {
     if (block.dataset.hydrated) continue
