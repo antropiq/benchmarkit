@@ -1325,6 +1325,43 @@ body {
   margin: 0;
 }
 
+/* Title + hub-restart button on one line, above the switch list. Both panels
+   share it (`.chat-lsp-panel` reuses every rule of this column). */
+.chat-hub-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.chat-hub-head .chat-mcp-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Smaller than the chat action buttons: it sits inside a narrow panel. */
+.chat-hub-restart {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+/* The restart is awaited server-side (cold language-server starts take
+   seconds), so the icon spins while the request is in flight. Gated on its
+   own class, not on :disabled — the button is also disabled for unrelated
+   reasons (a streaming conversation). */
+.chat-hub-restart--busy svg {
+  animation: chat-hub-restart-spin 1s linear infinite;
+}
+
+@keyframes chat-hub-restart-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .chat-mcp-row {
   display: flex;
   align-items: center;

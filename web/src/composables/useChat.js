@@ -18,6 +18,7 @@ const state = reactive({
     enabled: {}, // id -> boolean (this conversation only, never persisted)
     loaded: false, // GET /api/mcp snapshot succeeded (panel + filter usable)
     locked: false, // sticky: first accepted send locks the toggles
+    restarting: false, // POST /api/mcp/restart in flight (button stays busy)
   },
   // Conversation-scoped LSP toggles — the exact MCP slice pattern, fed by
   // GET /api/lsp instead. Shared `locked` flag semantics: the first accepted
@@ -27,6 +28,7 @@ const state = reactive({
     enabled: {}, // id -> boolean (this conversation only, never persisted)
     loaded: false, // GET /api/lsp snapshot succeeded (panel + filter usable)
     locked: false, // sticky: first accepted send locks the toggles (as mcp)
+    restarting: false, // POST /api/lsp/restart in flight (button stays busy)
   },
 })
 
@@ -202,6 +204,56 @@ function setChatLsp(id, on) {
   if (state.lsp.locked || state.phase !== 'idle') return
   if (!(id in state.lsp.enabled)) return
   state.lsp.enabled[id] = !!on
+}
+
+// Restart a hub: tear every session down and rebuild it from a fresh scan of
+// its declaration file, so a hand-edited ``externals.json``/``lsp_servers.json``
+// (new entry, changed command, another ``workspaceRoot``) takes effect without
+// restarting the web app. Awaited by the server, so on return the statuses in
+// the refreshed snapshot are real. Errors never throw: they land in
+// ``state.error`` (the chat error line) and, for a failing entry, in its own
+// status — the panel still refreshes so the user sees which one broke.
+// The rows a panel currently shows (`connectors` for MCP, `servers` for LSP),
+// refreshed in place from a hub payload of the same shape the GET endpoints
+// return.
+function applyHubStatuses(kind, body) {
+  const shown = kind === 'mcp' ? state.mcp.connectors : state.lsp.servers
+  const fresh = kind === 'mcp' ? body?.connectors : body?.servers
+  if (!Array.isArray(fresh)) return
+  const byId = Object.fromEntries(fresh.map((row) => [row.id, row]))
+  for (const row of shown) {
+    const update = byId[row.id]
+    if (update) row.status = update.status
+  }
+}
+
+async function restartHub(kind) {
+  const hub = state[kind]
+  if (hub.restarting || state.phase !== 'idle') return
+  hub.restarting = true
+  try {
+    const res = await fetch(`/api/${kind}/restart`, { method: 'POST' })
+    const body = await res.json().catch(() => null)
+    if (!res.ok) {
+      state.error = body?.detail || `Restart failed (HTTP ${res.status})`
+    } else {
+      state.error = null
+      // A started conversation has a locked (frozen) toggle set, so the
+      // loaders below would skip it and leave the status dots stale — and
+      // watching those dots turn green is the point of the button. The
+      // restart response already carries live statuses, so paint them.
+      applyHubStatuses(kind, body)
+    }
+  } catch {
+    state.error = 'Restart failed: the server did not answer'
+  } finally {
+    hub.restarting = false
+    // Re-snapshot either way: a refused restart leaves the hub untouched but
+    // still lets the panel refresh, and a successful one shows the new ids
+    // and statuses. A locked conversation keeps its frozen toggles.
+    if (kind === 'mcp') loadChatMcp()
+    else loadChatLsp()
+  }
 }
 
 function scheduleMarkdownRender() {
@@ -606,7 +658,9 @@ export function useChat() {
     clearImage,
     loadChatMcp,
     setChatMcp,
+    restartMcp: () => restartHub('mcp'),
     loadChatLsp,
     setChatLsp,
+    restartLsp: () => restartHub('lsp'),
   }
 }

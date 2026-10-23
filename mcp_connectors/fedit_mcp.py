@@ -19,9 +19,16 @@ friends) are refused for reading as well as writing, since a secret pulled into
 the context window does as much damage as one that gets overwritten. The lists
 and their environment overrides are reported by ``edit_policy()``.
 
+Root scoping: the server MUST be started with --root-dir. The root and every
+directory and file inside it is the operator's workspace: a path that stays
+inside the root (literally and after symlink resolution) bypasses the policy
+entirely. The protected prefixes, deny-lists and secret-file checks only apply
+to paths outside the root. Relative paths are anchored at the root.
+
 Usage:
-    python -m mcp_connectors.fedit_mcp               # Start server on default port 8946
-    python -m mcp_connectors.fedit_mcp --port 8080   # Start server on custom port
+    python -m mcp_connectors.fedit_mcp --root-dir /path/to/root              # default port 8946
+    python -m mcp_connectors.fedit_mcp --root-dir /path --port 8080          # custom port
+    python -m mcp_connectors.fedit_mcp --root-dir /path --transport stdio    # stdio (for MCP hubs)
 """
 
 import argparse
@@ -40,6 +47,11 @@ from typing import Iterable, Optional
 
 from mcp.server.mcpserver import MCPServer
 
+# Root directory the connector is scoped to; set by main() from --root-dir.
+# When None (e.g. module imported without main()), the full policy applies to
+# every path (legacy behaviour).
+ROOT_DIR: Optional[Path] = None
+
 # Create MCP server instance
 # streamable_http_path="/mcp" is the default, which matches your requirement
 server = MCPServer(
@@ -49,7 +61,10 @@ server = MCPServer(
                  "or SEARCH/REPLACE blocks. Always call read_file first and copy its lines "
                  "verbatim into the edit -- the edit is matched against the real file content "
                  "and is rejected (without touching the file) if the context does not match. "
-                 "Use preview_edit to check an edit before applying it.",
+                 "Use preview_edit to check an edit before applying it. The server is scoped "
+                 "to a root directory chosen at startup (--root-dir): files inside that root "
+                 "are editable without policy restrictions; paths outside it are judged "
+                 "against the protected-path lists reported by edit_policy().",
 )
 
 # ---------------------------------------------------------------------------
@@ -550,6 +565,13 @@ class PathDenied(FeditError):
     """The target path is outside what this connector may read or write."""
 
 
+def _within_root(path: Path) -> bool:
+    """True when ``path`` is inside (or equal to) ROOT_DIR; False when unrooted."""
+    if ROOT_DIR is None:
+        return False
+    return path == ROOT_DIR or ROOT_DIR in path.parents
+
+
 def _component_hit(parts: tuple[str, ...], entries: Iterable[str]) -> Optional[str]:
     """Return the first entry matching ``parts``, or None.
 
@@ -610,23 +632,37 @@ def check_target_path(path: str, *, for_write: bool) -> Path:
     issue #1: the deny-lists guarded ``apply_edit`` while ``read_file`` happily
     returned ``~/.git-credentials``.
 
-    The path is made absolute rather than fully resolved, because ``..`` is
-    rejected on the *literal* path; ``~/.ssh/../../etc`` would otherwise smuggle
-    traversal back in after ``expanduser()``. The real (symlink-resolved) target
-    is then checked as well, so a link cannot point the connector at a store the
-    path itself does not mention.
+    Root scoping: when the server runs with --root-dir, a path whose literal
+    and real (symlink-resolved) forms both stay inside that root bypasses the
+    policy entirely -- the root is the operator's workspace. Everything below
+    only constrains paths outside the root. Relative paths anchor at the root.
+
+    Outside-root paths are made absolute rather than fully resolved, because
+    ``..`` is rejected on the *literal* path; ``~/.ssh/../../etc`` would
+    otherwise smuggle traversal back in after ``expanduser()``. The real
+    (symlink-resolved) target is then checked as well, so a link cannot point
+    the connector at a store the path itself does not mention.
     """
     if not path or not path.strip():
         raise FeditError("path is empty")
     candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = (ROOT_DIR or Path.cwd()) / candidate
+
+    absolute = Path(os.path.abspath(str(candidate)))
+    real = absolute.resolve()
+
+    # Inside the root the policy is bypassed; the operator chose that tree.
+    # Both the literal path and its symlink-resolved target must be inside, so
+    # a symlink cannot smuggle an outside file into the bypass.
+    if _within_root(absolute) and _within_root(real):
+        return absolute
+
+    action = "written" if for_write else "read"
     if ".." in candidate.parts:
         raise FeditError(f"path {path!r} contains '..'")
 
-    absolute = Path(os.path.abspath(str(candidate)))
-    action = "written" if for_write else "read"
-
     # A path is judged both as given and as the file it really is.
-    real = absolute.resolve()
     for label, target in (("the path", absolute), ("its real target", real)):
         reason = _deny_reason(target, for_write=for_write)
         if reason:
@@ -1020,6 +1056,8 @@ def edit_policy() -> str:
     """
     return (
         f"fedit-mcp policy\n"
+        f"  root dir        : {ROOT_DIR if ROOT_DIR is not None else '(unset -- full policy on every path)'}\n"
+        f"  inside the root : no policy restrictions (paths fully bypass the lists below)\n"
         f"  backup dir      : {BACKUP_DIR.resolve()}\n"
         f"  backups kept    : {BACKUP_KEEP}\n"
         f"  max file bytes  : {MAX_FILE_BYTES}\n"
@@ -1054,6 +1092,21 @@ def main():
         help="Host to bind to (default: 127.0.0.1)"
     )
     parser.add_argument(
+        "--root-dir",
+        type=str,
+        required=True,
+        help="Root directory the connector starts in and is scoped to (required). "
+             "Files and directories inside it bypass the path policy; paths "
+             "outside it are checked against the protected-path lists."
+    )
+    parser.add_argument(
+        "--transport", "-t",
+        type=str,
+        choices=("stdio", "streamable-http"),
+        default="streamable-http",
+        help="Transport to serve on (default: streamable-http)"
+    )
+    parser.add_argument(
         "--debug", "-d",
         action="store_true",
         help="Enable debug mode"
@@ -1061,23 +1114,38 @@ def main():
 
     args = parser.parse_args()
 
+    global ROOT_DIR
+    root = Path(os.path.expanduser(args.root_dir))
+    if not root.is_dir():
+        parser.error(f"--root-dir '{args.root_dir}' is not an existing directory")
+    ROOT_DIR = root.resolve()
+
     if args.debug:
         server.settings.log_level = "DEBUG"
 
-    print(f"Starting File Edit MCP Server on http://{args.host}:{args.port}")
-    print(f"  Streamable HTTP   : http://{args.host}:{args.port}/mcp")
-    print(f"  Backup dir        : {BACKUP_DIR}")
-    print(f"  Max file size     : {MAX_FILE_BYTES} bytes")
+    # stdio mode carries JSON-RPC on stdout: keep the banner off it.
+    banner = sys.stderr if args.transport == "stdio" else sys.stdout
+    print(f"🚀 File Edit MCP Server starting...", file=banner)
+    if args.transport == "stdio":
+        print(f"   Transport: stdio", file=banner)
+    else:
+        print(f"   Streamable HTTP   : http://{args.host}:{args.port}/mcp", file=banner)
+    print(f"   Root directory: {ROOT_DIR}", file=banner)
+    print(f"   Backup dir    : {BACKUP_DIR}", file=banner)
+    print(f"   Max file size : {MAX_FILE_BYTES} bytes", file=banner)
 
-    # Run the server with streamable HTTP transport
+    # Run the server with the selected transport
     try:
-        server.run(
-            transport="streamable-http",
-            host=args.host,
-            port=args.port,
-        )
+        if args.transport == "stdio":
+            server.run(transport="stdio")
+        else:
+            server.run(
+                transport="streamable-http",
+                host=args.host,
+                port=args.port,
+            )
     except (KeyboardInterrupt, SystemExit):
-        print("\nFile Edit MCP Server stopped.")
+        print("\nFile Edit MCP Server stopped.", file=banner)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
 
-const { state, setChatLsp } = useChat()
+const { state, setChatLsp, restartLsp } = useChat()
 
 // Status dot next to each switch: green when the language server serves its
 // tools, red on a startup/configuration error, gray otherwise (stopped,
@@ -14,7 +14,9 @@ const DOT_CLASS = {
 }
 
 // Hidden while the snapshot is unavailable or nothing is activated in
-// Settings: only Settings-launched language servers may appear here.
+// Settings: only Settings-launched language servers may appear here (the
+// restart button lives inside this panel, so with no declared server there is
+// nothing to restart and the column stays hidden, as before).
 const visible = computed(
   () => state.lsp.loaded && state.lsp.servers.length > 0,
 )
@@ -29,6 +31,19 @@ function rowTitle(server) {
   }
   return `Use ${server.label} tools in this conversation`
 }
+
+// Restarting respawns every language server from a fresh lsp_servers.json
+// scan, so a hub thread blocked in a chat tool call would be killed
+// mid-call: the button is only usable on an idle conversation, and stays
+// busy until the awaited server-side restart comes back.
+const canRestart = computed(
+  () => state.phase === 'idle' && !state.lsp.restarting,
+)
+const restartTitle = computed(() =>
+  state.lsp.restarting
+    ? 'Restarting language servers…'
+    : 'Restart the LSP hub: respawn every server from lsp_servers.json',
+)
 </script>
 
 <template>
@@ -37,7 +52,24 @@ function rowTitle(server) {
     class="chat-lsp-panel"
     aria-label="LSP language servers for this conversation"
   >
-    <p class="caption chat-mcp-title">LSP tools</p>
+    <div class="chat-hub-head">
+      <p class="caption chat-mcp-title">LSP tools</p>
+      <button
+        class="icon-btn chat-hub-restart"
+        :class="{ 'chat-hub-restart--busy': state.lsp.restarting }"
+        type="button"
+        :disabled="!canRestart"
+        :aria-label="state.lsp.restarting ? 'Restarting LSP hub' : 'Restart LSP hub'"
+        :title="restartTitle"
+        @click="restartLsp"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      </button>
+    </div>
     <label
       v-for="server in state.lsp.servers"
       :key="server.id"

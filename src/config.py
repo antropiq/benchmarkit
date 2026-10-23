@@ -57,7 +57,6 @@ SETTING_KEYS: Tuple[str, ...] = (
     "VERIFIER_AGENT_SERVERURL",
     "VERIFIER_AGENT_SERVERURL_API_KEY",
     "VERIFIER_AGENT_ENDPOINT",
-    "MCP_ENABLED",
     "MAX_TOOL_ITERATION",
     "LSP_ENABLED",
 )
@@ -281,8 +280,9 @@ def _render_env(values: Dict[str, str]) -> str:
         line("VERIFIER_AGENT_SERVERURL_API_KEY"),
         line("VERIFIER_AGENT_ENDPOINT"),
         "",
-        "# MCP connectors (Chat tab only)",
-        line("MCP_ENABLED"),
+        "# MCP connectors (Chat tab only) are declared only in",
+        "# mcp_connectors/externals.json: their per-entry ``enable`` flag is",
+        "# the single source of truth, no .env key is involved.",
         "# LSP language servers (Chat tab only) — ids of the servers in",
         "# lsp_connectors/lsp_servers.json to activate on top of their",
         "# per-entry ``enable`` flag (both must agree).",
@@ -292,19 +292,6 @@ def _render_env(values: Dict[str, str]) -> str:
         "",
     ]
     return "\n".join(lines)
-
-
-def mcp_enabled_ids() -> List[str]:
-    """Connector ids activated for the Chat tab from ``MCP_ENABLED``.
-
-    Comma-separated, deduplicated, order-preserving; empty entries ignored.
-    """
-    ids: List[str] = []
-    for part in os.environ.get("MCP_ENABLED", "").split(","):
-        part = part.strip()
-        if part and part not in ids:
-            ids.append(part)
-    return ids
 
 
 def max_tool_iteration() -> int:

@@ -29,14 +29,13 @@ from src.config import (
     load_memory_registrations,
     load_questions,
     load_settings,
-    mcp_enabled_ids,
     max_tool_iteration,
     lsp_enabled_ids,
     save_memory_registration,
     save_settings,
     questions_path,
 )
-from src.core.mcphub import all_connectors, load_externals, set_externals_enabled
+from src.core.mcphub import load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, set_lsp_enabled
 from src.core.bench import run_benchmark
 from src.core.chat import stream_chat
@@ -424,16 +423,12 @@ class RunState:
 def _active_connector_ids() -> List[str]:
     """Connector ids whose tools chat may use.
 
-    Built-ins come from ``MCP_ENABLED`` (.env); externals are activated by
-    their ``enable`` flag in ``externals.json`` (single source of truth, so
-    they never enter ``MCP_ENABLED``).
+    Every connector is declared in ``mcp_connectors/externals.json`` and
+    activated by its ``enable`` flag there (single source of truth, no .env
+    key involved).
     """
-    ids = list(mcp_enabled_ids())
     connectors, _errors = load_externals()
-    for connector in connectors:
-        if connector["enable"] and connector["id"] not in ids:
-            ids.append(connector["id"])
-    return ids
+    return [connector["id"] for connector in connectors if connector["enable"]]
 
 
 def _active_server_ids() -> List[str]:
@@ -720,17 +715,16 @@ def build_router(state: RunState) -> APIRouter:
     def _mcp_payload(
         request: Request, extra_errors: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Connector list (live folder scan + externals.json) merged with manager status.
+        """Connector list (live ``externals.json`` scan) merged with manager status.
 
-        External connectors are active on their file ``enable`` flag; built-ins
-        on ``MCP_ENABLED``. Secret material (``headers``/``env``) is stripped.
+        Connectors are active on their file ``enable`` flag — the single
+        source of truth. Secret material (``headers``/``env``) is stripped.
         """
         manager = getattr(request.app.state, "mcp", None)
         statuses = {s["id"]: s for s in (manager.status() if manager else [])}
-        connectors, errors = all_connectors()
+        connectors, errors = load_externals()
         if extra_errors:
             errors = errors + list(extra_errors)
-        active_builtins = set(mcp_enabled_ids())
         payload_connectors = []
         for connector in connectors:
             status = statuses.get(connector["id"], {})
@@ -741,9 +735,7 @@ def build_router(state: RunState) -> APIRouter:
                     if key not in ("headers", "env")
                 }
                 | {
-                    "active": connector["enable"]
-                    if connector["external"]
-                    else connector["id"] in active_builtins,
+                    "active": connector["enable"],
                     "status": status.get("status", "stopped"),
                     "error": status.get("error"),
                 }
@@ -757,17 +749,17 @@ def build_router(state: RunState) -> APIRouter:
 
     @router.get("/mcp")
     def get_mcp(request: Request) -> Dict[str, Any]:
-        """List built-in and external MCP connectors with live status."""
+        """List the declared MCP connectors with live status."""
         return _mcp_payload(request)
 
     @router.post("/mcp")
     def post_mcp(body: McpIn, request: Request) -> Dict[str, Any]:
         """Activate MCP connectors for the Chat tab and set the iteration cap.
 
-        Built-in activations persist to ``MCP_ENABLED`` / ``MAX_TOOL_ITERATION``
-        in ``.env``; external toggles write the ``enable`` flag back to
-        ``mcp_connectors/externals.json`` and start/stop the connector right
-        away (its process otherwise lives with the app).
+        Toggles write the entry ``enable`` flag back to
+        ``mcp_connectors/externals.json`` (the only activation source) and
+        start/stop the connector right away; only ``MAX_TOOL_ITERATION``
+        persists to ``.env``.
         """
         if state.status == "running":
             raise HTTPException(
@@ -775,12 +767,9 @@ def build_router(state: RunState) -> APIRouter:
                 detail="Cannot change MCP settings while a benchmark run is in progress",
             )
         requested = [item.strip() for item in body.enabled if item.strip()]
-        connectors, _errors = all_connectors()
-        builtin_ids = {c["id"] for c in connectors if not c["external"]}
-        external_ids = {c["id"] for c in connectors if c["external"]}
-        unknown = [
-            item for item in requested if item not in builtin_ids and item not in external_ids
-        ]
+        connectors, _errors = load_externals()
+        connector_ids = {connector["id"] for connector in connectors}
+        unknown = [item for item in requested if item not in connector_ids]
         if unknown:
             raise HTTPException(
                 status_code=422,
@@ -788,21 +777,16 @@ def build_router(state: RunState) -> APIRouter:
             )
         enabled = set(requested)
         merged = dict(load_settings())
-        merged["MCP_ENABLED"] = ",".join(
-            dict.fromkeys(item for item in requested if item in builtin_ids)
-        )
         merged["MAX_TOOL_ITERATION"] = str(body.maxIterations)
         save_settings(merged)
         write_errors = (
-            set_externals_enabled({cid: cid in enabled for cid in external_ids})
-            if external_ids
+            set_externals_enabled({cid: cid in enabled for cid in connector_ids})
+            if connector_ids
             else []
         )
         manager = getattr(request.app.state, "mcp", None)
         if manager is not None and hasattr(manager, "start_connector"):
             for connector in connectors:
-                if not connector["external"]:
-                    continue
                 connector_id = connector["id"]
                 current = manager.connector_status(connector_id)
                 if connector_id in enabled and current not in ("running", "starting"):
@@ -810,6 +794,45 @@ def build_router(state: RunState) -> APIRouter:
                 elif connector_id not in enabled and current in ("running", "starting"):
                     manager.stop_connector(connector_id)
         return _mcp_payload(request, extra_errors=write_errors)
+
+    @router.post("/mcp/restart")
+    async def post_mcp_restart(request: Request) -> Dict[str, Any]:
+        """Restart the MCP hub: re-read ``externals.json`` and reconnect.
+
+        Everything is torn down (client sessions and, with them, every local
+        stdio child process) and rebuilt from a fresh scan of the declaration
+        file, so an edit made by hand — a new connector, a changed ``command``,
+        another ``cwd`` — takes effect without restarting the web app.
+        Validation problems do not abort the restart: the connectors that did
+        parse come back up and the errors are returned in ``externalsError``.
+
+        Awaited, so the response carries the real post-restart status of every
+        connector (a failing one burns its whole retry window — the button
+        stays busy while that happens).
+        """
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot restart the MCP hub while a benchmark run is in progress",
+            )
+        if _CHAT_TASKS:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot restart the MCP hub while a chat reply is streaming",
+            )
+        manager = getattr(request.app.state, "mcp", None)
+        if manager is None or not hasattr(manager, "restart"):
+            raise HTTPException(status_code=503, detail="MCP hub is not available")
+        if os.environ.get("BENCHMARKIT_DISABLE_MCP"):
+            # Same dev/test switch the app lifespan honours: endpoints stay
+            # usable but nothing is connected.
+            connectors = []
+        else:
+            connectors, _errors = load_externals()
+        await manager.restart(connectors)
+        # The payload re-scans the file, so it re-derives the same validation
+        # errors — they must not be passed as extra_errors or they appear twice.
+        return _mcp_payload(request)
 
     def _lsp_payload(
         request: Request, extra_errors: Optional[List[str]] = None
@@ -898,6 +921,48 @@ def build_router(state: RunState) -> APIRouter:
                 elif server_id not in enabled and current in ("running", "starting"):
                     manager.stop_server(server_id)
         return _lsp_payload(request, extra_errors=write_errors)
+
+    @router.post("/lsp/restart")
+    async def post_lsp_restart(request: Request) -> Dict[str, Any]:
+        """Restart the LSP hub: re-read ``lsp_servers.json`` and respawn.
+
+        Every language server is shut down (``shutdown``/``exit``, then
+        SIGTERM/SIGKILL) and respawned from a fresh scan of the declaration
+        file, so a hand-edited entry — a new server, a changed ``command``,
+        another ``workspaceRoot`` — takes effect without restarting the web
+        app. The two activation gates (the entry ``enable`` flag and
+        ``LSP_ENABLED``) are re-applied exactly as at startup, so a dormant
+        file stays dormant. Invalid entries never spawn: the valid ones come
+        back up and the problems are reported in ``serversError``.
+
+        Awaited, so the response carries real post-restart status (a cold
+        language-server start is multi-second — the button stays busy).
+        """
+        if state.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot restart the LSP hub while a benchmark run is in progress",
+            )
+        if _CHAT_TASKS:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot restart the LSP hub while a chat reply is streaming",
+            )
+        manager = getattr(request.app.state, "lsp", None)
+        if manager is None or not hasattr(manager, "restart"):
+            raise HTTPException(status_code=503, detail="LSP hub is not available")
+        if os.environ.get("BENCHMARKIT_DISABLE_LSP"):
+            # Same dev/test switch the app lifespan honours: endpoints stay
+            # usable but nothing is spawned.
+            servers, active_ids = [], []
+        else:
+            servers, _errors = all_servers()
+            # Same two-gate rule as the startup lifespan, kept in one place.
+            active_ids = _active_server_ids()
+        await manager.restart(servers, active_ids)
+        # The payload re-scans the file, so it re-derives the same validation
+        # errors — they must not be passed as extra_errors or they appear twice.
+        return _lsp_payload(request)
 
     @router.get("/lsp/log")
     def get_lsp_log(request: Request, server: str = "") -> Dict[str, Any]:

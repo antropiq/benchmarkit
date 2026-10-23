@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import RunState, build_router
 from src.config import ENV_PATH, load_dotenv_once, PROJECT_ROOT, questions_path
-from src.core.mcphub import McpManager, all_connectors
+from src.core.mcphub import McpManager, load_externals
 from src.core.lsphub import LspManager, all_servers
 from src.config import lsp_enabled_ids
 
@@ -22,13 +22,13 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # MCP connector processes live exactly as long as the web app:
-        # spawned here on startup, terminated on shutdown. The env var is a
-        # test/dev switch that keeps the endpoints alive but spawns nothing.
-        # Externals declared in mcp_connectors/externals.json join the set;
-        # those with ``enable: false`` stay stopped until toggled on.
+        # MCP connector sessions live exactly as long as the web app: connected
+        # here on startup, closed on shutdown. The env var is a test/dev switch
+        # that keeps the endpoints alive but connects nothing. Every connector
+        # is declared in mcp_connectors/externals.json; entries with
+        # ``enable: false`` stay stopped until toggled on.
         connectors = (
-            [] if os.environ.get("BENCHMARKIT_DISABLE_MCP") else all_connectors()[0]
+            [] if os.environ.get("BENCHMARKIT_DISABLE_MCP") else load_externals()[0]
         )
         manager = McpManager(connectors)
         app.state.mcp = manager

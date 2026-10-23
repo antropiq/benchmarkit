@@ -11,22 +11,14 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MCP_CONNECTORS_DIR = PROJECT_ROOT / "mcp_connectors"
-MCP_LOGS_DIR = PROJECT_ROOT / "logs" / "mcp"
 
-# Declarative third-party connectors (kilo.json-style, keyed by id). The file
-# may hold API keys in ``headers``/``env`` and is therefore gitignored; its
-# contents are never returned by the API.
+# The declarative connector declaration file (kilo.json-style, keyed by id):
+# the one and only source of MCP connectors. It may hold API keys in
+# ``headers``/``env`` and is therefore gitignored; its contents are never
+# returned by the API.
 EXTERNALS_PATH = MCP_CONNECTORS_DIR / "externals.json"
 
-# Auto-allocated listen ports for built-in connectors. The hub derives a
-# stable preferred port per connector id inside this range, probes it for
-# availability, and passes the result to the child process as ``--port``.
-# A connector module must accept ``--port`` and never assume a port of its
-# own; its internal default is only a fallback for manual runs.
-AUTO_PORT_BASE = 8940
-AUTO_PORT_SPAN = 60
-
-# Connection retry policy for a freshly spawned connector process.
+# Connection retry policy for a freshly launched connector session.
 CONNECT_RETRIES = 20
 # Local externals launch through a package runner (``npx``), whose cold start
 # (download + Node boot) can far exceed the built-in connectors' window.

@@ -1,20 +1,19 @@
-"""``McpManager``: spawn connector subprocesses and bridge sync callers onto them.
+"""``McpManager``: run the declared connector sessions and bridge sync callers.
 
 The hub's own asyncio thread (``mcp-hub``) owns every client session, so
 the synchronous chat worker threads can call ``call_tool_sync`` without
 ever running an event loop themselves. This module keeps only the
 orchestration — lifecycle, hot toggles, the tool/status payloads and the
-sync bridge. What it delegates: discovery (``discovery.py``), port
-allocation (``ports.py``), tool/result rendering (``formatting.py``) and
-the subprocess environment (``process.py``). Timeouts and the retry policy
-are read through :mod:`mcphub.constants` at call time.
+sync bridge. What it delegates: discovery (``discovery.py``), tool/result
+rendering (``formatting.py``) and the subprocess environment
+(``process.py``). Timeouts and the retry policy are read through
+:mod:`mcphub.constants` at call time.
 
 The heavy ``mcp`` package stays lazily imported throughout, so the manager
 can be constructed (and its bookkeeping tested) without the ``[mcp]`` extra.
 """
 
 import asyncio
-import sys
 import threading
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
@@ -27,7 +26,7 @@ from .process import connector_environment
 
 
 class McpManager:
-    """Spawn connector subprocesses and bridge sync callers onto their clients.
+    """Run every declared connector session and bridge sync callers onto it.
 
     Lifecycle: :meth:`start_all` on app startup, :meth:`stop_all` on shutdown.
     All MCP client I/O runs on a private asyncio thread so chat worker threads
@@ -37,24 +36,10 @@ class McpManager:
     def __init__(
         self,
         connectors: List[Dict[str, Any]],
-        python_exe: Optional[str] = None,
         project_root: Path = constants.PROJECT_ROOT,
-        logs_dir: Optional[Path] = None,
     ) -> None:
-        self._connectors: Dict[str, Dict[str, Any]] = {
-            connector["id"]: {
-                **connector,
-                "kind": connector.get("kind", "builtin"),
-                "external": connector.get("external", False),
-                "status": "stopped",
-                "error": None,
-            }
-            for connector in connectors
-        }
-        self._python_exe = python_exe or sys.executable
+        self._connectors: Dict[str, Dict[str, Any]] = self._index(connectors)
         self._project_root = project_root
-        self._logs_dir = logs_dir or (project_root / "logs" / "mcp")
-        self._processes: Dict[str, asyncio.subprocess.Process] = {}
         self._stacks: Dict[str, AsyncExitStack] = {}
         self._clients: Dict[str, Any] = {}
         self._http_clients: Dict[str, Any] = {}
@@ -69,10 +54,23 @@ class McpManager:
     def installed(self) -> bool:
         return self._installed
 
-    async def start_all(self) -> None:
-        """Spawn every connector and connect a client to each. Never raises.
+    @staticmethod
+    def _index(connectors: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Definition list -> id-keyed live records (also used by :meth:`restart`)."""
+        return {
+            connector["id"]: {
+                **connector,
+                "kind": connector.get("kind", ""),
+                "status": "stopped",
+                "error": None,
+            }
+            for connector in connectors
+        }
 
-        Disabled externals (``enable: false`` in ``externals.json``) stay
+    async def start_all(self) -> None:
+        """Connect a client to every enabled connector. Never raises.
+
+        Disabled entries (``enable: false`` in ``externals.json``) stay
         ``stopped`` until :meth:`start_connector`.
         """
         if self._started or self._stopped:
@@ -89,7 +87,7 @@ class McpManager:
         futures = [
             asyncio.run_coroutine_threadsafe(self._start_one(cid), self._loop)
             for cid, info in self._connectors.items()
-            if not (info["external"] and not info.get("enable"))
+            if info.get("enable")
         ]
         await asyncio.gather(*(asyncio.wrap_future(f) for f in futures))
 
@@ -98,85 +96,14 @@ class McpManager:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
-    def _log_tail(self, log_path: Path, chars: int = 600) -> str:
-        try:
-            text = log_path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            return ""
-        return text[-chars:]
-
     async def _start_one(self, connector_id: str) -> None:
-        """Bring one connector up, dispatching on its kind. Never raises."""
+        """Bring one connector up. Never raises."""
         info = self._connectors[connector_id]
         try:
-            if info["kind"] in ("local", "remote"):
-                await self._start_external(connector_id, info)
-            else:
-                await self._start_builtin(connector_id, info)
+            await self._start_connector(connector_id, info)
         except Exception as exc:  # noqa: BLE001 — startup errors land in status
             info["status"] = "error"
             info["error"] = str(exc) or exc.__class__.__name__
-
-    async def _start_builtin(self, connector_id: str, info: Dict[str, Any]) -> None:
-        if not info["port"]:
-            info["status"] = "error"
-            info["error"] = (
-                f"No free port in range {constants.AUTO_PORT_BASE}-"
-                f"{constants.AUTO_PORT_BASE + constants.AUTO_PORT_SPAN - 1} for {connector_id}"
-            )
-            return
-        info["status"] = "starting"
-        self._logs_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self._logs_dir / f"{connector_id}.log"
-        env = connector_environment(self._project_root)
-        last_error: Optional[str] = None
-        try:
-            with log_path.open("ab") as log_file:
-                process = await asyncio.create_subprocess_exec(
-                    self._python_exe,
-                    "-m",
-                    f"mcp_connectors.{connector_id}",
-                    "--host=127.0.0.1",
-                    f"--port={info['port']}",
-                    cwd=str(self._project_root),
-                    env=env,
-                    stdout=log_file,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-        except OSError as exc:
-            info["status"] = "error"
-            info["error"] = f"Could not spawn connector: {exc}"
-            return
-        self._processes[connector_id] = process
-
-        from mcp import Client  # lazy: importable only with the [mcp] extra
-
-        for _ in range(constants.CONNECT_RETRIES):
-            if process.returncode is not None:
-                tail = self._log_tail(log_path)
-                last_error = f"Connector process exited ({process.returncode})"
-                if tail:
-                    last_error += f": {tail}"
-                break
-            stack = AsyncExitStack()
-            try:
-                client = Client(info["endpoint"])
-                await stack.enter_async_context(client)
-                listing = await client.list_tools()
-                self._stacks[connector_id] = stack
-                self._clients[connector_id] = client
-                self._tools[connector_id] = list(listing.tools)
-                info["status"] = "running"
-                info["error"] = None
-                return
-            except Exception as exc:  # noqa: BLE001 — retry until the server is up
-                last_error = str(exc) or exc.__class__.__name__
-                with suppress(Exception):
-                    await asyncio.wait_for(stack.aclose(), timeout=constants.STOP_GRACE_SECONDS)
-                await asyncio.sleep(constants.CONNECT_INTERVAL)
-        await self._close_connector(connector_id)
-        info["status"] = "error"
-        info["error"] = last_error or "Connector did not become ready"
 
     def _make_http_client(self, headers: Dict[str, str]) -> Any:
         """HTTP client for remote externals, carrying their custom headers."""
@@ -194,8 +121,8 @@ class McpManager:
                 kwargs["headers"] = headers
             return httpx2.AsyncClient(**kwargs)
 
-    async def _start_external(self, connector_id: str, info: Dict[str, Any]) -> None:
-        """Connect an external connector: Streamable HTTP (remote) or stdio (local)."""
+    async def _start_connector(self, connector_id: str, info: Dict[str, Any]) -> None:
+        """Connect one connector: Streamable HTTP (remote) or stdio (local)."""
         info["status"] = "starting"
         from mcp import Client  # lazy: importable only with the [mcp] extra
 
@@ -356,10 +283,8 @@ class McpManager:
                         "id",
                         "label",
                         "description",
-                        "port",
                         "endpoint",
                         "command",
-                        "external",
                         "kind",
                     )
                 },
@@ -385,19 +310,9 @@ class McpManager:
                 await asyncio.wait_for(
                     http_client.aclose(), timeout=constants.STOP_GRACE_SECONDS
                 )
-        process = self._processes.pop(connector_id, None)
-        if process is not None and process.returncode is None:
-            with suppress(ProcessLookupError):
-                process.terminate()
-            try:
-                await asyncio.wait_for(
-                    process.wait(), timeout=constants.STOP_GRACE_SECONDS
-                )
-            except (asyncio.TimeoutError, TimeoutError):
-                with suppress(ProcessLookupError):
-                    process.kill()
-                with suppress(Exception):
-                    await process.wait()
+        # A local connector's stdio child belongs to the client transport:
+        # closing the stack (above) shuts it down, there is nothing else to
+        # terminate.
 
     async def _stop_on_loop(self) -> None:
         for connector_id in list(self._connectors):
@@ -405,7 +320,7 @@ class McpManager:
             self._connectors[connector_id]["status"] = "stopped"
 
     async def stop_all(self) -> None:
-        """Close every client session and terminate every connector process. Idempotent."""
+        """Close every client session (and with it every local stdio child). Idempotent."""
         if self._stopped:
             return
         self._stopped = True
@@ -423,3 +338,30 @@ class McpManager:
             self._thread.join(timeout=constants.STOP_GRACE_SECONDS)
         self._loop = None
         self._thread = None
+
+    async def restart(self, connectors: List[Dict[str, Any]]) -> None:
+        """Re-read the declaration file: tear everything down and rebuild.
+
+        Unlike :meth:`stop_all`, the manager stays usable afterwards: a fresh
+        hub thread is created and *this same object* keeps serving the chat
+        worker threads that already hold a reference to it, so a restart never
+        invalidates an in-flight conversation. ``connectors`` is the freshly
+        validated ``externals.json`` scan, so a hand-edited declaration (a new
+        connector, a changed command, a different ``cwd``) is picked up without
+        restarting the web app.
+
+        Never raises: a connector that fails to come back up lands in its own
+        ``status``/``error``, exactly as on startup.
+        """
+        await self.stop_all()
+        self._connectors = self._index(connectors)
+        self._stacks.clear()
+        self._clients.clear()
+        self._http_clients.clear()
+        self._tools.clear()
+        self._loop = None
+        self._thread = None
+        self._started = False
+        self._stopped = False
+        self._installed = mcp_installed()
+        await self.start_all()

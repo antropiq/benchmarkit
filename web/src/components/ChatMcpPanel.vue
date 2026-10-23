@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
 
-const { state, setChatMcp } = useChat()
+const { state, setChatMcp, restartMcp } = useChat()
 
 // Status dot next to each switch: green when the connector serves its
 // tools, red on a startup/configuration error, gray otherwise (stopped,
@@ -28,6 +28,19 @@ function rowTitle(connector) {
   }
   return `Use ${connector.label} tools in this conversation`
 }
+
+// Restarting reconnects every connector from a fresh externals.json scan, so
+// a hub thread blocked in a chat tool call would be killed mid-call: the
+// button is only usable on an idle conversation, and stays busy until the
+// awaited server-side restart comes back.
+const canRestart = computed(
+  () => state.phase === 'idle' && !state.mcp.restarting,
+)
+const restartTitle = computed(() =>
+  state.mcp.restarting
+    ? 'Restarting MCP connectors…'
+    : 'Restart the MCP hub: reconnect every connector from externals.json',
+)
 </script>
 
 <template>
@@ -36,7 +49,24 @@ function rowTitle(connector) {
     class="chat-mcp-panel"
     aria-label="MCP connectors for this conversation"
   >
-    <p class="caption chat-mcp-title">MCP tools</p>
+    <div class="chat-hub-head">
+      <p class="caption chat-mcp-title">MCP tools</p>
+      <button
+        class="icon-btn chat-hub-restart"
+        :class="{ 'chat-hub-restart--busy': state.mcp.restarting }"
+        type="button"
+        :disabled="!canRestart"
+        :aria-label="state.mcp.restarting ? 'Restarting MCP hub' : 'Restart MCP hub'"
+        :title="restartTitle"
+        @click="restartMcp"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      </button>
+    </div>
     <label
       v-for="connector in state.mcp.connectors"
       :key="connector.id"

@@ -25,10 +25,14 @@ def _no_legacy_tool_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     ``MAX_MCP_ITERATION`` (still honoured as a fallback by
     ``config.max_tool_iteration()``) or an ``LSP_ENABLED`` list would
     otherwise leak into every test and depend on the machine it runs on.
+    ``MCP_ENABLED`` is gone from the config entirely (connectors activate only
+    through their ``enable`` flag in ``externals.json``); clearing it keeps a
+    stale entry in a developer's ``.env`` from confusing the suite.
     """
     monkeypatch.delenv("MAX_TOOL_ITERATION", raising=False)
     monkeypatch.delenv("MAX_MCP_ITERATION", raising=False)
     monkeypatch.delenv("LSP_ENABLED", raising=False)
+    monkeypatch.delenv("MCP_ENABLED", raising=False)
 
 
 @pytest.fixture(autouse=True)

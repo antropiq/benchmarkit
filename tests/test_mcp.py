@@ -1,10 +1,7 @@
-"""Tests for MCP connector discovery, settings API, and the chat tool loop."""
+"""Tests for MCP connector declaration, settings API, and the chat tool loop."""
 
 import json
 import os
-import socket
-import subprocess
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,125 +12,17 @@ from fastapi.testclient import TestClient
 
 from src.api import routes
 from src.api.server import create_app
-from src.config import mcp_enabled_ids, max_tool_iteration
+from src.config import max_tool_iteration
 from src.core import chat as chat_core
 from src.core import mcphub
 from src.core.mcphub import (
     McpManager,
-    all_connectors,
     connector_environment,
-    discover_connectors,
     extract_tool_result_text,
     load_externals,
     set_externals_enabled,
     tools_to_openai_format,
 )
-
-# ---------------------------------------------------------------------------
-# Discovery
-# ---------------------------------------------------------------------------
-
-
-def _write_connector(root: Path, name: str, docstring: Optional[str]) -> None:
-    body = f'"""{docstring}"""\n' if docstring is not None else ""
-    (root / f"{name}.py").write_text(body, encoding="utf-8")
-
-
-class TestDiscoverConnectors:
-    def test_reads_docstring_first_paragraph(self, tmp_path):
-        _write_connector(
-            tmp_path,
-            "console_mcp",
-            "Console MCP Server - Allows LLMs.\n\nSecond paragraph ignored.\n",
-        )
-        [connector] = discover_connectors(tmp_path)
-        assert connector["id"] == "console_mcp"
-        assert connector["label"] == "Console"
-        assert connector["description"] == "Console MCP Server - Allows LLMs."
-        assert (
-            mcphub.AUTO_PORT_BASE
-            <= connector["port"]
-            < mcphub.AUTO_PORT_BASE + mcphub.AUTO_PORT_SPAN
-        )
-        assert connector["endpoint"] == f"http://127.0.0.1:{connector['port']}/mcp"
-
-    def test_ignores_other_files_and_broken_modules(self, tmp_path):
-        _write_connector(tmp_path, "playwright_mcp", "Browser.")
-        (tmp_path / "__init__.py").write_text("", encoding="utf-8")
-        (tmp_path / "helper.py").write_text("", encoding="utf-8")
-        (tmp_path / "broken_mcp.py").write_text("def (:", encoding="utf-8")
-        ids = [c["id"] for c in discover_connectors(tmp_path)]
-        assert ids == ["playwright_mcp"]  # unparsable modules are skipped
-
-    def test_missing_directory_returns_empty(self, tmp_path):
-        assert discover_connectors(tmp_path / "nope") == []
-
-    def test_allocation_is_deterministic(self, tmp_path):
-        _write_connector(tmp_path, "alpha_mcp", "A.")
-        _write_connector(tmp_path, "beta_mcp", "B.")
-        first = [c["port"] for c in discover_connectors(tmp_path)]
-        second = [c["port"] for c in discover_connectors(tmp_path)]
-        assert first == second
-        assert len(set(first)) == 2  # distinct connectors, distinct ports
-
-    def test_preferred_port_survives_hash_seed_change(self):
-        # hash() is randomised per process via PYTHONHASHSEED — the port
-        # derivation must use a stable digest, so two interpreter runs
-        # with different seeds must agree on the preferred port.
-        project_root = str(Path(mcphub.__file__).resolve().parents[3])
-        code = (
-            f"import sys; sys.path.insert(0, {project_root!r}); "
-            "from src.core.mcphub.ports import preferred_port; "
-            "print(preferred_port('console_mcp'))"
-        )
-        outputs = []
-        for seed in ("1", "2"):
-            result = subprocess.run(
-                [sys.executable, "-c", code],
-                env={**os.environ, "PYTHONHASHSEED": seed},
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            assert result.returncode == 0, result.stderr
-            outputs.append(result.stdout.strip())
-        assert outputs[0] == outputs[1] == str(mcphub.preferred_port("console_mcp"))
-
-    def test_no_registry_entry_is_required_for_a_new_connector(self, tmp_path):
-        _write_connector(tmp_path, "foo_mcp", "Fresh connector, no port declared.")
-        [connector] = discover_connectors(tmp_path)
-        assert connector["port"]  # never 0 for a parsed built-in
-        assert connector["endpoint"] == f"http://127.0.0.1:{connector['port']}/mcp"
-
-    def test_allocated_ports_never_collide_within_a_run(self, tmp_path):
-        for index in range(mcphub.AUTO_PORT_SPAN + 2):
-            _write_connector(tmp_path, f"c{index:03d}_mcp", "x.")
-        ports = [c["port"] for c in discover_connectors(tmp_path)]
-        allocated = [port for port in ports if port]
-        assert len(allocated) == len(set(allocated))
-        assert all(
-            mcphub.AUTO_PORT_BASE <= port < mcphub.AUTO_PORT_BASE + mcphub.AUTO_PORT_SPAN
-            for port in allocated
-        )
-        # More connectors than range slots: the surplus reports port 0.
-        assert len(ports) - len(allocated) >= 2
-
-    def test_foreign_occupancy_shifts_the_allocation(self, tmp_path):
-        _write_connector(tmp_path, "solo_mcp", "Solo connector.")
-        [before] = discover_connectors(tmp_path)
-        hog = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            hog.bind(("127.0.0.1", before["port"]))
-            [after] = discover_connectors(tmp_path)
-        finally:
-            hog.close()
-        assert after["port"] != before["port"]
-        assert (
-            mcphub.AUTO_PORT_BASE
-            <= after["port"]
-            < mcphub.AUTO_PORT_BASE + mcphub.AUTO_PORT_SPAN
-        )
-
 
 # ---------------------------------------------------------------------------
 # externals.json loading and write-back
@@ -170,7 +59,7 @@ class TestLoadExternals:
         assert errors == []
         by_id = {c["id"]: c for c in connectors}
         remote = by_id["context7"]
-        assert remote["external"] is True and remote["kind"] == "remote"
+        assert remote["kind"] == "remote"
         assert remote["enable"] is True
         assert remote["endpoint"] == "https://mcp.context7.com/mcp"
         assert remote["headers"] == {"CONTEXT7_API_KEY": "ctx7sk-1"}
@@ -208,13 +97,12 @@ class TestLoadExternals:
                 "bad_remote": {"type": "remote", "url": "ftp://x"},
                 "bad_local": {"type": "local"},
                 "bad_headers": {"type": "remote", "url": "http://x", "headers": "nope"},
-                "console_mcp": {"type": "remote", "url": "http://x"},
+                "not_an_object": [],
             },
         )
-        connectors, errors = load_externals(path, reserved_ids={"console_mcp"})
+        connectors, errors = load_externals(path)
         assert connectors == []
         assert len(errors) == 5
-        assert any("collides" in note for note in errors)
 
     def test_valid_entries_survive_bad_neighbours(self, tmp_path):
         path = _write_externals(
@@ -299,110 +187,16 @@ class TestToolHelpers:
 # ---------------------------------------------------------------------------
 
 
-def _manager(connector_ids=("console_mcp",)) -> McpManager:
-    return McpManager(discover_connectors_stub(connector_ids))
-
-
-def discover_connectors_stub(connector_ids) -> List[Dict[str, Any]]:
-    # Explicit literal ports: the manager tests never exercise discovery or
-    # allocation, they only exercise McpManager bookkeeping.
-    connectors = []
-    for index, cid in enumerate(connector_ids):
-        port = 8940 + index
-        connectors.append(
-            {
-                "id": cid,
-                "label": cid,
-                "description": "",
-                "port": port,
-                "endpoint": f"http://127.0.0.1:{port}/mcp",
-            }
-        )
-    return connectors
-
-
-class TestMcpManager:
-    def test_active_tool_defs_only_running_connectors(self):
-        manager = _manager(("console_mcp", "playwright_mcp"))
-        manager._tools["console_mcp"] = [
-            SimpleNamespace(name="execute_command", description="", input_schema=None)
-        ]
-        manager._tools["playwright_mcp"] = [
-            SimpleNamespace(name="browser_navigate", description="", input_schema=None)
-        ]
-        tools, mapping = manager.active_tool_defs(["console_mcp", "playwright_mcp"])
-        assert tools == []  # nothing marked running yet
-        manager._connectors["console_mcp"]["status"] = "running"
-        manager._connectors["playwright_mcp"]["status"] = "error"
-        tools, mapping = manager.active_tool_defs(["console_mcp", "playwright_mcp"])
-        assert [t["function"]["name"] for t in tools] == ["execute_command"]
-        assert mapping == {"execute_command": "console_mcp"}
-
-    def test_status_lists_all_connectors(self):
-        manager = _manager(("console_mcp", "playwright_mcp"))
-        status = {s["id"]: s for s in manager.status()}
-        assert status["console_mcp"]["status"] == "stopped"
-        assert status["playwright_mcp"]["port"] == 8941
-
-    def test_stop_all_is_idempotent_without_start(self):
-        manager = _manager()
-        import asyncio
-
-        asyncio.run(manager.stop_all())
-        asyncio.run(manager.stop_all())  # second call must not raise
-
-
-class TestStartBuiltinPortHandoff:
-    def test_subprocess_receives_the_allocated_port(self, tmp_path, monkeypatch):
-        # The hub is the port authority: the child must be launched with
-        # --port set to the hub-allocated value, never left to its own
-        # module default.
-        import asyncio
-
-        manager = McpManager(
-            discover_connectors_stub(("console_mcp",)), logs_dir=tmp_path
-        )
-        # Only the lazy ``from mcp import Client`` inside _start_builtin needs
-        # a module; patching after __init__ keeps find_spec() untouched.
-        monkeypatch.setitem(sys.modules, "mcp", SimpleNamespace(Client=object))
-        captured: List[List[str]] = []
-
-        async def fake_exec(*args, **kwargs):
-            captured.append([str(arg) for arg in args])
-            return SimpleNamespace(returncode=1)  # exit -> retry loop breaks at once
-
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
-        info = manager._connectors["console_mcp"]
-        asyncio.run(manager._start_builtin("console_mcp", info))
-
-        assert captured, "connector subprocess was never spawned"
-        argv = captured[0]
-        assert f"--port={info['port']}" in argv
-        assert "--host=127.0.0.1" in argv
-        assert info["status"] == "error"  # fake process exited immediately
-        assert "exited" in (info["error"] or "")
-
-
-def _external_manager() -> McpManager:
+def _declared_manager() -> McpManager:
+    """A manager fed the dicts ``load_externals`` would produce."""
     return McpManager(
         [
-            {
-                "id": "console_mcp",
-                "label": "Console",
-                "description": "",
-                "port": 9999,
-                "endpoint": "http://127.0.0.1:9999/mcp",
-                "external": False,
-                "kind": "builtin",
-            },
             {
                 "id": "on_ext",
                 "label": "on_ext",
                 "description": "",
-                "port": 0,
                 "endpoint": "https://example.com/mcp",
                 "command": None,
-                "external": True,
                 "kind": "remote",
                 "enable": True,
                 "headers": {"SECRET": "leaky"},
@@ -412,12 +206,21 @@ def _external_manager() -> McpManager:
                 "id": "off_ext",
                 "label": "off_ext",
                 "description": "",
-                "port": 0,
                 "endpoint": "https://example.com/other",
                 "command": None,
-                "external": True,
                 "kind": "remote",
                 "enable": False,
+                "headers": {},
+                "env": {},
+            },
+            {
+                "id": "local_ext",
+                "label": "local_ext",
+                "description": "",
+                "endpoint": "",
+                "command": ["npx", "-y", "some-mcp"],
+                "kind": "local",
+                "enable": True,
                 "headers": {},
                 "env": {},
             },
@@ -425,23 +228,39 @@ def _external_manager() -> McpManager:
     )
 
 
-class TestManagerExternals:
-    def test_status_exposes_kind_and_never_secrets(self):
-        manager = _external_manager()
+class TestMcpManager:
+    def test_active_tool_defs_only_running_connectors(self):
+        manager = _declared_manager()
+        manager._tools["on_ext"] = [
+            SimpleNamespace(name="execute_command", description="", input_schema=None)
+        ]
+        manager._tools["local_ext"] = [
+            SimpleNamespace(name="browser_navigate", description="", input_schema=None)
+        ]
+        tools, mapping = manager.active_tool_defs(["on_ext", "local_ext"])
+        assert tools == []  # nothing marked running yet
+        manager._connectors["on_ext"]["status"] = "running"
+        manager._connectors["local_ext"]["status"] = "error"
+        tools, mapping = manager.active_tool_defs(["on_ext", "local_ext"])
+        assert [t["function"]["name"] for t in tools] == ["execute_command"]
+        assert mapping == {"execute_command": "on_ext"}
+
+    def test_status_lists_all_connectors_without_secrets(self):
+        manager = _declared_manager()
         entries = manager.status()
-        by_id = {entry["id"]: entry for entry in entries}
-        assert by_id["on_ext"]["kind"] == "remote"
-        assert by_id["on_ext"]["external"] is True
-        assert by_id["console_mcp"]["kind"] == "builtin"
+        status = {entry["id"]: entry for entry in entries}
+        assert status["on_ext"]["status"] == "stopped"
+        assert status["on_ext"]["kind"] == "remote"
+        assert status["local_ext"]["command"] == ["npx", "-y", "some-mcp"]
         for entry in entries:
             assert "headers" not in entry
             assert "env" not in entry
         assert "leaky" not in repr(entries)
 
-    def test_start_all_skips_disabled_externals(self):
+    def test_start_all_skips_disabled_entries(self):
         import asyncio
 
-        manager = _external_manager()
+        manager = _declared_manager()
         started: List[str] = []
 
         async def fake_start(connector_id: str) -> None:
@@ -451,14 +270,21 @@ class TestManagerExternals:
         manager._start_one = fake_start
         asyncio.run(manager.start_all())
         asyncio.run(manager.stop_all())
-        assert sorted(started) == ["console_mcp", "on_ext"]
+        assert sorted(started) == ["local_ext", "on_ext"]
 
     def test_start_stop_connector_are_noops_before_start(self):
-        manager = _external_manager()
+        manager = _declared_manager()
         manager.start_connector("on_ext")  # must not raise without a loop
         manager.stop_connector("on_ext")
         assert manager.connector_status("on_ext") == "stopped"
         assert manager.connector_status("ghost") is None
+
+    def test_stop_all_is_idempotent_without_start(self):
+        manager = _declared_manager()
+        import asyncio
+
+        asyncio.run(manager.stop_all())
+        asyncio.run(manager.stop_all())  # second call must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -467,14 +293,6 @@ class TestManagerExternals:
 
 
 class TestMcpEnvHelpers:
-    def test_mcp_enabled_ids_parses_and_dedupes(self, monkeypatch):
-        monkeypatch.setenv("MCP_ENABLED", "console_mcp, playwright_mcp,,console_mcp,")
-        assert mcp_enabled_ids() == ["console_mcp", "playwright_mcp"]
-
-    def test_mcp_enabled_ids_empty(self, monkeypatch):
-        monkeypatch.delenv("MCP_ENABLED", raising=False)
-        assert mcp_enabled_ids() == []
-
     def test_max_tool_iteration_default_and_fallbacks(self, monkeypatch):
         monkeypatch.delenv("MAX_TOOL_ITERATION", raising=False)
         monkeypatch.delenv("MAX_MCP_ITERATION", raising=False)
@@ -539,13 +357,13 @@ def mcp_client(monkeypatch, tmp_path):
 
     for key in config_module.SETTING_KEYS:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MAX_TOOL_ITERATION", "25")
     monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
-    # Point discovery at a temp folder holding two stub connectors, so the
-    # real mcp_connectors/ dir and any developer externals.json stay untouched.
+    # Point the hub at a temp declaration file, so the developer's own
+    # mcp_connectors/externals.json stays untouched. No file is written: the
+    # tests that need entries write one themselves.
     connectors_dir = tmp_path / "mcp_connectors"
     connectors_dir.mkdir()
-    _write_connector(connectors_dir, "console_mcp", "Console MCP Server.")
-    _write_connector(connectors_dir, "playwright_mcp", "Playwright MCP Server.")
     monkeypatch.setattr(mcphub.constants, "MCP_CONNECTORS_DIR", connectors_dir)
     monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH", connectors_dir / "externals.json")
     monkeypatch.setattr(
@@ -562,78 +380,6 @@ def mcp_client(monkeypatch, tmp_path):
     app = create_app()
     with TestClient(app) as test_client:
         yield test_client, app
-
-
-class TestMcpEndpoints:
-    def test_get_lists_connectors_with_stopped_status(self, mcp_client):
-        client, _ = mcp_client
-        body = client.get("/api/mcp").json()
-        assert [c["id"] for c in body["connectors"]] == [
-            "console_mcp",
-            "playwright_mcp",
-        ]
-        assert body["connectors"][0]["status"] == "stopped"
-        assert body["connectors"][0]["active"] is False
-        assert body["maxIterations"] == 25
-
-    def test_get_merges_manager_status(self, mcp_client):
-        client, app = mcp_client
-        app.state.mcp = FakeManager(
-            [{"id": "console_mcp", "status": "running", "error": None}]
-        )
-        body = client.get("/api/mcp").json()
-        assert body["installed"] is True
-        by_id = {c["id"]: c for c in body["connectors"]}
-        assert by_id["console_mcp"]["status"] == "running"
-        assert by_id["playwright_mcp"]["status"] == "stopped"
-
-    def test_post_persists_to_env_file_and_environ(self, mcp_client):
-        import os
-
-        from dotenv import dotenv_values
-
-        from src import config as config_module
-
-        client, _ = mcp_client
-        response = client.post(
-            "/api/mcp", json={"enabled": ["console_mcp"], "maxIterations": 7}
-        )
-        assert response.status_code == 200
-        body = response.json()
-        assert [c["id"] for c in body["connectors"] if c["active"]] == ["console_mcp"]
-        assert body["maxIterations"] == 7
-        assert os.environ["MCP_ENABLED"] == "console_mcp"
-        assert os.environ["MAX_TOOL_ITERATION"] == "7"
-        file_values = dotenv_values(config_module.ENV_PATH)
-        assert file_values["MCP_ENABLED"] == "console_mcp"
-        assert file_values["MAX_TOOL_ITERATION"] == "7"
-
-    def test_post_unknown_connector_returns_422(self, mcp_client):
-        client, _ = mcp_client
-        response = client.post("/api/mcp", json={"enabled": ["nope_mcp"]})
-        assert response.status_code == 422
-        assert "nope_mcp" in response.text
-
-    def test_post_invalid_max_iterations_returns_422(self, mcp_client):
-        client, _ = mcp_client
-        assert client.post("/api/mcp", json={"maxIterations": 0}).status_code == 422
-        assert client.post("/api/mcp", json={"maxIterations": 9999}).status_code == 422
-
-    def test_post_empty_list_deactivates_all(self, mcp_client):
-        import os
-
-        client, _ = mcp_client
-        client.post("/api/mcp", json={"enabled": ["console_mcp"], "maxIterations": 5})
-        response = client.post("/api/mcp", json={"enabled": [], "maxIterations": 5})
-        assert response.status_code == 200
-        # Empty selection writes a commented-out line and clears the env key.
-        assert "MCP_ENABLED" not in os.environ
-        assert not [c for c in response.json()["connectors"] if c["active"]]
-
-
-# ---------------------------------------------------------------------------
-# External connectors through the API
-# ---------------------------------------------------------------------------
 
 
 EXTERNALS_DOC = {
@@ -658,6 +404,10 @@ class RecordingManager:
         self._statuses = dict(statuses)
         self.started: List[str] = []
         self.stopped: List[str] = []
+        self.restarts: List[Any] = []
+
+    async def restart(self, connectors) -> None:
+        self.restarts.append(connectors)
 
     def status(self):
         return [
@@ -680,24 +430,32 @@ class RecordingManager:
         self._statuses[connector_id] = "stopped"
 
 
-class TestExternalConnectorEndpoints:
+class TestMcpEndpoints:
     def _externals_file(self, tmp_path, doc=None) -> Path:
         return _write_externals(
             tmp_path / "mcp_connectors" / "externals.json",
             EXTERNALS_DOC if doc is None else doc,
         )
 
-    def test_get_lists_externals_with_enable_as_active(self, mcp_client, tmp_path):
+    def test_get_without_declaration_file_lists_nothing(self, mcp_client):
+        client, _ = mcp_client
+        body = client.get("/api/mcp").json()
+        assert body["connectors"] == []
+        assert body["maxIterations"] == 25
+        assert body["externalsError"] is None
+
+    def test_get_lists_declared_connectors_with_enable_as_active(
+        self, mcp_client, tmp_path
+    ):
         self._externals_file(tmp_path)
         client, _ = mcp_client
         body = client.get("/api/mcp").json()
-        ids = [c["id"] for c in body["connectors"]]
-        # Built-ins first (discovery order), then externals sorted by id.
-        assert ids == ["console_mcp", "playwright_mcp", "chrome-devtools", "context7"]
+        # Sorted by id, only what externals.json declares.
+        assert [c["id"] for c in body["connectors"]] == ["chrome-devtools", "context7"]
         by_id = {c["id"]: c for c in body["connectors"]}
-        assert by_id["console_mcp"]["external"] is False
         remote = by_id["context7"]
-        assert remote["external"] is True and remote["kind"] == "remote"
+        assert remote["kind"] == "remote"
+        assert remote["status"] == "stopped"
         assert remote["active"] is True  # enable: true
         assert by_id["chrome-devtools"]["active"] is False  # enable: false
         assert by_id["chrome-devtools"]["command"] == [
@@ -706,6 +464,18 @@ class TestExternalConnectorEndpoints:
             "chrome-devtools-mcp@latest",
         ]
 
+    def test_get_merges_manager_status(self, mcp_client, tmp_path):
+        self._externals_file(tmp_path)
+        client, app = mcp_client
+        app.state.mcp = FakeManager(
+            [{"id": "context7", "status": "running", "error": None}]
+        )
+        body = client.get("/api/mcp").json()
+        assert body["installed"] is True
+        by_id = {c["id"]: c for c in body["connectors"]}
+        assert by_id["context7"]["status"] == "running"
+        assert by_id["chrome-devtools"]["status"] == "stopped"
+
     def test_get_never_leaks_external_secrets(self, mcp_client, tmp_path):
         self._externals_file(tmp_path)
         client, _ = mcp_client
@@ -713,7 +483,7 @@ class TestExternalConnectorEndpoints:
         assert "ctx7sk-secret-value" not in response.text
         assert "CONTEXT7_API_KEY" not in response.text
 
-    def test_post_writes_enable_back_but_not_into_mcp_enabled(self, mcp_client, tmp_path):
+    def test_post_writes_enable_back_and_only_the_cap_to_env(self, mcp_client, tmp_path):
         import os
 
         from dotenv import dotenv_values
@@ -723,12 +493,15 @@ class TestExternalConnectorEndpoints:
         path = self._externals_file(tmp_path)
         client, _ = mcp_client
         response = client.post(
-            "/api/mcp", json={"enabled": ["console_mcp", "context7"], "maxIterations": 9}
+            "/api/mcp", json={"enabled": ["context7"], "maxIterations": 9}
         )
         assert response.status_code == 200
-        # Externals never enter MCP_ENABLED — only the built-in stays.
-        assert os.environ["MCP_ENABLED"] == "console_mcp"
-        assert "context7" not in dotenv_values(config_module.ENV_PATH)["MCP_ENABLED"]
+        # The enable flag is the only activation source: no MCP_ENABLED is
+        # ever written back to .env or the environment.
+        assert "MCP_ENABLED" not in os.environ
+        file_values = dotenv_values(config_module.ENV_PATH)
+        assert "MCP_ENABLED" not in file_values
+        assert file_values["MAX_TOOL_ITERATION"] == "9"
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["context7"]["enable"] is True
         assert data["chrome-devtools"]["enable"] is False
@@ -736,7 +509,7 @@ class TestExternalConnectorEndpoints:
         by_id = {c["id"]: c for c in response.json()["connectors"]}
         assert by_id["context7"]["active"] is True
 
-    def test_post_enabling_only_one_external_disables_the_other(self, mcp_client, tmp_path):
+    def test_post_enabling_only_one_connector_disables_the_other(self, mcp_client, tmp_path):
         path = self._externals_file(tmp_path)
         client, _ = mcp_client
         client.post("/api/mcp", json={"enabled": ["chrome-devtools"]})
@@ -744,11 +517,26 @@ class TestExternalConnectorEndpoints:
         assert data["chrome-devtools"]["enable"] is True
         assert data["context7"]["enable"] is False
 
-    def test_post_unknown_connector_still_422_with_externals(self, mcp_client, tmp_path):
+    def test_post_unknown_connector_returns_422(self, mcp_client, tmp_path):
         self._externals_file(tmp_path)
         client, _ = mcp_client
         response = client.post("/api/mcp", json={"enabled": ["ghost"]})
         assert response.status_code == 422
+        assert "ghost" in response.text
+
+    def test_post_invalid_max_iterations_returns_422(self, mcp_client):
+        client, _ = mcp_client
+        assert client.post("/api/mcp", json={"maxIterations": 0}).status_code == 422
+        assert client.post("/api/mcp", json={"maxIterations": 9999}).status_code == 422
+
+    def test_post_empty_list_deactivates_all(self, mcp_client, tmp_path):
+        path = self._externals_file(tmp_path)
+        client, _ = mcp_client
+        response = client.post("/api/mcp", json={"enabled": [], "maxIterations": 5})
+        assert response.status_code == 200
+        assert not [c for c in response.json()["connectors"] if c["active"]]
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert not any(entry["enable"] for entry in data.values())
 
     def test_corrupt_file_surfaces_externals_error_and_survives_post(self, mcp_client, tmp_path):
         path = tmp_path / "mcp_connectors" / "externals.json"
@@ -757,7 +545,7 @@ class TestExternalConnectorEndpoints:
         client, _ = mcp_client
         body = client.get("/api/mcp").json()
         assert "not readable JSON" in body["externalsError"]
-        response = client.post("/api/mcp", json={"enabled": ["console_mcp"], "maxIterations": 9})
+        response = client.post("/api/mcp", json={"enabled": [], "maxIterations": 9})
         assert response.status_code == 200
         assert "not readable JSON" in response.json()["externalsError"]
         assert path.read_text(encoding="utf-8") == "{oops"
@@ -766,32 +554,92 @@ class TestExternalConnectorEndpoints:
         self._externals_file(tmp_path)
         client, app = mcp_client
         hub = RecordingManager(
-            {
-                "console_mcp": "running",
-                "playwright_mcp": "running",
-                "context7": "running",
-                "chrome-devtools": "stopped",
-            }
+            {"context7": "running", "chrome-devtools": "stopped"}
         )
         app.state.mcp = hub
         client.post(
             "/api/mcp",
-            json={"enabled": ["console_mcp", "playwright_mcp", "context7", "chrome-devtools"]},
+            json={"enabled": ["context7", "chrome-devtools"]},
         )
         assert hub.started == ["chrome-devtools"]  # newly enabled
         assert hub.stopped == []
 
-        client.post("/api/mcp", json={"enabled": ["console_mcp", "playwright_mcp"]})
-        # Both externals now go down: context7 was running, chrome starting.
+        client.post("/api/mcp", json={"enabled": []})
+        # Both go down: context7 was running, chrome starting.
         assert hub.stopped == ["chrome-devtools", "context7"]
         assert hub.started == ["chrome-devtools"]  # unchanged set not restarted
 
-    def test_chat_uses_mcp_enabled_plus_enabled_externals(self, mcp_client, tmp_path, monkeypatch):
-        import os
-
+    def test_restart_rereads_the_declaration_file(
+        self, mcp_client, tmp_path, monkeypatch
+    ):
         self._externals_file(tmp_path)
-        monkeypatch.setenv("MCP_ENABLED", "console_mcp")
-        assert routes._active_connector_ids() == ["console_mcp", "context7"]
+        client, app = mcp_client
+        # The hub under test is a fake, so connecting is allowed here: the
+        # autouse switch would otherwise blank the scan (tested separately).
+        monkeypatch.delenv("BENCHMARKIT_DISABLE_MCP", raising=False)
+        hub = RecordingManager({"context7": "running"})
+        app.state.mcp = hub
+
+        response = client.post("/api/mcp/restart")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [c["id"] for c in body["connectors"]] == [
+            "chrome-devtools",
+            "context7",
+        ]
+        assert body["externalsError"] is None
+        assert len(hub.restarts) == 1
+        # The hub is fed the fresh scan, in the payload's own (id-sorted) order.
+        assert [c["id"] for c in hub.restarts[0]] == ["chrome-devtools", "context7"]
+
+    def test_restart_honours_the_disable_switch(self, mcp_client, tmp_path):
+        # BENCHMARKIT_DISABLE_MCP keeps the endpoints alive but connects
+        # nothing — the same rule as the app lifespan (tests rely on it).
+        self._externals_file(tmp_path)
+        client, app = mcp_client
+        hub = RecordingManager({})
+        app.state.mcp = hub
+        assert client.post("/api/mcp/restart").status_code == 200
+        assert hub.restarts == [[]]
+
+    def test_restart_without_a_hub_returns_503(self, mcp_client):
+        client, app = mcp_client
+        app.state.mcp = None
+        assert client.post("/api/mcp/restart").status_code == 503
+
+    def test_restart_during_a_run_returns_409(self, mcp_client, tmp_path):
+        self._externals_file(tmp_path)
+        client, app = mcp_client
+        hub = RecordingManager({"context7": "running"})
+        app.state.mcp = hub
+        app.state.run_state.status = "running"
+        response = client.post("/api/mcp/restart")
+        assert response.status_code == 409
+        assert hub.restarts == []
+        app.state.run_state.status = "idle"
+
+    def test_restart_during_a_streaming_chat_returns_409(self, mcp_client, tmp_path):
+        # A hub restart closes the client sessions a tool call is waiting on,
+        # so it must not race an in-flight chat reply.
+        self._externals_file(tmp_path)
+        client, app = mcp_client
+        hub = RecordingManager({"context7": "running"})
+        app.state.mcp = hub
+        guard = object()
+        routes._CHAT_TASKS.add(guard)
+        try:
+            response = client.post("/api/mcp/restart")
+        finally:
+            routes._CHAT_TASKS.discard(guard)
+        assert response.status_code == 409
+        assert hub.restarts == []
+        # And the guard released: the next restart goes through.
+        assert client.post("/api/mcp/restart").status_code == 200
+
+    def test_chat_uses_the_enabled_declaration_entries(self, mcp_client, tmp_path):
+        self._externals_file(tmp_path)
+        assert routes._active_connector_ids() == ["context7"]
 
 
 # ---------------------------------------------------------------------------
@@ -1224,11 +1072,20 @@ class TestChatToolLoop:
 
 
 class TestChatMcpWiring:
-    def test_active_connectors_pass_tools_to_stream_chat(self, mcp_client, monkeypatch):
+    def test_active_connectors_pass_tools_to_stream_chat(
+        self, mcp_client, tmp_path, monkeypatch
+    ):
         client, app = mcp_client
-        import os
-
-        os.environ["MCP_ENABLED"] = "console_mcp"
+        _write_externals(
+            tmp_path / "mcp_connectors" / "externals.json",
+            {
+                "context7": {
+                    "type": "remote",
+                    "enable": True,
+                    "url": "https://mcp.context7.com/mcp",
+                }
+            },
+        )
 
         tools = [
             {"type": "function", "function": {"name": "execute_command",
@@ -1238,7 +1095,7 @@ class TestChatMcpWiring:
         class Hub(FakeManager):
             def active_tool_defs(self, ids):
                 self.ids = ids
-                return tools, {"execute_command": "console_mcp"}
+                return tools, {"execute_command": "context7"}
 
             def call_tool_sync(self, cid, name, args):
                 return f"{cid}:{name}"
@@ -1265,10 +1122,10 @@ class TestChatMcpWiring:
             "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
         )
         assert response.status_code == 200
-        assert hub.ids == ["console_mcp"]
+        assert hub.ids == ["context7"]
         assert captured["tools"] == tools
-        assert captured["tool_servers"] == {"execute_command": "console_mcp"}
-        assert captured["exec"] == "console_mcp:execute_command"
+        assert captured["tool_servers"] == {"execute_command": "context7"}
+        assert captured["exec"] == "context7:execute_command"
 
     def test_nothing_enabled_keeps_call_shape(self, mcp_client, monkeypatch):
         client, app = mcp_client

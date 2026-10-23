@@ -50,15 +50,7 @@ class LspManager:
         project_root: Path = constants.PROJECT_ROOT,
         logs_dir: Optional[Path] = None,
     ) -> None:
-        self._servers: Dict[str, Dict[str, Any]] = {
-            server["id"]: {
-                **server,
-                "status": "stopped",
-                "error": None,
-                "last_used": 0.0,
-            }
-            for server in servers
-        }
+        self._servers: Dict[str, Dict[str, Any]] = self._index(servers)
         self._python_exe = python_exe
         self._project_root = project_root
         self._logs_dir = logs_dir or (project_root / "logs" / "lsp")
@@ -70,6 +62,19 @@ class LspManager:
         self._stopped = False
         self._installed = lsp_installed()
         self._reaper: Optional[asyncio.TimerHandle] = None
+
+    @staticmethod
+    def _index(servers: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Definition list -> id-keyed live records (also used by :meth:`restart`)."""
+        return {
+            server["id"]: {
+                **server,
+                "status": "stopped",
+                "error": None,
+                "last_used": 0.0,
+            }
+            for server in servers
+        }
 
     @property
     def installed(self) -> bool:
@@ -644,6 +649,41 @@ class LspManager:
             self._thread.join(timeout=constants.STOP_GRACE_SECONDS)
         self._loop = None
         self._thread = None
+
+    async def restart(
+        self,
+        servers: List[Dict[str, Any]],
+        enabled_ids: Optional[List[str]] = None,
+    ) -> None:
+        """Re-read ``lsp_servers.json``: shut every server down and respawn.
+
+        Unlike :meth:`stop_all`, the manager stays usable afterwards: a fresh
+        ``lsp-hub`` thread (and reaper) is created and *this same object* keeps
+        serving the chat worker threads that already hold a reference to it, so
+        a restart never invalidates an in-flight conversation. ``servers`` is
+        the freshly validated file scan, so a hand-edited declaration — a new
+        server entry, a changed ``command``, another ``workspaceRoot`` — takes
+        effect without restarting the web app.
+
+        ``enabled_ids`` re-applies the two-gate rule (entry ``enable`` flag and
+        ``LSP_ENABLED``); ``None`` keeps the startup behaviour of spawning every
+        entry whose flag is on. Never raises: a server that fails to come back
+        up lands in its own ``status``/``error``, exactly as on startup.
+        """
+        await self.stop_all()
+        self._servers = self._index(servers)
+        self._sessions.clear()
+        self._defs.clear()
+        self._loop = None
+        self._thread = None
+        self._reaper = None
+        self._started = False
+        self._stopped = False
+        self._installed = lsp_installed()
+        if enabled_ids is None:
+            await self.start_all()
+        else:
+            await self.start_enabled(enabled_ids)
 
     # -- status ----------------------------------------------------------------
 

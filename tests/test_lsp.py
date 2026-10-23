@@ -36,6 +36,7 @@ from src.core.lsphub import (
     tools_for_server,
 )
 
+from src.core import mcphub
 from src.core.mcphub import tools_to_openai_format
 
 FAKE_SERVER = str(Path(__file__).parent / "fake_langserver.py")
@@ -384,6 +385,64 @@ class TestLspLifecycle:
         assert hub._sessions["fake"].process.pid != first_pid
 
     @pytest.mark.anyio
+    async def test_restart_rereads_the_declaration_file(self, hub, tmp_path):
+        # The whole point of hub restart: an edited lsp_servers.json (here, a
+        # different workspaceRoot and a changed tool list) applies without
+        # restarting the web app.
+        first = _fake_server_entry(tmp_path, "fake")
+        await _start(hub, first)
+        old_process = hub._sessions["fake"].process
+        (Path(first["workspaceRoot"]) / "in_root1.py").write_text(
+            "x = 1\n", encoding="utf-8"
+        )
+        other = tmp_path / "other_root"
+        other.mkdir()
+        (other / "in_root2.py").write_text("x = 1\n", encoding="utf-8")
+        second = {**first, "workspaceRoot": str(other),
+                  "tools": ["diagnostics"]}
+
+        await hub.restart([second], ["fake"])
+
+        assert hub.server_status("fake") == "running", hub._servers["fake"]["error"]
+        assert hub._sessions["fake"].process.pid != old_process.pid
+        for _ in range(100):
+            if old_process.returncode is not None:
+                break
+            await asyncio.sleep(0.05)
+        assert old_process.returncode is not None
+        # The new workspaceRoot is in force: its file resolves, the old
+        # root's file is gone.
+        assert hub.call_tool_sync(
+            "fake", "lsp_fake_diagnostics", {"path": "in_root2.py"}
+        ) == "No diagnostics."
+        assert hub.call_tool_sync(
+            "fake", "lsp_fake_diagnostics", {"path": "in_root1.py"}
+        ).startswith("Error: not a file:")
+        # Tool defs come from the new entry too (hover dropped).
+        tools, _mapping = hub.active_tool_defs(["fake"])
+        assert [d["function"]["name"] for d in tools] == ["lsp_fake_diagnostics"]
+
+    @pytest.mark.anyio
+    async def test_restart_can_drop_and_add_servers(self, hub, tmp_path):
+        await _start(hub, _fake_server_entry(tmp_path, "gone"))
+        assert hub.server_status("gone") == "running"
+        incoming = _fake_server_entry(tmp_path, "fresh")
+
+        await hub.restart([incoming], ["fresh"])
+
+        assert hub.server_status("gone") is None  # no longer declared
+        assert hub.server_status("fresh") == "running", hub._servers["fresh"]["error"]
+
+    @pytest.mark.anyio
+    async def test_restart_respects_the_enabled_gate(self, hub, tmp_path):
+        # A dormant file stays dormant: declared but not enabled means no
+        # spawn (the two-gate rule the startup lifespan applies).
+        entry = _fake_server_entry(tmp_path)
+        await hub.restart([entry], [])
+        assert hub.server_status("fake") == "stopped"
+        assert "fake" not in hub._sessions
+
+    @pytest.mark.anyio
     async def test_initialize_failure_lands_in_status_verbatim(self, hub, tmp_path):
         entry = _fake_server_entry(tmp_path, "fake", "--fail-init")
         await _start(hub, entry)
@@ -724,6 +783,10 @@ class FakeLspManager:
         self._status = status or []
         self.started: List[str] = []
         self.stopped: List[str] = []
+        self.restarts: List[Any] = []
+
+    async def restart(self, servers, enabled_ids=None) -> None:
+        self.restarts.append((servers, enabled_ids))
 
     def status(self):
         return self._status
@@ -780,6 +843,11 @@ def lsp_client(monkeypatch, tmp_path):
     monkeypatch.setattr(lsp_constants, "LSP_CONNECTORS_DIR", servers_dir)
     monkeypatch.setattr(lsp_constants, "LSP_SERVERS_PATH", servers_path)
     monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", servers_dir / "restricted-paths.txt")
+    # Keep the MCP hub off the developer's own externals.json: no connector is
+    # declared in these tests unless they write that file themselves.
+    monkeypatch.setattr(
+        mcphub.constants, "EXTERNALS_PATH", servers_dir / "externals.json"
+    )
     monkeypatch.setattr(
         routes,
         "load_endpoints_config",
@@ -902,6 +970,67 @@ class TestLspEndpoints:
         assert by_id["pyright"]["toolCount"] == 3
         assert by_id["vue"]["status"] == "stopped"
 
+    def test_restart_rereads_the_file_and_reapplies_the_gate(
+        self, lsp_client, monkeypatch
+    ):
+        client, app = lsp_client
+        # The hub under test is a fake, so spawning is allowed here: the
+        # autouse switch would otherwise blank the scan (tested separately).
+        monkeypatch.delenv("BENCHMARKIT_DISABLE_LSP", raising=False)
+        monkeypatch.setenv("LSP_ENABLED", "pyright")
+        hub = FakeLspManager()
+        app.state.lsp = hub
+
+        response = client.post("/api/lsp/restart")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert {server["id"] for server in body["servers"]} == {"pyright", "vue"}
+        assert body["serversError"] is None
+        # Fresh file scan + the two-gate intersection (vue is enable:false).
+        assert len(hub.restarts) == 1
+        servers, enabled_ids = hub.restarts[0]
+        assert [server["id"] for server in servers] == ["pyright", "vue"]
+        assert enabled_ids == ["pyright"]
+
+    def test_restart_keeps_a_dormant_file_dormant(self, lsp_client, monkeypatch):
+        client, app = lsp_client
+        monkeypatch.delenv("BENCHMARKIT_DISABLE_LSP", raising=False)
+        monkeypatch.delenv("LSP_ENABLED", raising=False)  # env gate closed
+        hub = FakeLspManager()
+        app.state.lsp = hub
+        client.post("/api/lsp/restart")
+        servers, enabled_ids = hub.restarts[0]
+        assert [server["id"] for server in servers] == ["pyright", "vue"]
+        assert enabled_ids == []
+
+    def test_restart_honours_the_disable_switch(self, lsp_client, monkeypatch):
+        # BENCHMARKIT_DISABLE_LSP keeps the endpoints alive but spawns
+        # nothing — the same rule as the app lifespan (tests rely on it).
+        client, app = lsp_client
+        monkeypatch.setenv("LSP_ENABLED", "pyright")
+        hub = FakeLspManager()
+        app.state.lsp = hub
+        client.post("/api/lsp/restart")
+        servers, enabled_ids = hub.restarts[0]
+        assert servers == []
+        assert enabled_ids == []
+
+    def test_restart_during_a_run_returns_409(self, lsp_client):
+        client, app = lsp_client
+        hub = FakeLspManager()
+        app.state.lsp = hub
+        app.state.run_state.status = "running"
+        response = client.post("/api/lsp/restart")
+        assert response.status_code == 409
+        assert hub.restarts == []
+        app.state.run_state.status = "idle"
+
+    def test_restart_without_a_hub_returns_503(self, lsp_client):
+        client, app = lsp_client
+        app.state.lsp = None
+        assert client.post("/api/lsp/restart").status_code == 503
+
     def test_log_endpoint_returns_the_tail(self, lsp_client):
         client, app = lsp_client
         app.state.lsp = FakeLspManager()
@@ -984,7 +1113,14 @@ class TestChatLspWiring:
     def test_mcp_and_lsp_merge_into_one_loop(self, lsp_client, monkeypatch):
         client, app = lsp_client
         monkeypatch.setenv("LSP_ENABLED", "pyright")
-        monkeypatch.setenv("MCP_ENABLED", "console_mcp")
+        # The MCP connector comes from the declaration file, whose ``enable``
+        # flag is the only activation source.
+        externals_path = mcphub.constants.EXTERNALS_PATH
+        externals_path.parent.mkdir(parents=True, exist_ok=True)
+        externals_path.write_text(
+            json.dumps({"console_mcp": {"type": "local", "enable": True, "command": ["x"]}}),
+            encoding="utf-8",
+        )
 
         mcp_tools = [_lsp_def("execute_command")]
 

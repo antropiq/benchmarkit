@@ -295,26 +295,26 @@ function serverDetail(server) {
           <section v-show="activeSection === 'mcp'">
             <h3 class="settings-section-title">MCP connectors</h3>
             <p class="caption">
-              Connector servers start with the app and stop when it quits.
-              Activated connectors add their tools to the Chat tab only —
-              benchmark runs never use them. Toggling an
-              <span class="mcp-external-tag">[external]</span> connector updates
-              <code>mcp_connectors/externals.json</code> and starts or stops it
-              right away (local connectors launched through
+              Every connector is declared in
+              <code>mcp_connectors/externals.json</code>; connected ones start
+              with the app and stop when it quits. Activated connectors add
+              their tools to the Chat tab only — benchmark runs never use them.
+              Toggling one updates its <code>enable</code> flag in that file and
+              starts or stops it right away (local connectors launched through
               <code>npx</code> may take a few seconds to run).
             </p>
             <p v-if="!state.mcpInstalled" class="caption alert-error" role="alert">
               The mcp package is not installed. Run
-              <code>pip install -e ".[mcp]"</code> (then
-              <code>playwright install chromium</code>) and restart the app.
+              <code>pip install -e ".[mcp]"</code> and restart the app.
             </p>
             <p v-if="state.mcpExternalsError" class="caption alert-error mcp-externals-error" role="alert">
               {{ state.mcpExternalsError }}
             </p>
             <p v-if="state.mcpLoading" class="caption">Loading connectors…</p>
             <p v-else-if="!state.mcpConnectors.length" class="caption">
-              No connectors found in <code>mcp_connectors/</code> (expected
-              <code>*_mcp.py</code> modules or <code>externals.json</code> entries).
+              Nothing declared in <code>mcp_connectors/externals.json</code>:
+              add a <code>remote</code> or <code>local</code> entry to get
+              connectors here.
             </p>
             <div v-for="connector in state.mcpConnectors" :key="connector.id" class="mcp-panel">
               <div class="mcp-panel-header">
@@ -327,14 +327,9 @@ function serverDetail(server) {
                     @change="toggleMcp(connector.id, $event.target.checked)"
                   />
                   {{ connector.label }}
-                  <span v-if="connector.external" class="mcp-external-tag">[external]</span>
+                  <span v-if="connector.kind" class="mcp-external-tag">[{{ connector.kind }}]</span>
                 </label>
                 <span class="mcp-panel-badges">
-                  <span
-                    v-if="connector.port"
-                    class="badge mcp-port-badge"
-                    :title="connector.endpoint"
-                  >:{{ connector.port }}</span>
                   <span class="badge" :class="MCP_STATUS_CLASS[connector.status]">
                     {{ connector.status }}
                   </span>

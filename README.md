@@ -26,9 +26,10 @@ same configured model interactively.
   warm-up request so model loading never pollutes the numbers.
 - **Chat tab** — interactive streaming chat with the benchmark-configured
   model, including a "thinking" indicator while the model emits reasoning.
-- **Optional MCP tools in Chat** — activate the bundled browser and console
-  MCP connectors so the chat model can browse the web and run whitelisted
-  shell commands; tool calls appear as badges in the transcript.
+- **Optional MCP tools in Chat** — declare MCP connectors (remote HTTP or
+  local stdio) in `mcp_connectors/externals.json` and tick them in Settings so
+  the chat model can browse the web, read docs or run whitelisted shell
+  commands; tool calls appear as badges in the transcript.
 - **Rich rendering** — answers render as Markdown with KaTeX math,
   syntax-highlighted code blocks, and Mermaid diagrams.
 - **In-app settings** — a dialog to edit endpoint, sampling parameters,
@@ -65,27 +66,27 @@ pip install -e .
 
 #### MCP connectors (Chat tab, optional)
 
-To let the Chat model use the bundled MCP connectors
-(`mcp_connectors/`), install the optional `mcp` extra and the Chromium
-binaries the browser connector needs:
+Connectors are declared — never coded — in
+`mcp_connectors/externals.json`, keyed by id: a `remote` entry (Streamable
+HTTP `url` plus optional `headers`) or a `local` entry (a stdio `command`
+argv, e.g. launched through `npx`). Install the optional `mcp` extra, and the
+Chromium binaries when a connector drives a browser:
 
 ```bash
 pip install -e ".[mcp]"          # adds the mcp SDK + playwright
 playwright install chromium      # Linux: playwright install --with-deps chromium
 ```
 
-The connector servers start when the app starts and stop when it quits. The
-hub assigns every built-in connector a listen port automatically — derived
-deterministically from its id inside the `8940–8999` range, checked for
-availability, and passed to the connector as `--port` — so a new
-`*_mcp.py` file needs no port registration anywhere; the assigned port is
-shown as a badge in **Settings → MCP**. Nothing is exposed to the model until
-you tick a connector in **Settings → MCP** (persisted as `MCP_ENABLED` in
-`.env`); benchmark runs never use tools. The **Max tool iterations** field
-(`MAX_MCP_ITERATION`, default 25) caps the tool-calling loop of a single
-chat reply and is shared by all connectors. Connector stdout/stderr is
-captured in `logs/mcp/`. Without the extra installed everything keeps
-working — the MCP settings panel just shows an install hint.
+Enabled connectors are connected when the app starts and closed when it
+quits. Nothing is exposed to the model until its `enable` flag is on — the
+single source of truth, edited from **Settings → MCP** (which writes the flag
+back to the file and starts/stops the connector right away) or by hand;
+benchmark runs never use tools. The file may hold API keys, so it is
+gitignored and its `headers`/`env` are never returned by the API. The **Max
+tool iterations** field (`MAX_TOOL_ITERATION`, default 25) caps the
+tool-calling loop of a single chat reply and is shared by all connectors and
+language servers. Without the extra installed everything keeps working — the
+MCP settings panel just shows an install hint.
 
 ### 2. Build the frontend
 
@@ -161,7 +162,8 @@ If you have good questions to add please share them! 🙏
   Markdown always passes through DOMPurify.
 - **Single run.** One benchmark run at a time, state in memory; the run and
   the chat share the configured endpoint and refuse to overlap.
-- **MCP lifecycle.** Connector servers live inside the app lifespan
-  (`src/core/mcphub/`): one subprocess each, one persistent MCP client
-  per connector on a private asyncio thread that chat worker threads call
-  through synchronously; everything is terminated on shutdown.
+- **MCP lifecycle.** Connector sessions live inside the app lifespan
+  (`src/core/mcphub/`): one persistent MCP client per declared connector on a
+  private asyncio thread that chat worker threads call through synchronously
+  (a `local` connector's stdio child is owned by that client); everything is
+  closed on shutdown.
