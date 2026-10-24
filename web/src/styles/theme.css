@@ -1042,6 +1042,28 @@ body {
 
 /* -- tab navigation (centered in the application bar) ------------------------- */
 
+/* Grid cell between the brand and the actions: the tab pill plus the working
+   location label next to it, kept together and centred. */
+.appbar-center {
+  display: flex;
+  align-items: center;
+  gap: var(--bi-space-3);
+  min-width: 0;
+  justify-self: center;
+}
+
+.appbar-workspace {
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--pico-muted-color);
+}
+
+.appbar-workspace-path {
+  font-family: var(--pico-font-family-monospace);
+  unicode-bidi: isolate;
+}
+
 .tab-nav {
   display: inline-flex;
   align-items: center;
@@ -1050,7 +1072,7 @@ body {
   border-radius: 999px;
   border: 1px solid var(--bi-border);
   background-color: var(--bi-surface-2);
-  justify-self: center;
+  flex: 0 0 auto;
 }
 
 .tab-btn {

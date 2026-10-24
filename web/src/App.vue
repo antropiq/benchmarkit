@@ -9,9 +9,14 @@ import StreamPanel from './components/StreamPanel.vue'
 import WorkBenchView from './components/WorkBenchView.vue'
 import { useBenchmark } from './composables/useBenchmark'
 
-const { state, loadConfig, start, stop } = useBenchmark()
+const { state, loadConfig, start, stop, loadPathLocation } = useBenchmark()
 
-onMounted(loadConfig)
+onMounted(() => {
+  loadConfig()
+  // The app bar shows the active working location, so fetch it at boot too —
+  // not only when the settings dialog opens.
+  loadPathLocation()
+})
 
 const config = computed(() => state.config)
 const onBenchmarkTab = computed(() => state.activeTab === 'benchmark')

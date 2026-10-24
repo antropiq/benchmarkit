@@ -443,7 +443,10 @@ export function useBenchmark() {
       state.lspError = null
       state.lspServersError = null
       state.pathLocation = ''
-      state.pathLocationCurrent = ''
+      // ``pathLocationCurrent`` is deliberately *not* blanked: it is the value
+      // the app bar label shows, and blanking it would make that label
+      // disappear for the moment loadPathLocation() below takes. The dialog
+      // field still re-syncs to it (loadPathLocation assigns both).
       state.pathLocationError = null
       refreshModelLists()
       loadQuestionSets()

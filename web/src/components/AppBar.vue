@@ -12,6 +12,11 @@ const models = computed(() => (state.config?.models ?? []).join(' · '))
 const serverUrl = computed(() => state.config?.serverUrl || '')
 const running = computed(() => state.status === 'running')
 
+// Working location both hubs run against: ``pathLocationCurrent`` is the
+// value the server confirmed, so the app bar shows what is live and updates
+// on its own as soon as the Settings dialog sets a new one.
+const workspace = computed(() => state.pathLocationCurrent || '')
+
 // One pill for both screens: a running benchmark wins; otherwise a chat
 // reply in flight reports its own phase (including the reasoning flag).
 const chatBusy = computed(() =>
@@ -47,7 +52,15 @@ const pillClass = computed(() => {
       </span>
     </div>
 
-    <TabNav />
+    <div class="appbar-center">
+      <TabNav />
+      <span
+        v-if="workspace"
+        class="appbar-workspace"
+        :title="`Working location: ${workspace}`"
+        >Workspace &#8594; <span class="appbar-workspace-path">{{ workspace }}</span></span
+      >
+    </div>
 
     <div class="appbar-actions">
       <span class="status-pill" :class="pillClass" role="status">
