@@ -1,136 +1,209 @@
 # AGENTS.md — benchmarkit
 
-## Project overview
+## What it is
 
-A FastAPI + Vue 3 app that benchmarks LLM endpoints: it streams questions to a configured model, collects responses, and verifies them against expected answers with a secondary LLM verifier agent. Question sets are JSON files in `resources/` (active set chosen by `QUESTION_SET`); configuration comes from `.env`. The frontend is a Vite-built SPA served by FastAPI, with two tabs: **Benchmark** (run + live SSE progress) and **WorkBench** (interactive streaming chat, optionally augmented with MCP connectors and language servers). It targets desktop browsers only.
+A self-hosted FastAPI + Vue 3 app that benchmarks LLM inference endpoints
+(llama.cpp or any OpenAI-compatible server). It streams each question of a
+question set to the configured model, measures how fast and how well the model
+answers, and grades every answer against the expected one with a secondary
+**verifier LLM**. Everything reaches the browser live over Server-Sent Events.
+Desktop browsers only.
 
-Naming note: the tab was renamed Chat → WorkBench, but everything behind it kept the `chat` name — `/api/chat`, `core/chat.py`, the `useChat` composable, `ChatStopwatch.vue`, and `state.activeTab === 'chat'`. Only the *view components* were renamed `WorkBench*`.
+The app has two tabs, sharing one LLM configuration and one streaming layer:
+
+- **Benchmark** — runs a question set against the configured model, showing
+  answers, scores, timings and token/s as they arrive.
+- **WorkBench** — interactive streaming chat with that same model, optionally
+  augmented with MCP connectors and language servers.
 
 ## Commands
 
 ```bash
-# Setup (pyenv virtualenv named `benchmarkit`, no .venv directory)
+# Setup — pyenv virtualenv named `benchmarkit`, no .venv directory
 pip install -e .
 pip install -e ".[test]"     # test deps
-pip install -e ".[mcp]"      # optional MCP extras, then: playwright install chromium
-pip install -e ".[lsp]"      # optional LSP extras (pygls, lsprotocol)
+pip install -e ".[mcp]"      # MCP extras, then: playwright install chromium
+pip install -e ".[lsp]"      # LSP extras (pygls, lsprotocol)
 
-cd web && npm install && npm run build   # frontend -> web/dist, served by FastAPI
-cd web && npm run dev                    # Vite dev server :5173, proxies /api to :8000
+cd web && npm install && npm run build   # SPA -> web/dist, served by FastAPI
+cd web && npm run dev                    # Vite dev server :5173, proxies /api
 
-benchmarkit                              # serve API + UI on http://127.0.0.1:8000
+benchmarkit                              # app on http://127.0.0.1:8000
 pytest                                   # test suite (tests/)
 ```
 
-Dependencies are managed via `pyproject.toml` (hatchling backend). No lint step; the only frontend build is `vite build`.
+No lint step; the only frontend build is `vite build`. `web/dist` must exist
+for FastAPI to serve the UI — the API works without it.
 
 ## Code structure
 
-Python package layout under `src/`, split into a UI-free core and the API:
+### Backend (`src/`)
+
+Two layers: a UI-free **core** and the **API** in front of it. Core functions
+never touch FastAPI — they take an injected `emit(event: dict)` callable and
+report progress through it.
 
 | Module | Purpose |
 |---|---|
-| `api/server.py` | `create_app()` (routers + static `web/dist` + `GET /api/health`), MCP and LSP hub lifespan start/stop, `run()` entry (uvicorn on 127.0.0.1:8000) |
-| `api/routes.py` | REST + SSE endpoints, `RunState` (single active run), worker-thread launch |
-| `api/events.py` | `EventBus`: seq-numbered in-memory event buffer with replay; SSE formatting |
-| `core/bench.py` | Benchmark loop (`run_benchmark()` / `process_question()`), saves `results.json` |
-| `core/llm.py` | `call_llm_and_stream()` / `warmup_model()` / `verify_response()` — take an `emit` callable, no UI concerns |
-| `core/chat.py` | `stream_chat()` — one streamed chat reply, with the shared MCP + LSP tool loop |
-| `core/utils.py` | `save_results()` (`results.json`), `estimate_completion_tokens()` fallback, `format_time()` |
-| `core/mcphub/` | MCP connector management: every connector comes from the declarative `externals.json` (remote Streamable HTTP or local stdio), hot toggles. One concern per module: `constants` (paths/timeouts), `validation` (shared `headers`/`env` + command shapes, also used by lsphub), `discovery` (read/validate/write `externals.json`), `formatting` (MCP tool/result objects → OpenAI/plain text), `process` (`connector_environment`, also used by lsphub), `manager` (`McpManager`) |
-| `core/lsphub/` | Language-server management, mirroring `mcphub`: `lsp_servers.json` entries spawned as stdio LSP sessions (handshake, document store, diagnostics inbox), capabilities synthesized into `lsp_<id>_<action>` tools, hot toggles, idle reaper. One concern per module: `constants` (paths/timeouts/relay method names), `discovery` (read/validate/write the file), `tools` (action catalogue), `session` (`DiagnosticsInbox`/`DocumentStore`/`ServerSession`), `features` (server→client handlers incl. the tsserver relay), `actions` (document sync + the per-action requests), `rendering` (LSP structures → text), `tsserver` (relay wire shapes), `manager` (`LspManager`) |
-| `core/job.py` | `RunJob`: results, failures, score/token/time aggregates |
-| `core/models.py` | Pydantic config models, built from env via `EndpointsConfig.from_env()` |
-| `config.py` | `.env` loading and the managed-key template (`SETTING_KEYS`), question-set discovery, memory-bullet registration, `BENCHMARKIT_PATH_LOCATION` seeding, `load_agent_instructions()` |
+| `config.py` | `.env` loading, the managed-key template, question-set discovery. |
+| `api/server.py` | `create_app()`: routers, static SPA, hub startup/shutdown, uvicorn entry. |
+| `api/routes.py` | REST + SSE endpoints; `RunState` holds the single active run. |
+| `api/events.py` | `EventBus`: seq-numbered in-memory buffer with replay, SSE framing. |
+| `core/llm.py` | One streamed LLM call, model warm-up, and the verifier call. |
+| `core/bench.py` | Benchmark loop: question → answer → verify → emit. |
+| `core/chat.py` | One streamed chat reply, including the shared tool-call loop. |
+| `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
+| `core/models.py` | Pydantic config models, built from env. |
+| `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
+| `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |
 
-Frontend under `web/src/` (Vite + Vue 3, plain JS, Pico.css):
+`mcphub/` and `lsphub/` mirror each other — `constants` (paths, timeouts),
+`discovery` (read/validate/write the declaration file), `manager` (the live
+hub), plus formatting/rendering of tool results. Keep that symmetry when
+touching either one.
 
-| File | Purpose |
+### Frontend (`web/src/`, Vite + Vue 3, plain JS, Pico.css)
+
+| Path | Purpose |
 |---|---|
-| `composables/` | One reactive singleton per concern: `useBenchmark` (run state, tab selection + EventSource client), `useChat` (SSE fetch pump + WorkBench hub toggles + session save/load), `useMemory`, `useTheme`, `useAutoScroll`, `useSplitter` |
-| `lib/` | `markdown.js` — shared markdown renderer: `marked` + `DOMPurify` + KaTeX + highlight.js + optional Mermaid (never raw `v-html`); `hljs.js` — the registered highlight.js languages; `markedKatexBrackets.js` — teaches marked the `\[ \]` / `\( \)` LaTeX delimiters; `mermaid.js` — lazy-loaded, cached diagram renderer |
-| `App.vue` | App bar + tab views: benchmark grid (stats column + `StreamPanel`) and `WorkBenchView` (tab state lives in `useBenchmark`: `benchmark` \| `chat`) |
-| `components/` | Benchmark: `StreamPanel`, `QuestionCard`, `Chronometer`, `MetricCard`, `RunControls`. WorkBench: `WorkBenchView`/`WorkBenchInput`, `WorkBenchSidePanel`/`WorkBenchMcpPanel`/`WorkBenchLspPanel`/`WorkBenchToolPanel`, plus `ChatStopwatch`, `MemoryBullets` + `RegistrationMemoryDlg`, `ImageLightbox`, `MarkdownStream`, `GaugeBar`. Shared: `AppBar` (with `TabNav`), `SettingsDialog` (with `ApiKeyField`), `ThemeToggle` |
-| `styles/theme.css` | Pico CSS variable overrides + app classes (palette, cards, badges) |
+| `composables/` | One reactive singleton per concern; components use them directly. |
+| `lib/markdown.js` | The single markdown renderer (marked + DOMPurify + KaTeX + hljs). |
+| `App.vue` | App bar and the two tab views. |
+| `components/` | Benchmark widgets, WorkBench widgets, shared chrome. |
+| `styles/theme.css` | Pico CSS variable overrides + app classes (light and dark). |
 
-## HTTP API
+Two frontend invariants: rendered HTML always goes through `lib/markdown.js`,
+never raw `v-html`; and run/stream state lives in the composables, which own
+the EventSource and its reconnect.
 
-All app endpoints live under `/api/` (everything else serves the SPA):
+## How a request flows
 
-- `GET /api/config` — models, `serverUrl`, sampling summary, question count + `totalTests`, `supportsVision`, `contextWindow` (polled from the server's `/v1/models` `meta.n_ctx`, `null` when absent), `verifierConfigured`, `runStatus`, `hasResults`
-- `GET|POST /api/settings` — read/save `.env`-backed settings (rewrites `.env`, refreshes `os.environ`; 409 while running, 422 on invalid values)
-- `GET|POST /api/mcp` — list / activate MCP connectors (activation is the entry `enable` flag in `externals.json`, written back with hot start/stop; only `MAX_TOOL_ITERATION` persists to `.env`)
-- `GET|POST /api/lsp` — list / activate language servers (activation writes both `LSP_ENABLED` in `.env` and the entry `enable` flag in `lsp_servers.json`, hot start/stop; `env` and `initializationOptions` values never returned; `maxIterations` updates the cap shared with MCP) · `GET /api/lsp/log?server=` — tail of one server's log
-- `POST /api/mcp/restart` / `POST /api/lsp/restart` — rebuild a hub from a fresh scan of its declaration file (sessions/children are torn down and respawned, so a hand-edited `externals.json`/`lsp_servers.json` applies without restarting the app). Awaited, so the returned payload carries real post-restart statuses. Same payload as the matching GET. 409 while a run is in progress *or* a chat reply is streaming (a restart would kill a tool call mid-flight); 503 when the hub is absent. `BENCHMARKIT_DISABLE_MCP`/`_LSP` blank the scan, so the endpoints stay testable without spawning anything.
-- `GET|POST /api/path-location` — read / change `BENCHMARKIT_PATH_LOCATION`, the single folder both declaration files point their file-touching tools at (`--root-dir`, `workspaceRoot`, `--tsdk`). POST validates (absolute, exists after `expanduser` + `realpath`, not on the `restricted-paths.txt` deny-list), sets `os.environ`, and restarts **both** hubs in one call, returning `{key, path, default, mcp, lsp}` so the dialog repaints both panels without extra round-trips. Never persisted — the next boot re-seeds it from the install dir (`config.setup_path_location` in `create_app`). Guards checked before the env is touched: 409 during a run / streaming reply, 503 when a hub is absent, 422 on a rejected path (env unchanged, nothing restarted).
-- `GET|POST /api/question-sets` — list / select the active question set (persists `QUESTION_SET`)
-- `GET|POST /api/memory` — read / update the 9 memory-bullet slots (self-healing file, always exactly 9 slots)
-- `GET /api/models?serverUrl=&apiKey=` — list model ids from an OpenAI-compatible server (settings dialog)
-- `POST /api/run` / `POST /api/run/stop` — start / cancel the single active run (both 202; 409 on conflicts, 400 when no model or no question is configured)
-- `GET /api/run` — status snapshot + all buffered events (UI rebuild point) · `GET /api/run/events` — SSE stream with replay (`since` / `Last-Event-ID`), closed by a final `stream_end` frame
-- `POST /api/chat` — stream one chat reply as SSE (full `messages` history, optional multimodal image parts, optional `mcpEnabled`/`lspEnabled` allowlists; 409 while a run is in progress)
-- `GET /api/results` — download `results.json`
-- `GET /api/health` — liveness probe (declared in `server.py`, not on the `/api` router): `.env` and the active question-set file exist
+All app endpoints live under `/api/`; anything else serves the SPA. The exact
+route list belongs to `api/routes.py` — what matters architecturally:
 
-## SSE event contract
+- **Run**: starts the benchmark in a worker thread, watched live over SSE.
+  One run at a time (WorkBench is refused while one runs), cancelled through a
+  `threading.Event` polled both between questions and inside the stream reader.
+- **Chat**: one request per reply, streamed back over SSE. The client re-posts
+  the whole history each time; the server keeps no conversation state.
+- **Configuration**: `.env` and the two declaration files are edited from the
+  UI and take effect hot — an app restart is never needed.
 
-Events carry an SSE `id:` (sequence number) so clients can reconnect and replay. Two contracts:
+### SSE is the UI's only source of truth
 
-- **Benchmark run**: `run_started` (carries `runId`, `models`, `totalTests`, `samplingSummary`) → `model_started` (per model, after its warmup) → per question `question_started` / `token` / `answer_done` / `question_done` → `run_finished` (`run_error` for per-question failures). Timing fields (`took`, `ttft`, `genTook`) are measured app-side with `time.monotonic()`; the chronometer accumulates only answer time (model warmup and verifier time excluded). Token fields distinguish completion-only `tokens` (rate numerator) from `consumed` = prompt + completion (the displayed cost). `question_done` additionally carries the running aggregate `stats` (`current`, `successes`, `answered`, `tokenRate`, `answeredTime`); a cancelled run ends on `run_finished` with `cancelled: true`. `answer_done` / `question_done` carry `truncated` when the server cut the answer short (see the stream-truncation gotcha); such a question is failed without ever being verified, and the same flag lands in `results.json` per response.
-- **WorkBench / chat** (`/api/chat`): `token` / `reasoning` (phase flag) / `reasoning_delta` (thinking text, never answer text) → exactly one terminal `done` or `error`. `done` reports the cumulative `decode` window (the chat tok/s denominator, excludes tool execution) and `contextTokens` (context-window occupancy, never summed across rounds). With MCP **or** LSP tools active, `tool_call` / `tool_result` frames (carrying `iteration` / `maxIterations` for the UI gauge) plus a `usage` frame appear per tool round — `usage` is emitted as soon as a round finishes generating, *before* the tool runs. A server-cut reply terminates on `error` with `truncated: true` (never a plain `done`): the partial text is kept in the conversation and the bubble marks it, unlike an explicit Stop which discards it.
+Core emits plain dicts into the `EventBus`, which numbers them so a
+reconnecting client replays what it missed. Two independent streams: the run
+stream (`run_started` → `model_started` → per-question `question_started` /
+`token` / `answer_done` / `question_done` → `run_finished`, with `run_error`
+on failure) and the per-reply chat stream (`token`, `reasoning_delta`, and
+`tool_call` / `tool_result` when tools are active, ending in exactly one
+`done` or `error`).
+
+Two measurement rules hold across both:
+
+- **Timing is app-side** (`time.monotonic()`, anchored to content chunks) —
+  warm-up and verifier time never enter the numbers.
+- **Cost and rate are different numbers**: token/s uses completion tokens only,
+  the displayed cost is prompt + completion.
 
 ## Data files
 
-- **`resources/*.json`** — question sets, one file per set (file stem = set id); each is `{"questions": [{ uuid, question, expected, ... }]}`. A new file automatically becomes a selectable set; `QUESTION_SET` picks the active one (default `legacy`).
-- **`resources/memory_registration.json`** — the WorkBench tab's 9 memory bullets (`{color, content}` slots). Managed only through `/api/memory`, self-heals to 9 normalized slots on every read, and is skipped by question-set discovery.
-- **`.env`** (project root, gitignored; see `.env.example`) — all configuration: `SERVER_URL` + `SERVER_URL_API_KEY` + `ENDPOINT`, `LLM_SYSPROMPT`, sampling params (`TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING`), `SUPPORTS_VISION`, `QUESTION_SET`, `LSP_ENABLED`, `MAX_TOOL_ITERATION` (one tool-loop cap shared by MCP + LSP; the legacy `MAX_MCP_ITERATION` is still honoured), `LITELLM_DEBUG` (raises the LiteLLM *client*'s own loggers to DEBUG for the live process — applied by `config.apply_litellm_debug()` at startup and on every settings save, no restart; it also sets `litellm.suppress_debug_info`, which is what hides litellm's "use `litellm._turn_on_debug()`" banner), and the `VERIFIER_AGENT_*` block. MCP connectors have **no** env key: they activate through `externals.json`. A leftover `MCP_ENABLED` is ignored (it is not a managed key any more, so saving settings drops it from the file). Loaded with `python-dotenv` at startup (real env vars take precedence), parsed by `EndpointsConfig.from_env()` into pydantic models; invalid values surface as HTTP 422.
-  The file is **regenerated from a fixed template** on every save (`SETTING_KEYS` + `_render_env()` in `src/config.py`): key set and order are fixed, empty optional keys become commented-out lines, and custom keys or hand-written comments do not survive a save. `BENCHMARKIT_PATH_LOCATION` is deliberately absent from that list. `.env.example` is the hand-written template and still carries a stale `MCP_ENABLED` block — it is *not* kept in sync with `_render_env()`, so adding or renaming a managed key means editing `SETTING_KEYS`, `_render_env()` and `.env.example` together.
-- **`results.json`** — generated run output, gitignored; saved once at the end of a run.
-- **`mcp_connectors/externals.json`** (gitignored; may hold secrets) — the one and only connector declaration, keyed by id: `remote` (Streamable HTTP) or `local` (stdio command); `enable` is the single on/off source of truth (no `.env` key involved). Their `headers`/`env` secrets are never returned by the API. `url`/`command`/`headers`/`env` values may hold `${NAME}` (or `${NAME:-fallback}`) environment references — see *Env references in declaration files* below.
-- **`lsp_connectors/lsp_servers.json`** (gitignored; may hold secrets; `lsp_servers.example.json` is the committed template) — declarative language servers keyed by id: always local stdio (`command` argv, never a shell), with `extensions` (which files the server answers for), absolute `workspaceRoot` (refused when inside a `restricted-paths.txt` prefix), `lazy` spawn flag, `tools` list, `maxDiagnostics`/`idleShutdownSeconds`. A server runs when its `enable` flag **and** `LSP_ENABLED` agree. `env` and `initializationOptions` are never returned by the API. `command`/`args`/`env`/`workspaceRoot`/`initializationOptions`/`settings` values may hold `${NAME}` environment references (see below).
+| File | Role |
+|---|---|
+| `.env` | Run configuration: endpoint, key, prompt, sampling, set, verifier. |
+| `resources/<set>.json` | Question sets — `{uuid, question, expected}`. |
+| `resources/memory_registration.json` | WorkBench memory-bullet slots (fixed, self-healing). |
+| `results.json` | Run output, written once when a run ends. |
+| `mcp_connectors/externals.json` | MCP connectors: `remote` (HTTP) or `local` (stdio). |
+| `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
 
-### Env references in declaration files
+Any new file in `resources/` becomes a selectable set. The `.env` and the two
+hub files are gitignored, may hold secrets, and each has a committed template.
+Four rules tie them together:
 
-Both declaration files accept `${NAME}` and `${NAME:-fallback}` in their string values, expanded **at read time** by the two *discovery* modules through the shared helpers in `core/mcphub/validation.py` (`expand_env`, `expand_env_map`, `expand_env_list`, `expand_env_json`, `unresolved_env_note`) — so the rest of each package never sees a reference, and a per-machine path (a `workspaceRoot`, a `--tsdk`) or an API key can live in the environment instead of in the file. Conventions worth keeping:
+- **`.env` is regenerated from a fixed template on every save** (`SETTING_KEYS`
+  and `_render_env()` in `src/config.py`): fixed key set and order, empty
+  optional keys commented out, hand-written extras lost. A new or renamed key
+  means editing `SETTING_KEYS`, `_render_env()` and `.env.example` together.
+- **The declaration files are the only source of truth for what runs.** Their
+  `enable` flag is the switch, toggled hot from the UI; their secrets
+  (`headers`, `env`, `initializationOptions`) never leave the server.
+- **Both accept `${NAME}` / `${NAME:-fallback}`**, expanded at read time by each
+  hub's `discovery` module via shared helpers in `mcphub/validation.py`, so a
+  per-machine path or key stays in the environment. Expansion runs *before*
+  validation; only the braced form is special (a bare `$` stays literal, which
+  protects npm pins and regexes); an unresolved name is kept verbatim with a
+  validation note rather than blanked.
+- **`BENCHMARKIT_PATH_LOCATION`** is the working-location both files point their
+  file-touching tools at (`--root-dir`, `workspaceRoot`, `--tsdk`), so one value
+  moves them together. Seeded at boot from the install dir; deliberately not a
+  managed `.env` key, so a settings save can neither erase it nor resurrect a
+  stale value.
 
-- Source is `os.environ`, which already carries `.env` (`config.load_dotenv_once`, real env vars winning) — `${HOME}` and project keys like `${CONTEXT7_API_KEY}` are equally available.
-- **Only the braced form is special.** A bare `$` stays literal, so npm pins (`pkg@$latest`) and regexes in a `command` are never touched; do not add shell-style `$NAME` support, it would silently eat those pins.
-- Expansion runs **before** the shape/path checks (the absolute-`workspaceRoot` and http(s)-`url` checks must see the expanded value), and the unresolved-name note is appended **before** the error it causes, so the note explains the error.
-- An unresolved name is left written verbatim plus one validation note (surfaced by `GET /api/mcp` / `GET /api/lsp`) instead of being blanked — a typo stays visible rather than becoming an empty path or key.
-- No shell semantics: argv is expanded per element and never re-split, so a value containing spaces stays one argument. Dict keys are never expanded; non-strings pass through `expand_env_json` untouched.
-- `set_externals_enabled` / `set_lsp_enabled` write only the `enable` flag back to the **raw** file, so an expanded value is never persisted and the reference stays portable.
-- **`BENCHMARKIT_PATH_LOCATION`** is the working-location reference both files use (connector `--root-dir`, every `workspaceRoot`/`--tsdk`). `config.setup_path_location()` seeds it at boot with the install dir — deliberately *not* a `SETTING_KEYS` key, so `save_settings` (which regenerates `.env` from a fixed template) can neither erase it nor resurrect a stale value. An exported/pre-set value always wins. Keep the closing brace right after the name (`${BENCHMARKIT_PATH_LOCATION}/web`, never `${BENCHMARKIT_PATH_LOCATION/web}`): a reference with anything else inside the braces resolves to nothing *and* produces no note.
+## Key patterns
 
-## Key patterns & conventions
-
-- **LiteLLM abstraction**: all LLM calls go through `litellm.completion()` with the `openai/<model>` prefix against an OpenAI-compatible server (e.g., llama.cpp); `api_key="none"` — no real API keys.
-- **Core/API separation**: core modules never render or touch FastAPI — they call an injected `emit(event: dict)`; `src/api/` owns transport. Sync litellm runs in a worker thread publishing to the `EventBus`; SSE subscribes on the event loop.
-- **Single run**: one run at a time, state in memory (`RunState`); cancellation via a `threading.Event` polled by the loop and stream reader. Chat uses the same worker-thread + cancel pattern, and is 409-rejected while a run is active.
-- **Frontend state**: one reactive singleton per concern (`useBenchmark`, `useChat`, …); components read/mutate directly. The active tab lives in `useBenchmark` (`state.activeTab`, `'benchmark'` / `'chat'`) and `setTab()` refuses to open WorkBench while a run is running. SSE reconnect = refetch the `/api/run` snapshot and replay. Markdown always through `lib/markdown.js` (`marked` + `DOMPurify`), never raw `v-html`.
-- **AGENTS.md feeds the chat**: when the working location carries `AGENTS.md`, its text is appended to every chat system message (`config.load_agent_instructions()` / `agent_instructions_block()`, passed to `stream_chat()` as `agent_instructions`). Keep it accurate — the model follows it in every WorkBench conversation.
-- **Type annotations**: explicit Python types (`: str`, `: Dict`, `typing` imports).
-- **WorkBench session files** (the chat): Save/Load (icon buttons in the composer's bullet row inside `WorkBenchInput`) exchange a `{format, version, messages}` JSON file (`format: "benchmarkit-chat-session"`, current version 3) holding the OpenAI `user`/`assistant` turns — user turns keep their attached images as standard `image_url` base64 parts (plus one benchmarkit-only `name` key per image part, for the restored thumbnail: `ChatContentPart` has `extra="ignore"`, so it never reaches the model), so a loaded conversation re-posts the images on the next send. An image part whose data URL is unusable degrades to a placeholder string, so an image-only turn stays postable. Tool-loop turns and the per-turn badges are never saved, and the system prompt is rebuilt server-side per send. An assistant turn may carry an optional `reasoning` list (added in v2; absent in v1 files): that reply's streamed thinking flows — one entry per *reasoning* block of the `WorkBenchToolPanel` timeline, tool blocks are not saved — restored into `message.blocks` for the panel; it sits beside `content` and is never re-posted, since `send()` builds its history through `messagePayload()` (`raw`/`images` only). Both directions are client-side only (`useChat.js`: `conversationJson` / `parseSessionFile` / `loadSession`); the backend needs no change because every send re-posts the whole history.
+- **LiteLLM everywhere**: every LLM call is `litellm.completion()` with the
+  `openai/<model>` prefix against an OpenAI-compatible server, `api_key="none"`.
+  The verifier is its own optional endpoint block (`VERIFIER_AGENT_*`); with no
+  verifier endpoint configured, an answer cannot be graded and is failed.
+- **Core owns logic, API owns transport**: blocking LLM work runs in a worker
+  thread publishing to the `EventBus`; the SSE generator consumes it on the
+  event loop. Run and chat use the same worker + cancel pattern.
+- **Hubs are long-lived singletons**: a restart rebuilds the *internals* of the
+  same `McpManager`/`LspManager`. Never swap the object in `app.state` — chat
+  workers hold the reference across a request.
+- **Tools are read-only by design**: LSP tools return information (even
+  `formatting` returns a proposed diff), the `console` connector execs one argv
+  with no shell (pipes, chains, redirections and `$VAR` expansion are refused,
+  `check_command_allowed` is the same parse), and each connector's reach is
+  bounded by a deny-list — `lsp_connectors/restricted-paths.txt` for paths,
+  `mcp_connectors/restricted-fqdn.txt` for hosts.
+- **AGENTS.md feeds the chat**: when the working location carries an
+  `AGENTS.md`, its text is appended to every chat system prompt, re-read on
+  each request. Keep it accurate and short — the model acts on it.
+- **Python style**: explicit type annotations (`: str`, `Dict`, `typing`
+  imports).
+- **Tests stay hermetic**: `BENCHMARKIT_DISABLE_MCP=1` / `_LSP=1` skip
+  connecting and spawning; the patchable file locations live on
+  `mcphub.constants` / `lsphub.constants` and must be patched through those
+  modules.
 
 ## Gotchas
 
-- The verifier and the target LLM can be **different endpoints**; without `VERIFIER_AGENT_SERVERURL`, the verifier reuses `SERVER_URL`.
-- Token counting relies on `stream_options={"include_usage": True}` (final stream chunk, read via `_extract_usage()`). Keep the distinction straight: the rate uses **completion tokens only**, the displayed cost is **prompt + completion** (`consumed`); missing usage is char-estimated and flagged `tokensEstimated`. Timing is `time.monotonic()` anchored to content chunks, so the trailing usage-only chunk never extends `took`. Beware: when a stream dies before any usage chunk, litellm **back-fills** usage by re-counting the chunks it received, so a cut reply still reports `completion_tokens` with `tokensEstimated=False` — the numbers look server-reported and are not.
-- A stream the server cut short is **indistinguishable from a finished answer at the chunk level**: when no chunk ever carried a `finish_reason`, litellm fabricates `finish_reason: "stop"` on the final chunk it hands the caller (`CustomStreamWrapper.finish_reason_handler`), so reading the chunks can never reveal the cut. llama.cpp does exactly this when its own upstream disconnects mid-generation (its log says `recovered from upstream disconnection`), and it leaves a plain `StopIteration` in the litellm debug log — a *silent* path, unlike a body cut mid-chunk or a short `Content-Length`, which raises and is already caught. The honest signal is on the wrapper after the loop has been drained: `received_finish_reason` / `intermittent_finish_reason` stay `None` for a cut stream — that is what `core.llm.saw_finish_reason()` reads, and it **fails open** (returns True when neither attribute exists) so an unknown litellm shape can never raise a false alarm. Both loops act on it: `call_llm_and_stream` sets `LLMResult.truncated` and emits a `run_error` (the question is failed and the fragment is **never sent to the verifier** — grading a fragment measures the transport failure, not the model), and `stream_chat` terminates on `error` with `truncated: true` instead of a tidy `done` (this also prevents executing a half-streamed tool call with truncated arguments, which would otherwise tell the model *its* JSON was invalid). Healthy llama.cpp does include `finish_reason` (bundled with the usage chunk), so normal replies stay unflagged — but a server that sends `[DONE]` without any `finish_reason` chunk would be flagged too, which is the accepted trade-off.
-- litellm's per-call cost calculator raises `ModelNotMappedError` for every model name absent from `model_prices_and_context_window.json` — i.e. for every quantised local model. litellm swallows it, but with `LITELLM_DEBUG=1` it logs the full traceback once per call, burying the failure that debug mode exists to reveal. `config.register_unmapped_models()` gives such names a **zero-cost** entry (`ZERO_COST_MODEL_INFO`, via `litellm.register_model`), guarded by a `get_model_info` check so models litellm already prices keep their real figures. The entry must be keyed **provider-qualified** (`openai/<name>`, the `LITELLM_MODEL_PREFIX` every `completion()` call uses) and carry `litellm_provider`/`mode` in its value — a bare-name key makes `register_model` itself resolve the provider from the key, fails to, and prints litellm's red `Provider List: https://docs.litellm.ai/docs/providers` banner to the console at every boot (plus a `mode: None` entry that joins no provider list). Called from `create_app()` and from `save_settings()` through `register_configured_models()` — deliberately *not* from `load_endpoints_config()`, which runs on every API request and must not mutate litellm's process-wide cost map.
-- MCP connectors follow the lsphub pattern: there is no built-in connector list and no port range to scan — every connector is an `externals.json` entry, `remote` ones connect over Streamable HTTP, `local` ones are spawned as **stdio children owned by the client transport** (closing the client's exit stack shuts them down, the hub keeps no process handle of its own). What *looks* like built-in connectors is just `mcp_connectors/*.py` (`console_mcp.py`, `fedit_mcp.py`, `playwright_mcp.py`) being referenced as `local` commands — adding a connector means adding a file *and* an entry there, never a module in `src/`. `BENCHMARKIT_DISABLE_MCP=1` skips connecting (used by tests); the `mcp` package is imported lazily. The patchable file locations (`MCP_CONNECTORS_DIR`, `EXTERNALS_PATH`) live on `mcphub.constants` and are read through that module at call time — a test that redirects them must patch `src.core.mcphub.constants`.
-- Language servers are managed the same way by the `core/lsphub/` package (`src.core.lsphub`), but LSP is **stdio** (no ports): one private `lsp-hub` asyncio thread owns every session, `lsp_<id>_<action>` tools come from the server's declared `tools` intersected with its real `initialize` capabilities, and tools are read-only — the catalogue (`lsphub/tools.py`) is `diagnostics` / `hover` / `definition` / `references` / `workspace_symbols` / `document_symbols` / `completion` / `signature_help` / `formatting`, and even `formatting` only returns the proposed edits as a unified diff (apply them through the file-edit tools); `fedit_mcp` is the only writer. `BENCHMARKIT_DISABLE_LSP=1` skips spawning (used by tests); `pygls`/`lsprotocol` are imported lazily. Logs in `logs/lsp/`. No file outside a server's `workspaceRoot` (and `restricted-paths.txt`) can be opened through it. The patchable file locations (`LSP_SERVERS_PATH`, `LSP_RESTRICTED_PATHS`, `LSP_CONNECTORS_DIR`) live on `lsphub.constants` and are read through that module at call time — a test that redirects them must patch `src.core.lsphub.constants`.
-- Node language servers need a real TypeScript compiler: `typescript-language-server` and `vue-language-server` only work when `web/node_modules/typescript` exists (devDependency, `tsserver.js`) and, for Vue, `--tsdk=<…>/typescript/lib` is passed in `command`. Volar owns no tsserver: it delegates `.vue` TypeScript semantics to its *client* over the private `tsserver/request` notification and **awaits the answer inside `getLanguageService()`** — an unanswered request hangs every later request for that file, so the hub implements the relay (`lsphub/tsserver.py` + the handler in `lsphub/features.py`): it answers `_vue:projectInfo` with the server's `workspaceRoot` tsconfig/jsconfig (or `null`, which makes Volar fall back to its inferred project) and answers the component-detail commands (`_vue:getComponentProps` and friends) with `null` so their promises settle. Watch the wire shape: both directions carry a **doubly nested array** (`params: [[id, …]]`) because vscode-jsonrpc treats a single array argument as positional params. The hub runs no tsserver, so `lsp_vue_diagnostics` reports Volar's template/SFC checks, not `<script>` type errors — the `typescript` server covers plain `.js`/`.ts`.
-- External connector secrets (`headers`/`env`) must never leave the server — they are stripped from every API payload.
-- The `console` connector runs **no shell**: it parses the command into one argv and execs it, so pipes, `;`/`&&`/newline chains, redirections, backgrounding and `$( )`/`$VAR` expansion are refused rather than silently re-interpreted — issue one command per call (a lone `2>&1` is accepted and changes nothing; stderr is reported separately anyway). Quoting decides what counts, so `grep "<div" file` and `curl "…?a=1&b=2"` are ordinary commands. `check_command_allowed` performs the same parse, so it is a trustworthy oracle for what `execute_command` will do. Its allow/block lists only apply to paths outside `--root-dir`, but credential stores (`~/.ssh`, `~/.aws`, `.env`, private keys) are refused as arguments whatever the command is, from the same lists fedit uses — `mcp_connectors/path_policy.py` is the single source, and the two connectors must not drift apart, or the careful policy of one is bypassable through the sibling enabled in the same session.
-- A hub restart reuses the **same** `McpManager`/`LspManager` object and only rebuilds its internals (new hub thread, new sessions). Chat worker threads hold that reference across a request, so replacing the object in `app.state` instead would break an in-flight conversation — keep `restart()` in-place.
-- The two deny-lists are different files for different purposes: `lsp_connectors/restricted-paths.txt` (absolute path prefixes no `workspaceRoot` may sit inside — also gates `POST /api/path-location`) and `mcp_connectors/restricted-fqdn.txt` (hosts `playwright_mcp.py` refuses to navigate to). Don't confuse them.
-- Look & feel is Pico.css + `web/src/styles/theme.css` (self-hosted fonts via `@fontsource`, light + dark via `data-theme`). Rendered markdown supports KaTeX, highlighted code and Mermaid fences through the single `lib/markdown.js` renderer.
-- `web/dist` must exist for FastAPI to serve the UI (the API works without it); in dev use the Vite server, which proxies `/api`.
+- **A server-cut stream is indistinguishable from a finished answer at the
+  chunk level**: litellm fabricates `finish_reason: "stop"` when no chunk
+  carried one. The honest signal is on the wrapper once the loop is drained —
+  `core.llm.saw_finish_reason()` reads it and fails open. Both loops act on it:
+  a truncated answer is failed and **never sent to the verifier** (grading a
+  fragment measures the transport, not the model), and a truncated chat reply
+  ends on `error` rather than `done` — which also stops a half-streamed tool
+  call from being executed.
+- **Token counts can look server-reported when they are not**: if a stream dies
+  before any usage chunk, litellm back-fills usage by re-counting the chunks it
+  saw, so `tokensEstimated` stays `False`. Missing usage on a normal stream is
+  char-estimated and does get flagged.
+- **litellm cannot price local model names**, and under `LITELLM_DEBUG=1` it
+  logs that swallowed error once per call. `config` registers a zero-cost,
+  provider-qualified entry per configured model to keep it silent.
+- **Node language servers need a real TypeScript compiler** — the frontend's
+  `node_modules/typescript`, passed to Vue via `--tsdk`. Volar delegates `.vue`
+  TypeScript semantics back to its client and awaits the answer, so the hub
+  implements that relay (`lsphub/tsserver.py`); an unanswered request hangs
+  every later request for that file. So `lsp_vue_*` reports Volar's template
+  checks only, not `<script>` type errors.
+- **Adding a connector is never a module in `src/`**: the local connectors are
+  the scripts in `mcp_connectors/`, referenced as `local` entries in
+  `externals.json`. Add the file *and* the entry.
 
-## Adding questions
+## Editing AGENTS.md
 
-Add entries under the `"questions"` key of a file in `resources/` — each needs a unique `uuid`, `question`, and `expected`. A new `resources/<name>.json` file automatically becomes a selectable set (id = file stem).
-
-## Adding endpoints
-
-Edit `.env`: `SERVER_URL` (llama.cpp or compatible server) and `ENDPOINT` (model name). Optional sampling params (`TEMP`, `TOP_P`, `TOP_K`, `MIN_P`, `REPEAT_PENALTY`, `PRESENCE_PENALTY`, `REASONING` effort) are forwarded to `litellm.completion()`. `SUPPORTS_VISION=1` enables the WorkBench image-attach button. The same fields are editable in the settings dialog (`/api/settings`), which rewrites `.env` from its fixed template.
+- This file is injected into every WorkBench system prompt, so its size is paid
+  for on each message. Stay under ~200 lines.
+- Describe the **big picture**: what the pieces are and which invariants hold.
+  Route-level detail, exhaustive lists and per-feature essays belong in the
+  code, the README, or a doc comment next to the thing they describe.
+- One idea per bullet, no single long line — wrap prose at ~100 columns.
+- Describe the app as it is now. Nothing about a past session, a rename, a
+  previous state of the file, or what used to be true.
+- When code changes, delete or shrink the paragraph here rather than appending
+  a newer, longer one beside it.
