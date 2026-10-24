@@ -379,6 +379,166 @@ function messagePayload(message) {
   return { role: message.role, content: parts }
 }
 
+// ---------------------------------------------------------------------------
+// Save / load a session as a JSON file (frontend only).
+//
+// The file is a thin envelope around the OpenAI user/assistant message list —
+// exactly the shape POST /api/chat accepts — so continuing a loaded
+// conversation is free: every send already re-posts state.messages mapped
+// through messagePayload(). Only the conversation TEXT travels in `content`:
+// base64 images, tool-loop turns and the per-turn badges are never written
+// (the browser only holds _preview-capped tool summaries, so writing them back
+// would be fabrication; the system prompt is rebuilt server-side per send).
+//
+// The one extra field an assistant turn may carry is `reasoning` — the streamed
+// thinking flows of that reply, one entry per reasoning block of the
+// WorkBenchToolPanel timeline (a tool_call frame splits one flow from the next
+// round's). It lives beside `content`, never inside it: thinking is not
+// conversation text, and putting it in `content` would change what the model
+// sees on the next send. It is panel render state only — send() builds its
+// history through messagePayload(), which reads `raw`/`images` alone, so a
+// restored flow can never reach the model.
+// ---------------------------------------------------------------------------
+
+export const SESSION_FILE_FORMAT = 'benchmarkit-chat-session'
+// v2 added the optional per-assistant-turn `reasoning` list. Version-1 files
+// simply carry no such key, so the loader needs no version branch.
+export const SESSION_FILE_VERSION = 2
+// Stands in for an image part dropped from a loaded file, so an image-only
+// turn keeps a non-empty content (an empty one would 422 the next send).
+export const SESSION_IMAGE_PLACEHOLDER = '[image stripped from the saved session]'
+
+// Thinking flows of one assistant reply, in panel order: every
+// `{ kind: 'reasoning' }` block of its timeline as one string, blank ones
+// dropped. Kept as a list (not joined) so the panel timeline can be rebuilt
+// with its original block boundaries — and so a v2 file stays readable by hand.
+function reasoningFlows(message) {
+  return (message.blocks ?? [])
+    .filter((block) => block.kind === 'reasoning')
+    .map((block) => block.text ?? '')
+    .filter((text) => text.trim())
+}
+
+export function conversationJson(messages) {
+  const items = []
+  for (const message of messages) {
+    // images: [] forces the text-only branch, so no base64 ever reaches the file.
+    const payload = messagePayload({ ...message, images: [] })
+    if (typeof payload.content !== 'string' || !payload.content.trim()) continue
+    if (message.role === 'assistant') {
+      // Omitted entirely when the reply streamed no thinking, so files stay as
+      // small as v1 ones for non-reasoning models.
+      const flows = reasoningFlows(message)
+      if (flows.length) payload.reasoning = flows
+    }
+    items.push(payload)
+  }
+  // No `stats` block on purpose: tok/s and ctx badges are client-only render
+  // state, and the loader stays tolerant of a future version adding one back.
+  return {
+    format: SESSION_FILE_FORMAT,
+    version: SESSION_FILE_VERSION,
+    messages: items,
+  }
+}
+
+// Content of one loaded turn: a plain string, or an OpenAI parts array with
+// text parts joined and image parts replaced by the placeholder.
+function normalizeLoadedContent(content) {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const parts = []
+    for (const part of content) {
+      if (part?.type === 'image_url') parts.push(SESSION_IMAGE_PLACEHOLDER)
+      else if (typeof part?.text === 'string') parts.push(part.text)
+    }
+    return parts.join('\n')
+  }
+  return ''
+}
+
+// Optional per-assistant-turn thinking flows of a loaded turn: a list of
+// strings (v2) — a lone string is accepted too, for hand-written files.
+// Returns [] when the key is absent (every v1 file) or empty; throws when the
+// key holds anything else, so a malformed file fails loudly instead of
+// restoring half a timeline.
+function normalizeLoadedReasoning(reasoning, index) {
+  if (reasoning === undefined || reasoning === null) return []
+  const flows = typeof reasoning === 'string' ? [reasoning] : reasoning
+  if (!Array.isArray(flows)) {
+    throw new Error(
+      `Message ${index + 1} has a "reasoning" field that is neither a string nor a list of strings.`,
+    )
+  }
+  const texts = []
+  for (const flow of flows) {
+    if (typeof flow !== 'string') {
+      throw new Error(
+        `Message ${index + 1} has a "reasoning" entry that is not a string.`,
+      )
+    }
+    if (flow.trim()) texts.push(flow)
+  }
+  return texts
+}
+
+// Validates a session file's text and returns its turns as
+// `{ messages: [{ role, content, reasoning }] }`. Throws with a precise
+// message: silently dropping a system/tool turn would change the
+// conversation's meaning, so an invalid file must fail loudly. Unknown extra
+// keys are ignored, and a bare `[{role, content}, ...]` array is accepted for
+// hand-written files.
+export function parseSessionFile(text) {
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error('Not a valid JSON file.')
+  }
+  let items = null
+  if (Array.isArray(parsed)) {
+    items = parsed
+  } else if (parsed && typeof parsed === 'object') {
+    if (parsed.format && parsed.format !== SESSION_FILE_FORMAT) {
+      throw new Error(
+        `Unknown session format "${parsed.format}" (expected "${SESSION_FILE_FORMAT}").`,
+      )
+    }
+    if (!Array.isArray(parsed.messages)) {
+      throw new Error('Not a chat session file: no "messages" list found.')
+    }
+    items = parsed.messages
+  } else {
+    throw new Error('Not a chat session file: expected a JSON object or array.')
+  }
+
+  const messages = []
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`Message ${index + 1} is not an object.`)
+    }
+    if (item.tool_calls) {
+      throw new Error(
+        `Message ${index + 1} carries tool_calls: saved sessions store conversation text only.`,
+      )
+    }
+    if (item.role !== 'user' && item.role !== 'assistant') {
+      throw new Error(
+        `Message ${index + 1} has role ${JSON.stringify(item.role ?? '')}: only "user" and "assistant" turns can be loaded.`,
+      )
+    }
+    const content = normalizeLoadedContent(item.content)
+    if (!content.trim()) continue
+    // A user turn never carries thinking: the key is ignored there (unknown
+    // extra keys are tolerated by design).
+    const reasoning =
+      item.role === 'assistant' ? normalizeLoadedReasoning(item.reasoning, index) : []
+    messages.push({ role: item.role, content, reasoning })
+  }
+  if (!messages.length) throw new Error('Session file holds no usable message.')
+  return { messages }
+}
+
 function describeError(body, fallback) {
   const detail = body?.detail
   if (typeof detail === 'string' && detail) return detail
@@ -721,6 +881,76 @@ export function useChat() {
     state.error = null
   }
 
+  // Replaces the conversation with the turns of a parsed session file (see
+  // parseSessionFile). Returns `{ restored }`, or null when refused because a
+  // reply is streaming — the "must not be running" rule lives here, not only
+  // on the button, exactly as in editLast()/reset().
+  function loadSession(parsed) {
+    if (state.phase !== 'idle') return null
+    const items = Array.isArray(parsed?.messages) ? parsed.messages : []
+    if (!items.length) return { restored: 0 }
+
+    // Rebuild the rich shape the view and the side panel render: the common
+    // fields plus the assistant-only field set send() initialises, so the
+    // badges (which read `tokens` / `contextTokens`) never see `undefined`.
+    state.messages = items.map((item) => {
+      const raw = item.content ?? ''
+      const message = {
+        role: item.role,
+        raw,
+        html: renderMarkdown(raw, { mermaid: true }),
+        streaming: false,
+        images: [],
+      }
+      if (item.role !== 'assistant') return message
+      // The loaded thinking flows become the reply's panel timeline: one
+      // `{ kind: 'reasoning' }` block per flow, in file order (tool badges are
+      // never saved, so nothing else belongs in `blocks`).
+      const blocks = (item.reasoning ?? []).map((text) => ({ kind: 'reasoning', text }))
+      return Object.assign(message, {
+        tools: [],
+        blocks,
+        pendingStreamQuote: false,
+        tokens: 0,
+        took: 0,
+        ttft: 0,
+        decode: 0,
+        contextTokens: 0,
+        tokensEstimated: false,
+        contextEstimated: false,
+        // Client-side measurement + tool-loop bookkeeping (see noteGenerated):
+        // zeroed, so a restored reply reports no rate and no gauge position.
+        generatedSeconds: 0,
+        windowStartAt: 0,
+        lastTokenAt: 0,
+        mcpIteration: 0,
+        mcpMax: 0,
+        usageTokens: 0,
+        usageDecode: 0,
+        reasoningChars: 0,
+        usageGeneratedChars: 0,
+        usageGeneratedSeconds: 0,
+      })
+    })
+
+    // A loaded conversation counts as started: the MCP/LSP toggles freeze as
+    // they would have after the first accepted send, and the loaders below
+    // must not re-snapshot over them (they ignore a locked conversation).
+    // No reset() here — it would wipe the messages just loaded.
+    if (state.messages.length) {
+      state.mcp.locked = true
+      state.lsp.locked = true
+    } else {
+      loadChatMcp()
+      loadChatLsp()
+    }
+    state.error = null
+    state.pendingImage = null
+    // state.session.startedAt stays 0: the stopwatch reads 00:00:00 for a
+    // conversation that is not currently running a reply.
+    return { restored: state.messages.length }
+  }
+
   function reset() {
     if (controller) controller.abort()
     state.messages = []
@@ -744,6 +974,7 @@ export function useChat() {
     appendDraft,
     registerDraftInput,
     editLast,
+    loadSession,
     attachImage,
     clearImage,
     loadChatMcp,

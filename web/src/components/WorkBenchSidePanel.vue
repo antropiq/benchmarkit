@@ -1,6 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, ref } from 'vue'
-import { conversationMarkdown, liveTokenRate, useChat } from '../composables/useChat'
+import {
+  conversationJson,
+  conversationMarkdown,
+  humanFileSize,
+  liveTokenRate,
+  parseSessionFile,
+  useChat,
+} from '../composables/useChat'
 import { useBenchmark } from '../composables/useBenchmark'
 import ChatStopwatch from './ChatStopwatch.vue'
 
@@ -11,7 +18,7 @@ const props = defineProps({
 
 const emit = defineEmits(['send'])
 
-const { state, stop, reset, attachImage } = useChat()
+const { state, stop, reset, attachImage, loadSession } = useChat()
 const { state: benchmarkState } = useBenchmark()
 
 // The image attach button is only usable when the configured endpoint is
@@ -181,6 +188,81 @@ async function copyConversation() {
   }, 1500)
 }
 
+// --- Save / load the session as a JSON file (see useChat's conversationJson) ---
+
+// A stray 10 MB base64 blob would freeze the tab inside JSON.parse, so refuse
+// an oversized file before even reading it.
+const MAX_SESSION_FILE_BYTES = 2 * 1024 * 1024
+
+const canSave = computed(() => canCopy.value && !props.streaming)
+
+function sessionFileName() {
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`
+  return `chat-session-${stamp}.json`
+}
+
+function saveSession() {
+  if (!canSave.value) return
+  const blob = new Blob([JSON.stringify(conversationJson(state.messages), null, 2)], {
+    type: 'application/json',
+  })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  // The browser's native Save-As lets the user rename it from here.
+  link.download = sessionFileName()
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+  state.error = null
+}
+
+const sessionInput = ref(null)
+
+function pickSessionFile() {
+  if (props.streaming) return
+  sessionInput.value?.click()
+}
+
+async function onSessionFilePicked(event) {
+  const input = event.target
+  const file = input.files?.[0]
+  // Reset so picking the same file again still fires the change event.
+  input.value = ''
+  if (!file || props.streaming) return
+  if (file.size > MAX_SESSION_FILE_BYTES) {
+    state.error = `Session file too large (${humanFileSize(file.size)}, max 2 MB).`
+    return
+  }
+  let text
+  try {
+    text = await file.text()
+  } catch {
+    state.error = 'Could not read the selected session file.'
+    return
+  }
+  let parsed
+  try {
+    parsed = parseSessionFile(text)
+  } catch (exc) {
+    state.error = `Cannot load session: ${exc?.message ?? exc}`
+    return
+  }
+  if (
+    state.messages.length &&
+    !window.confirm('Replace the current conversation with the loaded session?')
+  ) {
+    return
+  }
+  const result = loadSession(parsed)
+  if (!result) {
+    state.error = 'Cannot load a session while a reply is streaming.'
+  }
+}
+
 onBeforeUnmount(() => clearTimeout(copyTimer))
 
 function restart() {
@@ -199,6 +281,15 @@ function restart() {
       tabindex="-1"
       aria-hidden="true"
       @change="onFilePicked"
+    />
+    <input
+      ref="sessionInput"
+      type="file"
+      accept="application/json,.json"
+      class="chat-file-input"
+      tabindex="-1"
+      aria-hidden="true"
+      @change="onSessionFilePicked"
     />
     <span class="chat-stat-badges">
       <span class="badge" :class="rate ? 'violet' : 'gray'" role="status">
@@ -265,6 +356,36 @@ function restart() {
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
           </svg>
         </template>
+      </button>
+      <button
+        class="icon-btn"
+        type="button"
+        :disabled="!canSave"
+        aria-label="Save session as JSON"
+        title="Save session (JSON)"
+        @click="saveSession"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 14v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1" />
+          <path d="M12 3v12" />
+          <path d="m7 10 5 5 5-5" />
+        </svg>
+      </button>
+      <button
+        class="icon-btn"
+        type="button"
+        :disabled="streaming"
+        aria-label="Load session from a JSON file"
+        title="Load session (JSON)"
+        @click="pickSessionFile"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 14v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1" />
+          <path d="M12 15V3" />
+          <path d="m7 8 5-5 5 5" />
+        </svg>
       </button>
       <button
         class="icon-btn"

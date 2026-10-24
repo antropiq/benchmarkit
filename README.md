@@ -32,6 +32,11 @@ same configured model interactively.
   commands; tool calls appear as badges in the transcript.
 - **Rich rendering** — answers render as Markdown with KaTeX math,
   syntax-highlighted code blocks, and Mermaid diagrams.
+- **Save / load a WorkBench session** — park a conversation on disk as a plain
+  JSON file (`{format, version, messages}` in OpenAI user/assistant form) and
+  re-open it later to continue where it stopped; each assistant turn may carry
+  its streamed `reasoning` for the tool panel, while images and tool calls are
+  not part of the file.
 - **In-app settings** — a dialog to edit endpoint, sampling parameters,
   question set, and verifier; changes are persisted to `.env`.
 - **Dark / light theme**, self-hosted fonts, Pico.css.
@@ -210,6 +215,10 @@ If you have good questions to add please share them! 🙏
   Markdown always passes through DOMPurify.
 - **Single run.** One benchmark run at a time, state in memory; the run and
   the chat share the configured endpoint and refuse to overlap.
+- **Session files are client-side.** WorkBench Save/Load (de)serialises the
+  conversation in the browser — the file is just the history `POST /api/chat`
+  already re-posts on every send, so no server state is involved; loading one
+  over a live conversation asks for confirmation first.
 - **MCP lifecycle.** Connector sessions live inside the app lifespan
   (`src/core/mcphub/`): one persistent MCP client per declared connector on a
   private asyncio thread that chat worker threads call through synchronously
