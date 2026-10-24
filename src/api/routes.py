@@ -294,6 +294,39 @@ class ChatIn(BaseModel):
 _CHAT_TASKS: set = set()
 
 
+class ChatHandle:
+    """The one in-flight chat reply, so another request can pause it.
+
+    ``POST /api/chat/pause`` is a separate HTTP request from the reply's own
+    stream, so the pause flag has to live in a process-wide slot — the same
+    shape ``RunState`` uses for the run. Mono-user app, one tab: one handle,
+    no chat id.
+    """
+
+    def __init__(self, pause_event: threading.Event, cancel_event: threading.Event) -> None:
+        self.pause_event = pause_event
+        self.cancel_event = cancel_event
+
+
+# Set for the duration of one streaming reply (cleared when its SSE generator
+# ends), so a finished or aborted reply can never be paused afterwards.
+_CHAT_HANDLE: Optional[ChatHandle] = None
+
+
+def _arm_chat_handle(cancel_event: threading.Event, pause_event: threading.Event) -> None:
+    """Publish the in-flight reply so /chat/pause can reach it."""
+    global _CHAT_HANDLE
+    _CHAT_HANDLE = ChatHandle(pause_event=pause_event, cancel_event=cancel_event)
+
+
+def _clear_chat_handle(cancel_event: threading.Event) -> None:
+    """Retire the handle, but only if it is still this reply's (a newer
+    conversation must never be un-registered by an old stream's ``finally``)."""
+    global _CHAT_HANDLE
+    if _CHAT_HANDLE is not None and _CHAT_HANDLE.cancel_event is cancel_event:
+        _CHAT_HANDLE = None
+
+
 # Dialog field -> .env key, used for both directions of the settings API.
 SETTINGS_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "SERVER_URL",
@@ -1134,6 +1167,10 @@ def build_router(state: RunState) -> APIRouter:
         (project convention: sync litellm in a thread + ``emit``); the SSE
         generator polls the queue and disconnect, closing the upstream
         stream via ``cancel_event`` when the client goes away.
+
+        While the reply streams, its events are also *pausable*: the handle
+        registered here lets ``POST /api/chat/pause`` arm ``pause_event``, which
+        ``core.chat.stream_chat`` checks at its next message boundary.
         """
         if state.status == "running":
             raise HTTPException(
@@ -1149,6 +1186,8 @@ def build_router(state: RunState) -> APIRouter:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         cancel_event = threading.Event()
+        pause_event = threading.Event()
+        _arm_chat_handle(cancel_event, pause_event)
         tool_kwargs = _chat_tool_kwargs(request, body.mcpEnabled, body.lspEnabled)
 
         def emit(event: Any) -> None:
@@ -1163,9 +1202,12 @@ def build_router(state: RunState) -> APIRouter:
                     config.serverUrl,
                     emit,
                     config.to_kwargs(),
-                    cancel_event,
-                    config.apiKey or "none",
-                    config.sysprompt,
+                    cancel_event=cancel_event,
+                    pause_event=pause_event,
+                    api_key=config.apiKey or "none",
+                    sysprompt=config.sysprompt,
+                    # Keywords from here on: the flag pair is optional on
+                    # ``stream_chat``, so a stub may omit it (tests do).
                     # Project instructions ride on the system message: when the
                     # working location carries AGENTS.md, its text is appended
                     # there so every conversation starts already knowing the
@@ -1196,12 +1238,13 @@ def build_router(state: RunState) -> APIRouter:
                         return
                     yield sse_format(seq, item)
                     seq += 1
-                    if item.get("event") in ("done", "error"):
+                    if item.get("event") in ("done", "error", "pause_ack"):
                         return
             finally:
                 # Client gone (or terminal event): stop the worker thread,
                 # which closes the upstream litellm stream.
                 cancel_event.set()
+                _clear_chat_handle(cancel_event)
 
         return StreamingResponse(
             event_stream(),
@@ -1212,6 +1255,23 @@ def build_router(state: RunState) -> APIRouter:
                 "Connection": "keep-alive",
             },
         )
+
+    @router.post("/chat/pause", status_code=200)
+    async def post_chat_pause() -> Dict[str, Any]:
+        """Ask the one in-flight chat reply to stop at its next boundary.
+
+        Non-destructive twin of ``/run/stop``: the worker closes the upstream
+        stream, reports its exact usage and terminates the reply with
+        ``pause_ack``, so the client keeps the partial turn in its history.
+        Idempotent — a second call while the first is pending says so.
+        """
+        handle = _CHAT_HANDLE
+        if handle is None:
+            raise HTTPException(status_code=409, detail="No chat reply is streaming")
+        if handle.pause_event.is_set():
+            return {"paused": "pending"}
+        handle.pause_event.set()
+        return {"paused": "requested"}
 
     @router.post("/run", status_code=202)
     async def start_run() -> Dict[str, Any]:

@@ -1188,7 +1188,7 @@ class TestChatMcpWiring:
         captured: Dict[str, Any] = {}
 
         def fake_stream(messages, model, server_url, emit, sampling=None,
-                        cancel_event=None, api_key="none", sysprompt=None,
+                        cancel_event=None, pause_event=None, api_key="none", sysprompt=None,
                         tools=None, tool_executor=None, tool_servers=None,
                         max_tool_iterations=25, agent_instructions=None):
             captured["tools"] = tools
@@ -1215,7 +1215,7 @@ class TestChatMcpWiring:
         captured = {}
 
         def fake_stream(messages, model, server_url, emit, sampling=None,
-                        cancel_event=None, api_key="none", sysprompt=None,
+                        cancel_event=None, pause_event=None, api_key="none", sysprompt=None,
                         agent_instructions=None):
             captured["ok"] = True
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,

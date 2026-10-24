@@ -15,6 +15,10 @@ const state = reactive({
   // Covers the whole request — waiting, thinking and every MCP/LSP tool
   // round — and is cleared when the reply ends, is stopped or errors out.
   session: { startedAt: 0 },
+  // A pause request is armed but its `pause_ack` has not landed yet: the ⏸
+  // button blinks and is disabled, and the composer stays shut (the ack is
+  // what reopens it). Cleared by the ack, by finish(), and by reset().
+  pausePending: false,
   // Conversation-scoped MCP toggles (independent from the SettingsDialog):
   // the Settings-activated connectors snapshotted on tab entry, each ON by
   // default, frozen once the first message is accepted by the server.
@@ -43,6 +47,11 @@ let activeMessage = null
 let draftTimer = null
 // Explicit Stop discards the partial reply; connection drops keep it.
 let userStopped = false
+// Pause's local fallback (when POST /api/chat/pause itself is unreachable)
+// also aborts the fetch, but must NOT discard: the whole point of Pause is
+// that the partial turn stays in the conversation. Distinguishes that abort
+// from Stop's.
+let userPaused = false
 
 // Must mirror the backend ChatImageUrl validation (routes.py).
 export const IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
@@ -369,7 +378,13 @@ export function conversationMarkdown(messages) {
 function messagePayload(message) {
   const images = message.images ?? []
   // The rendering-only tool-line sentinel never reaches the model.
-  const raw = message.raw.split(TOOL_LINE_MARKER).join('')
+  let raw = message.raw.split(TOOL_LINE_MARKER).join('')
+  // A turn the user interrupted must not read to the model as a finished
+  // answer: the note is added here (payload-build time) so the bubble the user
+  // reads stays clean while the model sees where the fragment came from. The
+  // same serializer writes saved sessions, so a loaded fragment keeps the note
+  // — what does not survive a reload is the `paused` flag and its caption.
+  if (message.paused) raw += '\n\n[interrupted by the user]'
   if (!images.length) return { role: message.role, content: raw }
   const parts = []
   if (raw.trim()) parts.push({ type: 'text', text: raw })
@@ -656,6 +671,38 @@ function applyEvent(name, data, assistant) {
         assistant.contextEstimated = !!data.contextEstimated
       }
       break
+    case 'pause_ack':
+      // A late ack (the reply had already terminated on `done`/`error`, or
+      // Restart wiped the conversation while the pause was in flight): the turn
+      // is closed, so this frame must not re-open it.
+      if (!assistant.streaming) break
+      // Terminal frame of a user-interrupted reply. Its exact figures arrived
+      // as the `usage` frame just before it (the tool-loop sites reuse the
+      // pre-tool `usage`), so all that is left is the measurement bookkeeping:
+      // freeze the window, flag the fragment (caption + the payload note that
+      // tells the model this turn is unfinished) and reopen the composer —
+      // which is what hides Stop, shows Send and takes ⏸ out of the row.
+      closeGenerationWindow(assistant)
+      // The `usage` frame that precedes the ack holds the cumulative exact
+      // figures for everything generated (the round is never reported by any
+      // other frame), so they become the message's final numbers: finish()'s
+      // char-based fallback would otherwise flag a server-reported count as
+      // estimated, and the tok/s badge needs `decode` to stay exact.
+      if (assistant.usageTokens > 0) {
+        assistant.tokens = assistant.usageTokens
+        assistant.tokensEstimated = false
+        if (assistant.usageDecode > 0) assistant.decode = assistant.usageDecode
+      }
+      assistant.paused = true
+      // Paused before anything was generated (still prefilling): an empty
+      // assistant turn would sit in the thread and be re-posted, so it goes —
+      // the same guard the non-OK response path uses.
+      if (!assistant.raw) {
+        state.messages.splice(state.messages.indexOf(assistant), 1)
+      }
+      state.pausePending = false
+      state.phase = 'idle'
+      break
     case 'tool_call':
       assistant.tools.push({
         id: data.id ?? `${data.tool}-${assistant.tools.length}`,
@@ -795,6 +842,11 @@ function finish(assistant) {
   state.phase = 'idle'
   state.session.startedAt = 0
   controller = null
+  // A pause whose `pause_ack` never arrives (the server died mid-round, or the
+  // fallback abort ended the stream): the reply is over either way, so the ⏸
+  // must stop blinking. The per-message `paused` flag is left alone — it only
+  // drives a caption.
+  state.pausePending = false
 }
 
 async function readStream(response, assistant) {
@@ -822,6 +874,9 @@ export function useChat() {
     if ((!trimmed && !pendingImage) || state.phase !== 'idle') return
 
     userStopped = false
+    // Fresh send: a previous turn's pause must not survive into it (its
+    // fragment already carries its own `paused` flag, which is per message).
+    userPaused = false
     state.error = null
     // Reuse the preview HTML rendered by setDraft; re-render only if Enter
     // beat the debounce (or nothing was ever rendered for this text).
@@ -868,6 +923,10 @@ export function useChat() {
       // Set by a `truncated` error frame: the server ended the stream before
       // the reply was finished, so this turn is a fragment (see applyEvent).
       truncated: false,
+      // Set by the `pause_ack` frame: the user interrupted this turn, so its
+      // fragment is deliberately kept in the conversation and the payload says
+      // so (display state, like `truncated` — never written to session JSON).
+      paused: false,
     })
     // Keep the reactive proxy so token mutations re-render.
     const assistant = state.messages[state.messages.length - 1]
@@ -921,7 +980,12 @@ export function useChat() {
       // Connection drop: keep whatever partial answer arrived; an explicit
       // Stop is handled in the finally block below.
     } finally {
-      if (userStopped) {
+      // A paused reply keeps its fragment (Pause's whole point), except when
+      // nothing was generated: the fallback abort has no `pause_ack` to drop
+      // the empty turn, so it goes here.
+      const discard =
+        (userStopped && !userPaused) || (userPaused && !assistant.raw)
+      if (discard) {
         // Stop discards the partial reply entirely (including the empty
         // placeholder and its MCP tool badges). The user message stays so it
         // can be edited and re-sent; the server-side stream is aborted.
@@ -935,6 +999,33 @@ export function useChat() {
   function stop() {
     userStopped = true
     if (controller) controller.abort()
+  }
+
+  // Non-destructive twin of stop(): the server closes the upstream stream at
+  // its next message boundary and terminates the reply with `pause_ack`, which
+  // keeps the partial turn in the conversation. One-way — the ack puts the app
+  // back to idle, and the user's next Send (their comment, riding on top of the
+  // interrupted turn) is the only way back into inference.
+  async function pause() {
+    // Blinking = waiting for the ack: not clickable, and nothing to pause once
+    // the reply is over.
+    if (state.phase === 'idle' || state.pausePending) return
+    state.pausePending = true
+    try {
+      // No body: there is exactly one pausable reply (the server keeps the
+      // single in-flight handle).
+      await fetch('/api/chat/pause', { method: 'POST' })
+    } catch {
+      // Endpoint unreachable: fall back to a local abort that keeps the
+      // fragment. The abort ends readStream, so finish() runs and clears
+      // pausePending.
+      userPaused = true
+      // Flag the fragment here, since no `pause_ack` will ever do it: it gets
+      // the caption and, more importantly, the payload note that tells the
+      // model this turn is unfinished.
+      if (activeMessage) activeMessage.paused = true
+      if (controller) controller.abort()
+    }
   }
 
   function editLast() {
@@ -1034,6 +1125,12 @@ export function useChat() {
     state.messages = []
     state.error = null
     state.pendingImage = null
+    // A pause still in flight has no conversation to ack any more: clear the
+    // blinking flag (and the per-reply fallback flag) so no ⏸ survives on a
+    // conversation that no longer streams. The ack itself is a no-op then —
+    // `assistant.streaming` is already false (the guard in applyEvent).
+    state.pausePending = false
+    userPaused = false
     // New conversation: MCP and LSP toggles unlock against freshly fetched
     // snapshots, keeping the previous on/off choices (the loaders seed the
     // new lists from them).
@@ -1047,6 +1144,7 @@ export function useChat() {
     state,
     send,
     stop,
+    pause,
     reset,
     setDraft,
     appendDraft,

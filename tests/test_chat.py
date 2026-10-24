@@ -520,7 +520,7 @@ def _oversized_data_url() -> str:
 class TestChatEndpoint:
     def test_happy_path_streams_frames(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             emit({"event": "token", "text": "Hel"})
             emit({"event": "token", "text": "lo"})
             emit({"event": "done", "took": 1.0, "ttft": 0.1, "tokens": 3,
@@ -539,7 +539,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             seen["model"] = model
             seen["server_url"] = server_url
             seen["messages"] = messages
@@ -565,7 +565,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             seen["messages"] = messages
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -591,7 +591,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             seen["messages"] = messages
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -645,7 +645,7 @@ class TestChatEndpoint:
 
     def test_forwards_configured_api_key(self, monkeypatch, tmp_path):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             emit({"api_key_seen": api_key, "event": "done", "took": 0.0,
                   "ttft": 0.0, "tokens": 0, "tokensEstimated": False})
 
@@ -679,7 +679,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             seen["instructions"] = agent_instructions
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -697,7 +697,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             seen["instructions"] = agent_instructions
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -708,7 +708,7 @@ class TestChatEndpoint:
 
     def test_error_event_terminates_stream(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             emit({"event": "error", "message": "boom"})
 
         monkeypatch.setattr(routes, "stream_chat", fake)
@@ -722,7 +722,7 @@ class TestChatEndpoint:
         # The whole event dict is JSON-serialized into the frame, so the flag
         # the WorkBench view needs to mark the bubble reaches the browser.
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             emit({"event": "error", "message": "cut short", "truncated": True})
 
         monkeypatch.setattr(routes, "stream_chat", fake)
@@ -774,6 +774,319 @@ class TestChatEndpoint:
             assert response.status_code == 409
         finally:
             gate.set()
+
+
+class TestChatPauseEndpoint:
+    """``POST /api/chat/pause`` arms the flag of the one in-flight reply."""
+
+    def test_no_reply_streaming_returns_409(self, client):
+        response = client.post("/api/chat/pause")
+        assert response.status_code == 409
+        assert "No chat reply is streaming" in response.json()["detail"]
+
+    def test_pause_arms_the_flag_and_the_stream_ends_on_pause_ack(
+        self, client, monkeypatch
+    ):
+        seen = {}
+        started = threading.Event()
+        released = threading.Event()
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+            seen["pause_event"] = pause_event
+            started.set()
+            # Stands in for the core: the flag is what the real loop checks.
+            while not pause_event.is_set():
+                time.sleep(0.01)
+            # Hold the reply open across both pause calls: the second one must
+            # still see the handle, so no ack may go out before it landed.
+            released.wait(timeout=5)
+            emit({"event": "token", "text": "partial"})
+            emit({"event": "usage", "tokens": 3, "decode": 0.2,
+                  "contextTokens": 12, "contextEstimated": False})
+            emit({"event": "pause_ack", "partial": True})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+
+        def arm_pause():
+            # The TestClient buffers a whole SSE body before returning, so the
+            # reply below only ends once the flag is armed: the POST has to come
+            # from another thread, exactly as it does in the browser.
+            started.wait(timeout=5)
+            arm_pause.results["first"] = client.post("/api/chat/pause")
+            arm_pause.results["again"] = client.post("/api/chat/pause")
+            released.set()
+
+        arm_pause.results = {}
+        poster = threading.Thread(target=arm_pause)
+        poster.start()
+        response = client.post(
+            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
+        )
+        poster.join(timeout=5)
+
+        assert seen["pause_event"] is not None
+        first = arm_pause.results["first"]
+        assert first.status_code == 200
+        assert first.json() == {"paused": "requested"}
+        # Idempotent: a second call while the ack is pending says so.
+        again = arm_pause.results["again"]
+        assert again.status_code == 200
+        assert again.json() == {"paused": "pending"}
+        names = [name for name, _data in _events(response.text)]
+        assert names == ["token", "usage", "pause_ack"]
+
+    def test_handle_is_retired_once_the_reply_ended(self, client, monkeypatch):
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 1,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        response = client.post(
+            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
+        )
+        assert response.status_code == 200
+        assert [name for name, _ in _events(response.text)] == ["done"]
+        assert client.post("/api/chat/pause").status_code == 409
+
+
+class TestStreamChatPause:
+    """``pause_event`` interrupts a reply without throwing its context away.
+
+    The ack must be terminal and unambiguous (no ``done``, no ``error``, no
+    truncation frame — the pause itself closed the stream, so no finish_reason
+    was ever expected), and it must carry the exact usage of the partial turn.
+    """
+
+    class Wrapper:
+        def __init__(self, chunks, received=None):
+            self._chunks = chunks
+            self.received_finish_reason = received
+            self.closed = False
+
+        def __iter__(self):
+            return iter(self._chunks)
+
+        def close(self):
+            self.closed = True
+
+    def _run(self, monkeypatch, generator, **kwargs):
+        monkeypatch.setattr("src.core.chat.completion", lambda **kw: generator)
+        events = []
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi?"}],
+            "model-a",
+            "http://server:8080/v1",
+            events.append,
+            **kwargs,
+        )
+        return events
+
+    def test_paused_reply_ends_on_pause_ack(self, monkeypatch):
+        pause = threading.Event()
+        pause.set()
+        events = self._run(
+            monkeypatch,
+            self.Wrapper([content_chunk("half an "), content_chunk("answer")]),
+            pause_event=pause,
+        )
+        names = [e["event"] for e in events]
+        # Nothing streamed (the flag was armed before the first chunk), but the
+        # ack is still terminal and preceded by the usage frame.
+        assert names == ["usage", "pause_ack"]
+        assert events[-1]["partial"] is True
+        assert "done" not in names and "error" not in names
+
+    def test_pause_is_never_reported_as_a_truncation(self, monkeypatch):
+        pause = threading.Event()
+        pause.set()
+        events = self._run(
+            monkeypatch,
+            self.Wrapper([content_chunk("partial")]),
+            pause_event=pause,
+        )
+        assert not [e for e in events if e["event"] == "error"]
+        assert not [e for e in events if e.get("truncated")]
+
+    def test_pause_closes_the_upstream_stream(self, monkeypatch):
+        pause = threading.Event()
+        pause.set()
+        wrapper = self.Wrapper([content_chunk("x")])
+        self._run(monkeypatch, wrapper, pause_event=pause)
+        assert wrapper.closed
+
+    def test_pause_mid_stream_keeps_only_the_tokens_so_far(self, monkeypatch):
+        # The check is per chunk: a flag armed after N chunks must stop the
+        # loop there, not at the end of the stream.
+        pause = threading.Event()
+
+        class Gen:
+            received_finish_reason = None
+
+            def __iter__(self):
+                for i in range(10):
+                    if i == 3:
+                        pause.set()
+                    yield content_chunk(f"t{i}")
+
+        events = self._run(monkeypatch, Gen(), pause_event=pause)
+        tokens = [e["text"] for e in events if e["event"] == "token"]
+        assert tokens == ["t0", "t1", "t2"]
+        assert events[-1]["event"] == "pause_ack"
+
+    def test_partial_tokens_then_usage_then_the_ack(self, monkeypatch):
+        # The flag is armed after the server's usage chunk: what streamed so
+        # far is kept, the usage frame carries the exact cumulative figures,
+        # and the ack terminates the reply (the chunk after the flag is gone).
+        pause = threading.Event()
+
+        class Gen:
+            received_finish_reason = None
+
+            def __iter__(self):
+                yield content_chunk("par")
+                yield usage_chunk(prompt=40, completion=8, total=48)
+                pause.set()
+                yield content_chunk("tially-streamed-but-skipped")
+
+        events = self._run(monkeypatch, Gen(), pause_event=pause)
+        names = [e["event"] for e in events]
+        assert names == ["token", "usage", "pause_ack"]
+        usage = events[1]
+        assert usage["tokens"] == 8
+        assert usage["contextTokens"] == 48
+        assert usage["contextEstimated"] is False
+        assert not [e for e in events if e.get("text", "").startswith("tially")]
+
+    def test_flag_armed_after_the_last_chunk_still_ends_on_done(self, monkeypatch):
+        # The race: the round streamed to its end with a real finish_reason and
+        # the flag was armed only after that last chunk. The reply is complete,
+        # so `done` wins — a round that carries its finish_reason was never
+        # interrupted, whatever the flag says afterwards.
+        pause = threading.Event()
+
+        class Gen:
+            received_finish_reason = "stop"
+
+            def __iter__(self):
+                yield content_chunk("whole answer")
+                pause.set()
+
+        events = self._run(monkeypatch, Gen(), pause_event=pause)
+        names = [e["event"] for e in events]
+        assert names == ["token", "done"]
+
+    def test_cancel_wins_over_a_pause_on_the_same_chunk(self, monkeypatch):
+        # Stop after Pause: the client is gone, so nothing may be emitted —
+        # the cancel check comes first at every pause site.
+        cancel = threading.Event()
+        cancel.set()
+        pause = threading.Event()
+        pause.set()
+        wrapper = self.Wrapper([content_chunk("x")])
+        events = self._run(
+            monkeypatch, wrapper, cancel_event=cancel, pause_event=pause
+        )
+        assert events == []
+        assert wrapper.closed
+
+    def test_pause_while_tool_calls_stream_never_runs_them(self, monkeypatch):
+        # The dangerous shape: tool-call arguments only half-streamed, so
+        # executing them would feed the model invalid JSON of its own cutting.
+        executed = []
+        pause = threading.Event()
+
+        class Gen:
+            received_finish_reason = None
+
+            def __iter__(self):
+                yield {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call-1",
+                                        "function": {
+                                            "name": "execute_command",
+                                            "arguments": '{"command": "ls',
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+                pause.set()
+                yield content_chunk("must not stream")
+
+        events = self._run(
+            monkeypatch,
+            Gen(),
+            pause_event=pause,
+            tools=[{"type": "function", "function": {"name": "execute_command"}}],
+            tool_executor=lambda name, args: executed.append(name) or "ok",
+        )
+        assert executed == []
+        assert not [e for e in events if e["event"] == "tool_call"]
+        assert events[-1]["event"] == "pause_ack"
+
+    def test_pause_asked_during_a_tool_run_ends_between_rounds(self, monkeypatch):
+        # A running tool is allowed to finish (its `tool_result` still lands,
+        # so the badge never sticks on "running"), and the next round is never
+        # started. No extra `usage` frame: this round's figures went out as the
+        # pre-tool one.
+        pause = threading.Event()
+
+        def executor(name, args):
+            pause.set()
+            return "done"
+
+        chunks_round_one = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "execute_command",
+                                        "arguments": '{"command": "ls"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            usage_chunk(prompt=10, completion=4, total=14),
+        ]
+
+        class Wrapper:
+            received_finish_reason = "tool_calls"
+
+            def __iter__(self):
+                return iter(chunks_round_one)
+
+        monkeypatch.setattr("src.core.chat.completion", lambda **kw: Wrapper())
+        events = []
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi?"}],
+            "model-a",
+            "http://server:8080/v1",
+            events.append,
+            pause_event=pause,
+            tools=[{"type": "function", "function": {"name": "execute_command"}}],
+            tool_executor=executor,
+        )
+        names = [e["event"] for e in events]
+        # `usage` precedes the tool badges (it is emitted as soon as that
+        # round stops generating), and the ack is the only terminal frame.
+        assert names == ["usage", "tool_call", "tool_result", "pause_ack"]
 
 
 class TestChatMcpFilter:

@@ -1555,6 +1555,27 @@ body {
   fill: var(--bi-danger);
 }
 
+/* Pause: the non-destructive twin of Stop, so it borrows Stop's icon-button
+   shape but the warning accent — interrupting is a request, not a kill. */
+.chat-pause,
+.chat-pause:hover {
+  color: var(--bi-warning);
+}
+
+.chat-pause svg {
+  stroke: var(--bi-warning);
+}
+
+.chat-pause rect {
+  fill: var(--bi-warning);
+}
+
+/* Pause armed, ack not in yet: blinking IS the disabled state (the button
+   cannot be clicked while it pulses). */
+.chat-pause.is-paused-blink {
+  animation: bi-pulse 1.2s ease-in-out infinite;
+}
+
 /* Right-aligned row holding the edit pencil to the left of a user bubble. */
 .chat-user-row {
   display: flex;
@@ -1771,6 +1792,12 @@ body {
    shouting over it. */
 .chat-truncated {
   color: var(--bi-danger);
+}
+
+/* A reply the user paused on purpose: not a fault, so it carries the same
+   warning accent as the ⏸ button rather than the danger one above it. */
+.chat-paused {
+  color: var(--bi-warning);
 }
 
 /* Vertical timeline of what the chat stream on the right never shows: the

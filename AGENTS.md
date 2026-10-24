@@ -97,7 +97,8 @@ stream (`run_started` → `model_started` → per-question `question_started` /
 `token` / `answer_done` / `question_done` → `run_finished`, with `run_error`
 on failure) and the per-reply chat stream (`token`, `reasoning_delta`, and
 `tool_call` / `tool_result` when tools are active, ending in exactly one
-`done` or `error`).
+`done`, `error` or `pause_ack` — the last one terminates a reply the user
+paused with `POST /api/chat/pause`, keeping its partial turn).
 
 Two measurement rules hold across both:
 

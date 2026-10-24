@@ -105,6 +105,25 @@ def _prompt_estimate(messages: List[Dict[str, Any]]) -> int:
     return estimate_completion_tokens("".join(_content_text(m) for m in messages))
 
 
+def _emit_paused(
+    emit: Emit,
+    usage: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Terminate a user-interrupted reply: exact usage when still missing,
+    then the ``pause_ack`` terminal frame.
+
+    ``usage`` is the cumulative figure the stream path needs (its round is
+    folded but never reported), so the chat badges read the server's numbers
+    for the partial turn instead of falling back to the client's ~4
+    chars/token estimate. The tool-loop sites pass nothing: the same figures
+    went out as the pre-tool ``usage`` frame. ``pause_ack`` is what reopens
+    the composer.
+    """
+    if usage is not None:
+        emit({"event": "usage", **usage})
+    emit({"event": "pause_ack", "partial": True})
+
+
 def stream_chat(
     messages: List[Dict[str, Any]],
     model_name: str,
@@ -112,6 +131,7 @@ def stream_chat(
     emit: Emit,
     sampling: Optional[Dict[str, Any]] = None,
     cancel_event: Optional[threading.Event] = None,
+    pause_event: Optional[threading.Event] = None,
     api_key: str = "none",
     sysprompt: Optional[str] = None,
     tools: Optional[List[Dict[str, Any]]] = None,
@@ -144,9 +164,17 @@ def stream_chat(
     prompt + generation — the context-window occupancy figure, which can
     exceed nothing but is NOT summed across rounds; ``contextEstimated``
     flags it when a fallback estimate was involved.
-    Terminal event is exactly one of ``done`` or ``error``
+    Terminal event is exactly one of ``done``, ``error`` or ``pause_ack``
     (unless the call was cancelled — then the client is gone and nothing is
-    emitted).
+    emitted). ``pause_ack`` (carrying ``partial: True``) closes a reply the
+    user interrupted through ``pause_event``; when the interrupted round has
+    not been reported yet, a cumulative ``usage`` frame rides with the ack so
+    the chat badges keep the server's exact figures. Precedence is cancel >
+    error > pause — an ``error`` already emitted is never followed by a pause
+    ack, and a pause request that arrives while a round was already finishing
+    honestly still ends on ``done``. A pause never travels to the client as a
+    truncation: the interrupt itself closed the upstream stream, so no
+    ``finish_reason`` was expected and the truncation check is skipped.
 
     ``agent_instructions`` (when non-empty) is appended to the system message
     after the configured prompt, so a conversation starts already carrying the
@@ -244,11 +272,19 @@ def stream_chat(
         tool_calls: Dict[int, Dict[str, Any]] = {}
         iter_first: Optional[float] = None
         iter_last: Optional[float] = None
+        paused = False
         try:
             for chunk in response_generator:
                 if cancel_event is not None and cancel_event.is_set():
                     close_llm_stream(response_generator)
                     return
+                # Cancel wins over pause (checked first, at every site).
+                # Reasoning deltas and tool-call arguments are chunks of this
+                # same loop, so this one check covers them for free.
+                if pause_event is not None and pause_event.is_set():
+                    close_llm_stream(response_generator)
+                    paused = True
+                    break
                 usage = _extract_usage(chunk)
                 if usage is not None:
                     iteration_usage = usage
@@ -298,7 +334,26 @@ def stream_chat(
         # be re-posted as a finished assistant turn on the next send.
         # Checked after the loop: the wrapper only records the reason while
         # iterating.
-        if iteration_chars and not saw_finish_reason(response_generator):
+        #
+        # A pause disqualifies that reading: the interrupt itself closed the
+        # stream, so no finish_reason was ever expected — and a flag armed a
+        # moment before the stream died must not be reported as a server cut
+        # either. Precedence stays cancel > error > pause.
+        # ``saw_finish_reason`` is only meaningful now that the generator is
+        # drained, which is why the raced ordering is settled here rather than
+        # inside the loop: an interrupted round always ends on the ack, a round
+        # that finished honestly (``done``) is never rewritten by a late flag.
+        finish_seen = saw_finish_reason(response_generator)
+        if (
+            not paused
+            and pause_event is not None
+            and pause_event.is_set()
+            and not finish_seen
+        ):
+            # The flag was armed while the last chunks were already arriving:
+            # treat it as the interrupt that ended this round.
+            paused = True
+        if not paused and iteration_chars and not finish_seen:
             emit(
                 {
                     "event": "error",
@@ -350,6 +405,24 @@ def stream_chat(
         context_tokens = round_context
         context_estimated = round_estimated
 
+        # A pause that landed inside the chunk loop ends the reply here: this
+        # round's figures were just folded into the cumulative totals but are
+        # never reported by any other frame, so the usage rides with the ack.
+        # Checked *before* the tool-loop decision below, so a round interrupted
+        # while its tool calls were still streaming never executes them: the
+        # client cannot re-post a tool_calls turn, so that fragment is dropped.
+        if paused:
+            _emit_paused(
+                emit,
+                {
+                    "tokens": completion_tokens,
+                    "decode": decode_seconds,
+                    "contextTokens": context_tokens,
+                    "contextEstimated": context_estimated,
+                },
+            )
+            return
+
         # `tool_executor is None` only narrows for the type checker: use_tools
         # already implies the executor is set.
         if not use_tools or tool_executor is None or not tool_calls:
@@ -388,6 +461,13 @@ def stream_chat(
             }
         )
         for _, call in sorted(tool_calls.items()):
+            # Pause asked for while the tool loop runs: a tool already running
+            # is allowed to finish (Stop covers the hard case); only the
+            # *next* call is skipped. The figures went out as the pre-tool
+            # `usage` frame, so the ack needs no usage of its own.
+            if pause_event is not None and pause_event.is_set():
+                _emit_paused(emit)
+                return
             tool_name = call["name"]
             try:
                 tool_args = json.loads(call["arguments"]) if call["arguments"] else {}
@@ -436,6 +516,13 @@ def stream_chat(
                 }
             )
         if cancel_event is not None and cancel_event.is_set():
+            return
+        # Between rounds: a pause asked for during a tool run (which was
+        # allowed to finish) lands here instead of starting another round.
+        # No usage frame — that round's figures went out before the first tool
+        # executed.
+        if pause_event is not None and pause_event.is_set():
+            _emit_paused(emit)
             return
         if iteration >= max_tool_iterations:
             capped = True

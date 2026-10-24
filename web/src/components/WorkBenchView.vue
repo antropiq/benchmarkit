@@ -122,6 +122,13 @@ const {
             <p v-if="message.truncated" class="caption chat-truncated" role="status">
               &#9888; Cut short by the server — this reply is incomplete.
             </p>
+            <!-- The user's own interruption: unlike the line above this is not
+                 a fault, and the fragment is deliberately part of the
+                 conversation, so it says what happens next. -->
+            <p v-if="message.paused" class="caption chat-paused" role="status">
+              &#9208; Interrupted by you — the partial reply above is kept in
+              the conversation.
+            </p>
             <p
               v-if="message.streaming && !message.raw"
               class="caption chat-typing"

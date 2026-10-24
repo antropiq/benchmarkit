@@ -18,6 +18,7 @@ const {
   state,
   send,
   stop,
+  pause,
   reset,
   setDraft,
   registerDraftInput,
@@ -368,6 +369,28 @@ onBeforeUnmount(() => {
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
               <path d="M3 3v5h5" />
+            </svg>
+          </button>
+          <!-- Pause: the non-destructive twin of Stop, and it only exists
+               while a reply streams — the `pause_ack` returns the app to idle,
+               so this button leaves the row exactly when Send comes back.
+               Blinking means the request is armed and the button is not
+               clickable; typing a comment and sending it is the only way back
+               into inference. -->
+          <button
+            v-if="streaming"
+            class="icon-btn chat-pause"
+            type="button"
+            :disabled="state.pausePending"
+            :class="{ 'is-paused-blink': state.pausePending }"
+            :aria-label="state.pausePending ? 'Pausing…' : 'Pause — keep the partial reply, add a comment'"
+            :title="state.pausePending ? 'Pausing…' : 'Pause'"
+            @click="pause"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="7" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
             </svg>
           </button>
           <button
