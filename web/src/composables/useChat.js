@@ -385,10 +385,17 @@ function messagePayload(message) {
 // The file is a thin envelope around the OpenAI user/assistant message list —
 // exactly the shape POST /api/chat accepts — so continuing a loaded
 // conversation is free: every send already re-posts state.messages mapped
-// through messagePayload(). Only the conversation TEXT travels in `content`:
-// base64 images, tool-loop turns and the per-turn badges are never written
-// (the browser only holds _preview-capped tool summaries, so writing them back
-// would be fabrication; the system prompt is rebuilt server-side per send).
+// through messagePayload(). A user turn with attached images keeps them as
+// standard OpenAI `image_url` parts, so the base64 data URL round-trips and the
+// next send re-posts it to the model. Tool-loop turns and the per-turn badges
+// are still never written (the browser only holds _preview-capped tool
+// summaries, so writing them back would be fabrication; the system prompt is
+// rebuilt server-side per send).
+//
+// Each image part carries one benchmarkit-only extra key, `name` (the original
+// file name, needed for the restored thumbnail's alt/title): the backend's
+// `ChatContentPart` uses extra="ignore", so that key is dropped on the way to
+// the model.
 //
 // The one extra field an assistant turn may carry is `reasoning` — the streamed
 // thinking flows of that reply, one entry per reasoning block of the
@@ -401,12 +408,18 @@ function messagePayload(message) {
 // ---------------------------------------------------------------------------
 
 export const SESSION_FILE_FORMAT = 'benchmarkit-chat-session'
-// v2 added the optional per-assistant-turn `reasoning` list. Version-1 files
-// simply carry no such key, so the loader needs no version branch.
-export const SESSION_FILE_VERSION = 2
-// Stands in for an image part dropped from a loaded file, so an image-only
-// turn keeps a non-empty content (an empty one would 422 the next send).
-export const SESSION_IMAGE_PLACEHOLDER = '[image stripped from the saved session]'
+// v2 added the optional per-assistant-turn `reasoning` list, v3 started saving
+// the attached images instead of stripping them. Older files simply carry no
+// image parts, so the loader needs no version branch.
+export const SESSION_FILE_VERSION = 3
+// Stands in for a loaded image part whose data URL is unusable (a hand-edited
+// or truncated file), so an image-only turn keeps a non-empty content (an
+// empty one would 422 the next send).
+export const SESSION_IMAGE_PLACEHOLDER =
+  '[image from the saved session could not be restored]'
+// Must mirror the backend ChatImageUrl validation (routes.py).
+const SESSION_IMAGE_DATA_URL =
+  /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/
 
 // Thinking flows of one assistant reply, in panel order: every
 // `{ kind: 'reasoning' }` block of its timeline as one string, blank ones
@@ -422,9 +435,23 @@ function reasoningFlows(message) {
 export function conversationJson(messages) {
   const items = []
   for (const message of messages) {
-    // images: [] forces the text-only branch, so no base64 ever reaches the file.
-    const payload = messagePayload({ ...message, images: [] })
-    if (typeof payload.content !== 'string' || !payload.content.trim()) continue
+    // The very serializer a live send uses, so the file holds exactly what the
+    // model was shown: text parts plus base64 `image_url` parts for an attached
+    // image. Each image part then gets its file `name` (see the block header),
+    // which the backend drops on its way to the model.
+    const payload = messagePayload(message)
+    const parts = typeof payload.content === 'string' ? [] : payload.content
+    const hasText =
+      typeof payload.content === 'string'
+        ? Boolean(payload.content.trim())
+        : parts.some((part) => part.type === 'text' && part.text.trim())
+    const imageParts = parts.filter((part) => part.type === 'image_url')
+    // A turn with neither text nor an image carries nothing worth restoring.
+    if (!hasText && !imageParts.length) continue
+    const images = message.images ?? []
+    imageParts.forEach((part, i) => {
+      if (images[i]) part.name = images[i].name || 'image'
+    })
     if (message.role === 'assistant') {
       // Omitted entirely when the reply streamed no thinking, so files stay as
       // small as v1 ones for non-reasoning models.
@@ -442,19 +469,57 @@ export function conversationJson(messages) {
   }
 }
 
-// Content of one loaded turn: a plain string, or an OpenAI parts array with
-// text parts joined and image parts replaced by the placeholder.
-function normalizeLoadedContent(content) {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    const parts = []
-    for (const part of content) {
-      if (part?.type === 'image_url') parts.push(SESSION_IMAGE_PLACEHOLDER)
-      else if (typeof part?.text === 'string') parts.push(part.text)
-    }
-    return parts.join('\n')
+// One loaded image part -> the client image shape `{ dataUrl, name, size }`, or
+// null when the part carries no usable data URL: the caller then inserts the
+// placeholder text instead, so the turn stays postable. A well-formed but
+// oversized image fails loudly instead — the backend would 422 the very same
+// payload on the next send, a far more confusing place to hit the error.
+function normalizeLoadedImage(part, index) {
+  const url = part?.image_url?.url
+  if (typeof url !== 'string') return null
+  const match = SESSION_IMAGE_DATA_URL.exec(url)
+  if (!match) return null
+  let base64
+  try {
+    base64 = atob(match[2])
+  } catch {
+    return null
   }
-  return ''
+  // atob yields exactly one character per decoded byte, so its length *is* the
+  // decoded size — the same bound the backend checks with a real b64decode.
+  const bytes = base64.length
+  if (bytes > MAX_IMAGE_BYTES) {
+    throw new Error(
+      `Message ${index + 1} carries a ${humanFileSize(bytes)} image (max ${humanFileSize(MAX_IMAGE_BYTES)}).`,
+    )
+  }
+  const name =
+    typeof part.name === 'string' && part.name.trim() ? part.name.trim() : 'image'
+  return { dataUrl: url, name, size: bytes }
+}
+
+// Content of one loaded turn, split into where the client keeps each part:
+// `{ text, images }` — text parts joined into `raw`, image parts restored as
+// `images` entries (an unusable one becomes the placeholder text). Image parts
+// are only ever restored onto user turns: save() never writes them elsewhere,
+// and messagePayload() would turn them into a multimodal `content` the backend
+// rejects for assistant turns ("assistant messages must use plain text
+// content"), so a hand-written file gets the placeholder instead.
+function normalizeLoadedContent(content, role, index) {
+  if (typeof content === 'string') return { text: content, images: [] }
+  if (!Array.isArray(content)) return { text: '', images: [] }
+  const texts = []
+  const images = []
+  for (const part of content) {
+    if (part?.type === 'image_url') {
+      const image = normalizeLoadedImage(part, index)
+      if (!image || role === 'assistant') texts.push(SESSION_IMAGE_PLACEHOLDER)
+      else images.push(image)
+    } else if (typeof part?.text === 'string') {
+      texts.push(part.text)
+    }
+  }
+  return { text: texts.join('\n'), images }
 }
 
 // Optional per-assistant-turn thinking flows of a loaded turn: a list of
@@ -483,7 +548,8 @@ function normalizeLoadedReasoning(reasoning, index) {
 }
 
 // Validates a session file's text and returns its turns as
-// `{ messages: [{ role, content, reasoning }] }`. Throws with a precise
+// `{ messages: [{ role, content, images, reasoning }] }` (`images` being the
+// restored `{ dataUrl, name, size }` entries of that turn). Throws with a precise
 // message: silently dropping a system/tool turn would change the
 // conversation's meaning, so an invalid file must fail loudly. Unknown extra
 // keys are ignored, and a bare `[{role, content}, ...]` array is accepted for
@@ -527,13 +593,14 @@ export function parseSessionFile(text) {
         `Message ${index + 1} has role ${JSON.stringify(item.role ?? '')}: only "user" and "assistant" turns can be loaded.`,
       )
     }
-    const content = normalizeLoadedContent(item.content)
-    if (!content.trim()) continue
+    const { text: content, images } = normalizeLoadedContent(item.content, item.role, index)
+    // A turn is usable when it has text or a restorable image.
+    if (!content.trim() && !images.length) continue
     // A user turn never carries thinking: the key is ignored there (unknown
     // extra keys are tolerated by design).
     const reasoning =
       item.role === 'assistant' ? normalizeLoadedReasoning(item.reasoning, index) : []
-    messages.push({ role: item.role, content, reasoning })
+    messages.push({ role: item.role, content, images, reasoning })
   }
   if (!messages.length) throw new Error('Session file holds no usable message.')
   return { messages }
@@ -900,7 +967,10 @@ export function useChat() {
         raw,
         html: renderMarkdown(raw, { mermaid: true }),
         streaming: false,
-        images: [],
+        // Images restored from the file (already `{ dataUrl, name, size }`), so
+        // the thumbnail renders again and the next send re-posts the image to
+        // the model — and editLast() can re-attach it to the edited draft.
+        images: item.images ?? [],
       }
       if (item.role !== 'assistant') return message
       // The loaded thinking flows become the reply's panel timeline: one

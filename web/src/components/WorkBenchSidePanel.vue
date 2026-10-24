@@ -190,9 +190,14 @@ async function copyConversation() {
 
 // --- Save / load the session as a JSON file (see useChat's conversationJson) ---
 
-// A stray 10 MB base64 blob would freeze the tab inside JSON.parse, so refuse
-// an oversized file before even reading it.
-const MAX_SESSION_FILE_BYTES = 2 * 1024 * 1024
+// Refuse an oversized file before even reading it, so a stray blob cannot freeze
+// the tab inside JSON.parse. Kept well above what a *valid* session can hold:
+// an image is capped at MAX_IMAGE_BYTES (10 MB) decoded, i.e. ~13.4 MB of
+// base64, and every per-turn image the conversation carries lives in this one
+// file — so the guard stays a guard against junk, not against real saved
+// images. An image that is itself too large is reported per turn by
+// parseSessionFile instead.
+const MAX_SESSION_FILE_BYTES = 64 * 1024 * 1024
 
 const canSave = computed(() => canCopy.value && !props.streaming)
 

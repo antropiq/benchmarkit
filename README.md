@@ -35,8 +35,9 @@ same configured model interactively.
 - **Save / load a WorkBench session** — park a conversation on disk as a plain
   JSON file (`{format, version, messages}` in OpenAI user/assistant form) and
   re-open it later to continue where it stopped; each assistant turn may carry
-  its streamed `reasoning` for the tool panel, while images and tool calls are
-  not part of the file.
+  its streamed `reasoning` for the tool panel, and attached images travel with
+  their turn as base64 `image_url` parts, so a loaded conversation still shows
+  (and re-sends) them; tool calls are not part of the file.
 - **In-app settings** — a dialog to edit endpoint, sampling parameters,
   question set, and verifier; changes are persisted to `.env`.
 - **Dark / light theme**, self-hosted fonts, Pico.css.

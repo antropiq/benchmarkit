@@ -11,13 +11,15 @@ Two buttons in the side-panel action row, next to Copy / Restart:
 | **Save session** | browser "Save as…" download, user-named |
 | **Load session** | file picker → conversation restored, ready to continue |
 
-Both disabled while a reply is streaming. Base64 image streams are **stripped**.
+Both disabled while a reply is streaming. *(At first the base64 images were
+**stripped**; they are saved and restored since **v3** of the format — see the
+follow-up section at the end.)*
 
 ## Decisions taken (from the brief)
 
 1. Load over a non-empty live conversation → **confirm, then replace**; never
    while the flow is running.
-2. Image-only turns after stripping → **placeholder text**, so the history stays
+2. *(v1/v2)* Image-only turns after stripping → **placeholder text**, so the history stays
    valid (step 3: an empty turn would 422 the next send).
 3. Filename → the browser's native **Save-As** (no in-app name field).
 4. **No** `stats` block: the file carries the messages only; tok/s and ctx badges
@@ -73,7 +75,7 @@ portable (its `messages` paste into any OpenAI-compatible client):
 
 | Item | Why |
 |---|---|
-| **Base64 images** | Required by the brief; `useChat.js:49` allows 10 MB per image, so a JSON transcript would balloon to tens of MB. |
+| **Base64 images** | *(v1/v2 only)* Stripped, as the brief asked. **Saved since v3** — see *Follow-up: images are kept (v3)* below. |
 | **`tool_calls` / `role:"tool"` turns** | The browser never receives them: it only gets `_preview`-capped summaries (200 chars of args, 400 of result — `chat.py:84`, emitted at `:385` / `:412`). Writing them back would be fabrication. They could not be re-posted either: `ChatMessage.role` is `Literal["user","assistant"]` and `extra="ignore"` drops `tool_calls` (`routes.py:233-236`). |
 | **Reasoning / thinking text** | **Saved since v2** as an optional per-assistant-turn `reasoning` list (one entry per `WorkBenchToolPanel` block), restored into `message.blocks`. It sits *beside* `content`, never inside it (`chat.py` docstring: reasoning is never answer text) — `send()` builds its history through `messagePayload()`, which reads `raw`/`images` only, so a restored flow can never reach the model. |
 | **System prompt + AGENTS.md instructions** | Rebuilt server-side at every send (`chat.py:157`, `agent_instructions_block()` at `routes.py:1171`) — always fresh, never stale in the file. |
@@ -248,7 +250,8 @@ file has no consumer beyond a hypothetical one.
   a widened `ChatMessage` model so those turns can be re-posted. Only if verbatim
   tool turns are truly required.
 - Re-attaching images after a load; restoring badges. (Reasoning text was out of
-  scope in v1 and is saved/restored from **v2** — see the table above. What is
+  scope in v1 and is saved/restored from **v2**; images from **v3** — see
+  *Follow-up: images are kept (v3)* at the end. What is
   still lost is the *interleaving* of thinking with tool badges: only the
   thinking flows are in the file, so a restored timeline shows the flows
   without the tool badges between them.)
@@ -277,3 +280,68 @@ file has no consumer beyond a hypothetical one.
 | `src/api/routes.py` | — | +~25 |
 | `.gitignore` | — | +1 |
 | `tests/test_chat.py` | — | +~35 |
+
+---
+
+## Follow-up: images are kept (format v3)
+
+The stripping above was the only regret of the feature: a saved conversation
+lost its pictures, and the next send could not show them to the model again.
+Since **v3** (`SESSION_FILE_VERSION = 3`) the attached images travel with their
+turn, so "continue where it stopped" really includes the pictures.
+
+### What changed
+
+| Piece | Change |
+|---|---|
+| `conversationJson()` | Now serializes through **`messagePayload(message)` unchanged** — the same function a live `send()` uses — so the file holds exactly what the model was shown: a text part plus base64 `image_url` parts. A turn is kept when it has text **or** an image. |
+| `name` on each image part | The client image shape is `{ dataUrl, name, size }` but OpenAI parts carry only the URL, so each `image_url` part gets one benchmarkit-only `name` key (the original file name → the restored thumbnail's alt/title). Safe because `ChatContentPart` is `extra="ignore"`: the key is dropped before the part reaches litellm (verified against `ChatIn.model_validate`). |
+| `normalizeLoadedImage()` | New: validates a loaded data URL against the same regex + 10 MB decoded cap the backend enforces (`routes.py:174`, `MAX_CHAT_IMAGE_BYTES`), and returns `{ dataUrl, name, size }`. |
+| `normalizeLoadedContent()` | Now returns `{ text, images }` instead of flattening everything to a string. |
+| `parseSessionFile()` | Returns `{ role, content, images, reasoning }` per turn; a turn survives when it has text **or** a restorable image. |
+| `loadSession()` | Restores `images: item.images ?? []`, so the thumbnail renders, `editLast()` re-attaches the picture to the edited draft, and the next `send()` re-posts it. |
+| `WorkBenchSidePanel.vue` | `MAX_SESSION_FILE_BYTES` 2 MB → 64 MB: a valid session can now legitimately hold ~13.4 MB of base64 per image, so the guard stays a guard against junk rather than against real images. |
+
+### Error handling, in the same spirit as v1
+
+- A **malformed / truncated** data URL (hand-edited file) degrades to the
+  placeholder text (`SESSION_IMAGE_PLACEHOLDER`, reworded), keeping an
+  image-only turn postable — the original decision 2, now only for broken data.
+- An **oversized** image fails loudly at load with `Message N carries a X MB
+  image (max 10 MB)`: the backend would 422 the identical payload on the next
+  send, which is a much worse place to discover it.
+- Size is measured from `atob(...).length` — `atob` yields one char per decoded
+  byte, so no padding math is needed (and it matches the backend's real
+  `b64decode` bound).
+- Image parts found on an **assistant** turn (only a hand-written file can have
+  one) also become the placeholder: `ChatMessage` demands plain text content
+  there, so restoring them would break the next send.
+
+### Compatibility
+
+v1 and v2 files simply carry no image parts, so the loader needs **no version
+branch**; the constant only documents what each version means. Files written by
+v3 open fine in any OpenAI-compatible client (`image_url` is the standard
+multimodal shape) — the extra `name` key is ignored everywhere.
+
+### Manual verification (image-specific additions to the checklist above)
+
+1. Chat a turn with an image → Save → the file carries a `content` **array**
+   with a text part and an `image_url` part holding `data:image/...;base64,`.
+2. Load that file → the thumbnail renders again and opens in the lightbox;
+   "Edit and resend" re-attaches the picture to the composer as the pending
+   image.
+3. Send a follow-up turn after the load → the server accepts the history
+   (no 422) and the model still sees the image.
+4. Hand-edit a saved file's base64 to garbage → the turn loads with the
+   placeholder text and stays sendable; make it a valid but huge payload → one
+   red error line naming the message and its size.
+5. Load a v2 file (no images) → unchanged behaviour.
+
+### Files touched (v3)
+
+| File | Change |
+|---|---|
+| `web/src/composables/useChat.js` | serializer + loader, ~55 lines |
+| `web/src/components/WorkBenchSidePanel.vue` | the file-size guard, 1 line |
+| `AGENTS.md`, `README.md` | the session-file paragraph |
