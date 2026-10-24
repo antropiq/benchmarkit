@@ -1212,19 +1212,18 @@ body {
   text-overflow: ellipsis;
 }
 
-.chat-side-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-/* Session stopwatch (ChatStopwatch.vue), sitting under the action buttons.
+/* Session stopwatch (ChatStopwatch.vue), sitting under the stat badges.
    Monospace tabular digits inside a pill, sized to the badges above so the
    right-hand column reads as one stack. Idle is muted; a running session
    takes the same violet the chat status uses. Only theme variables are used,
-   so it follows the light/dark palette on its own. */
+   so it follows the light/dark palette on its own.
+   The `min-width` is what gives the (now badge + stopwatch only) side panel
+   its width: `.chat-side-panel` hugs its content, so without it the column
+   collapses to the width of the two stat badges. */
 .chat-stopwatch {
   flex: 0 0 auto;
   width: 100%;
+  min-width: 12rem;
   box-sizing: border-box;
   margin: 0;
   padding: 0.25rem 0.4rem;
@@ -1246,10 +1245,11 @@ body {
   border-color: color-mix(in srgb, var(--bi-violet) 40%, transparent);
 }
 
-/* Container holding the memory-bullet row and the textarea below it, so the
-   bullets stay centered over the textarea itself rather than the whole input
-   row. Vertical spacing is pinned to 2px (gap, plus no padding/margin on
-   either child) so the bullets visually stick to the textarea. */
+/* Container holding the composer row (memory bullets + the session icon
+   buttons) and the textarea below it, so that row stays centered over the
+   textarea itself rather than the whole input row. Vertical spacing is
+   pinned to the row's 0.5rem margin-bottom plus the 2px column gap, so the
+   row visually sticks to the textarea. */
 .chat-textarea-col {
   flex: 1 1 auto;
   min-width: 0;
@@ -1265,11 +1265,60 @@ body {
   margin: 0;
 }
 
+/* The composer row (WorkBenchInput.vue): session icon buttons on the left
+   (attach / copy / save / load), memory bullets in the middle, and the run
+   buttons on the right (restart / send-stop). The three columns are
+   `auto minmax(0, 1fr) auto`: each button group keeps its own width and so
+   stays pinned to its own side of the row, while the bullets get all the
+   remaining width (and center themselves inside it). The `minmax(0, …)`
+   floor lets the middle column shrink on narrow columns — the bullets wrap
+   onto a second line inside it instead of pushing the buttons outwards. */
+.chat-bullet-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.chat-bullet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+/* Only relevant once a group wraps onto several lines: keep it hugging the
+   outer edge of the row it is pinned to. */
+.chat-bullet-actions--left {
+  justify-content: flex-start;
+}
+
+.chat-bullet-actions--right {
+  justify-content: flex-end;
+}
+
+/* Buttons and bullets keep their own size in that row (Pico's input-group
+   rules would otherwise stretch the group's children, and the bullets' own
+   margin would offset them from the buttons beside them). `.memory-bullets`
+   fills its grid cell — the `width: 100%` Pico puts on [role=group] already
+   does that, but it is restated here because the buttons must never be
+   squeezed by it: they sit in their own `auto` columns. */
+.chat-bullet-row .memory-bullets {
+  width: 100%;
+  margin: 0;
+}
+
+.chat-bullet-actions .icon-btn {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
 /* Nine numbered registration slots above the textarea (MemoryBullets.vue).
    Pico's input-group rules (`[role=group] { margin-bottom: var(--pico-spacing) }`)
-   would otherwise push the row away from the textarea, so the margin and
-   padding are zeroed here and the 2px `.chat-textarea-col` gap is the only
-   space between the two.
+   would otherwise push the row away from the textarea and offset the bullets
+   from the buttons beside them, so the margin and padding are zeroed here;
+   the space below the row comes from `.chat-bullet-row`.
    A filled bullet's background is set inline (the slot color), which also
    wins over Pico's button hover background; the number color follows the
    background luminance.
