@@ -115,6 +115,13 @@ const {
           </div>
           <article v-else class="question-card">
             <MarkdownStream :html="message.html" mermaid />
+            <!-- Sticky marker: the transient error line above the composer is
+                 cleared by the next send, but the fragment stays in the
+                 conversation (and is re-posted to the model on the next turn),
+                 so the reply itself has to say it was cut short. -->
+            <p v-if="message.truncated" class="caption chat-truncated" role="status">
+              &#9888; Cut short by the server — this reply is incomplete.
+            </p>
             <p
               v-if="message.streaming && !message.raw"
               class="caption chat-typing"

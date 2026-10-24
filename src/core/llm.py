@@ -87,6 +87,51 @@ def _extract_total_tokens(chunk: Any) -> Optional[int]:
     return usage["total_tokens"] if usage else None
 
 
+# Shared by both streaming loops (chat imports it from here). One sentence,
+# deliberately free of provider jargon: it becomes the visible message in the
+# WorkBench error line and in the run's error entry.
+TRUNCATION_MESSAGE = (
+    "The answer was cut short by the server before it finished "
+    "(the stream ended without a finish reason). The reply above is "
+    "incomplete — the task was not carried through."
+)
+
+# Carried on the terminal event so a client can style this failure differently
+# from a plain one — and, in WorkBench, mark the *message* rather than only
+# showing a transient error line (which the next send clears).
+TRUNCATION_EVENT_FLAG = "truncated"
+
+# Sentinel for "this litellm version does not expose the attribute at all".
+_ATTR_MISSING = object()
+
+
+def saw_finish_reason(response_generator: Any) -> bool:
+    """Whether the provider really ended the stream with a finish reason.
+
+    This is the only reliable truncation signal, and it is *not* on the chunks:
+    when a stream ends without a ``finish_reason`` chunk — which is what
+    llama.cpp does when its own upstream disconnects mid-generation — litellm
+    **fabricates** ``finish_reason: "stop"`` on the final chunk it hands the
+    caller (``CustomStreamWrapper.finish_reason_handler``). So the chunks cannot
+    tell a cut answer from a finished one; they say ``stop`` either way.
+
+    The truth survives on the wrapper object: ``received_finish_reason`` (and
+    ``intermittent_finish_reason``, for servers that send it out of band) stay
+    ``None`` when no chunk ever carried one.
+
+    Fails open: if the wrapper exposes neither attribute (another litellm
+    version), this returns ``True`` so detection never raises a false alarm on
+    a complete answer. It is only meaningful once the stream has been fully
+    drained — the attributes are set while iterating.
+    """
+    received = getattr(response_generator, "received_finish_reason", _ATTR_MISSING)
+    if received is _ATTR_MISSING:
+        return True
+    if received:
+        return True
+    return bool(getattr(response_generator, "intermittent_finish_reason", None))
+
+
 def close_llm_stream(response_generator: Any) -> None:
     """Close a streamed litellm response so the server aborts generation.
 
@@ -169,6 +214,10 @@ def call_llm_and_stream(
     prompt_tokens = 0
     t_first: Optional[float] = None
     t_last: Optional[float] = None
+    # Any generated text at all — answer OR reasoning. A thinking model cut
+    # mid-reasoning streams an empty answer, so gating the truncation check on
+    # ``buffer`` alone would leave that turn looking like a clean empty answer.
+    generated_any = False
     try:
         for chunk in response_generator:
             if cancel_event is not None and cancel_event.is_set():
@@ -187,6 +236,7 @@ def call_llm_and_stream(
             if not content and not reasoning:
                 continue
 
+            generated_any = True
             # Time the last generated chunk, not the stream drain: with
             # include_usage the server appends a usage-only chunk afterwards.
             # Reasoning deltas open/extend the window (they are decoded
@@ -204,6 +254,19 @@ def call_llm_and_stream(
     except Exception as exc:
         emit({"event": "run_error", "message": f"Stream error: {exc}"})
         buffer = ""
+
+    # A stream that ends with no chunk ever carrying a finish_reason is a cut
+    # generation, not a finished answer. litellm labels such a stream "stop"
+    # (see saw_finish_reason), so nothing downstream would notice: the fragment
+    # would be scored as if it were a final answer and its timing and token
+    # rate would enter the run aggregates. Checked after the loop because the
+    # wrapper records the reason while iterating. Only judged when something
+    # was actually generated: an empty stream (or a stream that died before any
+    # chunk) has nothing to call incomplete, and a hard transport error already
+    # went down the ``except`` path above.
+    truncated = generated_any and not saw_finish_reason(response_generator)
+    if truncated:
+        emit({"event": "run_error", "message": TRUNCATION_MESSAGE})
 
     t_end = time.monotonic()
     # t_last is set whenever t_first is, but narrow both for the type checker.
@@ -236,6 +299,7 @@ def call_llm_and_stream(
         completion_tokens=completion_tokens,
         tokens_estimated=tokens_estimated,
         prompt_tokens=prompt_tokens,
+        truncated=truncated,
     )
 
 

@@ -66,7 +66,8 @@ const ttftLabel = computed(() =>
     <MarkdownStream :html="entry.html" mermaid />
     <template v-if="!entry.streaming">
       <p class="question-verdict">
-        <span v-if="entry.succeeded" class="badge green">✓ Correct</span>
+        <span v-if="entry.truncated" class="badge violet" title="The server ended the stream before the answer was finished, so this answer was never verified.">&#9888; Cut short</span>
+        <span v-else-if="entry.succeeded" class="badge green">✓ Correct</span>
         <span v-else class="badge red">✗ Incorrect</span>
       </p>
       <p class="caption">{{ footer }}</p>

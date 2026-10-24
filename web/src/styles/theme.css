@@ -1743,6 +1743,14 @@ body {
   animation: bi-pulse 1.4s ease-in-out infinite;
 }
 
+/* A reply the server cut short before finishing: the fragment stays in the
+   conversation (and is re-posted on the next turn), so the bubble says so.
+   Muted-size but danger-coloured — it qualifies the text above it rather than
+   shouting over it. */
+.chat-truncated {
+  color: var(--bi-danger);
+}
+
 /* Vertical timeline of what the chat stream on the right never shows: the
    model's streamed reasoning flows interleaved with the MCP tool-call
    badges, in emission order. Independent scroll. Deliberately not

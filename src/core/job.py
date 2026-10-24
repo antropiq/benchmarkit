@@ -113,6 +113,7 @@ class RunJob:
         gen_duration: float = 0.0,
         prompt_tokens: int = 0,
         tokens_estimated: bool = False,
+        truncated: bool = False,
     ) -> None:
         """Store a per-question result."""
         model_entry = next((e for e in self.results if e["llm"] == model), None)
@@ -131,6 +132,12 @@ class RunJob:
             "ttft": ttft,
             "genDuration": gen_duration,
             "tokensEstimated": tokens_estimated,
+            # The answer was cut short by the server: this row's text, timing
+            # and token rate describe a fragment, and it was never verified.
+            # Kept in the time/rate aggregates (those seconds and tokens were
+            # genuinely generated) but visible in results.json so a run can be
+            # re-read with them excluded.
+            "truncated": truncated,
             "succeeded": succeeded,
         })
 

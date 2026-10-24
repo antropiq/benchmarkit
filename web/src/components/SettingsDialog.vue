@@ -236,6 +236,21 @@ function serverDetail(server) {
               when the model accepts image input; GIFs are sent as their first
               frame.
             </p>
+            <label class="settings-vision">
+              <input
+                type="checkbox"
+                :checked="state.settings.litellmDebug === '1'"
+                @change="state.settings.litellmDebug = $event.target.checked ? '1' : ''"
+              />
+              Log LiteLLM internals (debug)
+            </label>
+            <p class="caption">
+              Writes LiteLLM's own DEBUG output for every LLM call to the server
+              console, so a failed request shows the real upstream error instead
+              of a one-line summary. Applies to the next run or chat message —
+              it floods the console with request payloads, so switch it back off
+              once the failure is diagnosed.
+            </p>
           </section>
 
           <section v-show="activeSection === 'question-set'">

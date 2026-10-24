@@ -413,6 +413,30 @@ class TestSettingsEndpoint:
         assert os.environ["SUPPORTS_VISION"] == "1"
         assert dotenv_values(config_module.ENV_PATH)["SUPPORTS_VISION"] == "1"
 
+    def test_save_normalizes_litellm_debug_and_applies_it(self, client, monkeypatch):
+        """The debug switch round-trips and is pushed onto the live process."""
+        import os
+
+        from dotenv import dotenv_values
+
+        from src import config as config_module
+
+        applied = []
+        monkeypatch.setattr(
+            config_module, "apply_litellm_debug", lambda: applied.append(True)
+        )
+        response = client.post(
+            "/api/settings", json=self._payload(litellmDebug="true")
+        )
+        assert response.status_code == 200
+        # "true" from a hand-written client becomes the canonical .env form.
+        assert response.json()["litellmDebug"] == "1"
+        assert os.environ["LITELLM_DEBUG"] == "1"
+        assert dotenv_values(config_module.ENV_PATH)["LITELLM_DEBUG"] == "1"
+        # Saving re-applies the switch, so no restart is needed to get debug
+        # output on the console.
+        assert applied == [True]
+
     def test_save_unsets_blank_supports_vision(self, client, monkeypatch):
         import os
 

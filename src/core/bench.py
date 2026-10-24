@@ -65,8 +65,44 @@ def process_question(
         "consumed": result.completion_tokens + result.prompt_tokens,
         "promptTokens": result.prompt_tokens,
         "tokensEstimated": result.tokens_estimated,
+        # Marks the turn as a fragment rather than a finished answer: its
+        # duration, token rate and verdict all describe an incomplete reply.
+        "truncated": result.truncated,
     }
     emit({"event": "answer_done", "index": index, **timing})
+
+    # A truncated answer is never handed to the verifier: judging a fragment
+    # against the expected answer measures the transport failure, not the
+    # model, and the verdict would land in the score as if the model had
+    # answered badly. The question is failed instead, so the failed-question
+    # list names the turns a run cannot be trusted on.
+    if result.truncated:
+        job.mark_question_failed(number)
+        job.add_result(
+            model=model,
+            question_uuid=question["uuid"],
+            succeeded=False,
+            response_text=result.text,
+            took=result.took,
+            tokens=result.completion_tokens,
+            ttft=result.ttft,
+            gen_duration=result.gen_duration,
+            prompt_tokens=result.prompt_tokens,
+            tokens_estimated=result.tokens_estimated,
+            truncated=True,
+        )
+        emit({
+            "event": "question_done",
+            "index": index,
+            "number": number,
+            "model": model,
+            "uuid": question["uuid"],
+            "succeeded": False,
+            **timing,
+            "failedLabel": job.failed_label(),
+            "stats": _stats_payload(job),
+        })
+        return
 
     succeeded = verify_response(config.verifierAgent, question, result.text, emit)
     if not succeeded:

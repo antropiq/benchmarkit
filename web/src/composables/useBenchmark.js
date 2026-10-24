@@ -114,6 +114,9 @@ function applyTiming(entry, event) {
   entry.genTook = event.genTook ?? 0
   entry.promptTokens = event.promptTokens ?? 0
   entry.tokensEstimated = !!event.tokensEstimated
+  // The server cut this answer short: the streamed text, its timing and the
+  // verdict below it all describe an unfinished reply.
+  entry.truncated = !!event.truncated
 }
 
 function applyEvent(event) {
@@ -154,6 +157,9 @@ function applyEvent(event) {
         genTook: 0,
         promptTokens: 0,
         tokensEstimated: false,
+        // Server cut this answer short (see applyTiming): the verdict badge
+        // shows "Cut short" instead of Correct/Incorrect.
+        truncated: false,
         version: 0,
       }
       state.entries.push(activeQuestion)

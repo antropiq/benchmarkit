@@ -24,10 +24,13 @@ from litellm import completion
 
 from src.core.llm import (
     Emit,
+    TRUNCATION_EVENT_FLAG,
+    TRUNCATION_MESSAGE,
     _extract_reasoning,
     _extract_usage,
     close_llm_stream,
     safe_get_choice_content,
+    saw_finish_reason,
 )
 from src.core.models import DEFAULT_LLM_SYSPROMPT
 from src.core.utils import estimate_completion_tokens
@@ -283,6 +286,26 @@ def stream_chat(
                 emit({"event": "token", "text": content})
         except Exception as exc:
             emit({"event": "error", "message": f"Stream error: {exc}"})
+            return
+
+        # The stream ended with no chunk ever carrying a finish_reason: the
+        # server cut this round short (a disconnecting upstream behind
+        # llama.cpp does exactly this), and litellm labels the result "stop"
+        # as if the answer were complete. Stop here rather than falling
+        # through: a half-streamed tool call would otherwise be executed with
+        # truncated arguments — and the model would be told *its* JSON was
+        # invalid, blaming it for a transport cut — while the fragment would
+        # be re-posted as a finished assistant turn on the next send.
+        # Checked after the loop: the wrapper only records the reason while
+        # iterating.
+        if iteration_chars and not saw_finish_reason(response_generator):
+            emit(
+                {
+                    "event": "error",
+                    "message": TRUNCATION_MESSAGE,
+                    TRUNCATION_EVENT_FLAG: True,
+                }
+            )
             return
 
         completion_tokens += iteration_completion

@@ -35,6 +35,99 @@ def usage_chunk(prompt=None, completion=None, total=None):
     return {"choices": [], "usage": usage}
 
 
+class TestStreamChatTruncation:
+    """A server-cut reply must end on ``error``, not a tidy ``done``.
+
+    Without this, a stream that ends with no finish_reason chunk (llama.cpp
+    losing its upstream mid-generation) is indistinguishable from a finished
+    answer: the UI would settle to idle with a half-finished task, and a
+    half-streamed tool call would be executed with truncated arguments.
+    """
+
+    class Wrapper:
+        def __init__(self, chunks, received=None):
+            self._chunks = chunks
+            self.received_finish_reason = received
+
+        def __iter__(self):
+            return iter(self._chunks)
+
+    def _run(self, monkeypatch, generator, **kwargs):
+        monkeypatch.setattr("src.core.chat.completion", lambda **kw: generator)
+        events = []
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi?"}],
+            "model-a",
+            "http://server:8080/v1",
+            events.append,
+            **kwargs,
+        )
+        return events
+
+    def test_cut_reply_ends_on_error_not_done(self, monkeypatch):
+        events = self._run(
+            monkeypatch,
+            self.Wrapper([content_chunk("half an "), content_chunk("answer")]),
+        )
+        assert [e["event"] for e in events][-1] == "error"
+        assert events[-1]["message"] == chat_core.TRUNCATION_MESSAGE
+        assert "done" not in [e["event"] for e in events]
+
+    def test_completed_reply_still_ends_on_done(self, monkeypatch):
+        events = self._run(
+            monkeypatch, self.Wrapper([content_chunk("hi")], received="stop")
+        )
+        assert events[-1]["event"] == "done"
+
+    def test_plain_iterable_is_left_alone(self, monkeypatch):
+        # Fails open, exactly as in the benchmark loop.
+        events = self._run(monkeypatch, iter([content_chunk("hi")]))
+        assert events[-1]["event"] == "done"
+
+    def test_cut_tool_call_is_not_executed(self, monkeypatch):
+        # The dangerous case: a tool call whose arguments stopped streaming
+        # would run with truncated JSON, and the model would be told its own
+        # arguments were invalid — blaming it for a transport cut.
+        executed = []
+        chunk = {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {
+                                    "name": "execute_command",
+                                    "arguments": '{"command": "ls -l',
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        events = self._run(
+            monkeypatch,
+            self.Wrapper([chunk]),
+            tools=[{"type": "function", "function": {"name": "execute_command"}}],
+            tool_executor=lambda name, args: executed.append(name) or "ok",
+        )
+        assert executed == []
+        assert not [e for e in events if e["event"] == "tool_call"]
+        assert events[-1]["event"] == "error"
+
+    def test_reasoning_only_cut_ends_on_error(self, monkeypatch):
+        events = self._run(
+            monkeypatch, self.Wrapper([reasoning_chunk("thinking…")])
+        )
+        assert events[-1]["event"] == "error"
+
+    def test_empty_stream_is_not_flagged(self, monkeypatch):
+        events = self._run(monkeypatch, self.Wrapper([]))
+        assert events[-1]["event"] == "done"
+
+
 class TestStreamChat:
     def _run(self, monkeypatch, chunks, cancel_event=None):
         monkeypatch.setattr("src.core.chat.completion", lambda **kwargs: iter(chunks))
@@ -624,6 +717,22 @@ class TestChatEndpoint:
         )
         frames = _events(response.text)
         assert [name for name, _ in frames] == ["error"]
+
+    def test_truncation_flag_survives_the_sse_frame(self, client, monkeypatch):
+        # The whole event dict is JSON-serialized into the frame, so the flag
+        # the WorkBench view needs to mark the bubble reaches the browser.
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 api_key="none", sysprompt=None, agent_instructions=None):
+            emit({"event": "error", "message": "cut short", "truncated": True})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        response = client.post(
+            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
+        )
+        name, payload = _events(response.text)[0]
+        assert name == "error"
+        assert payload["message"] == "cut short"
+        assert payload["truncated"] is True
 
     @pytest.mark.parametrize(
         "payload",

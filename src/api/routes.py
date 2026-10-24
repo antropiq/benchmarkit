@@ -33,6 +33,7 @@ from src.config import (
     max_tool_iteration,
     lsp_enabled_ids,
     path_location,
+    normalize_env_flag,
     default_path_location,
     save_memory_registration,
     save_settings,
@@ -93,6 +94,7 @@ class SettingsIn(SettingsFieldsMixin):
     presencePenalty: str = ""
     reasoning: str = ""
     supportsVision: str = ""
+    litellmDebug: str = ""
     questionSet: str = ""
     verifier: VerifierSettingsIn = VerifierSettingsIn()
 
@@ -306,6 +308,7 @@ SETTINGS_ENV_KEYS: Dict[str, str] = {
     "presencePenalty": "PRESENCE_PENALTY",
     "reasoning": "REASONING",
     "supportsVision": "SUPPORTS_VISION",
+    "litellmDebug": "LITELLM_DEBUG",
 }
 VERIFIER_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "VERIFIER_AGENT_SERVERURL",
@@ -397,11 +400,10 @@ def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
     }
     if values.get("REASONING", "").strip().lower() == "none":
         values["REASONING"] = ""
-    vision = values.get("SUPPORTS_VISION", "").strip().lower()
-    if vision in {"1", "true", "yes", "on"}:
-        values["SUPPORTS_VISION"] = "1"
-    elif vision in {"", "0", "false", "no", "off"}:
-        values["SUPPORTS_VISION"] = ""
+    # Boolean-ish keys: the dialog sends "1"/"" from a checkbox but hand-written
+    # clients may send "true"/"on", so both are normalised to the .env form.
+    values["SUPPORTS_VISION"] = normalize_env_flag(values.get("SUPPORTS_VISION"))
+    values["LITELLM_DEBUG"] = normalize_env_flag(values.get("LITELLM_DEBUG"))
     verifier = payload.get("verifier") or {}
     for field, key in VERIFIER_ENV_KEYS.items():
         values[key] = (verifier.get(field) or "").strip()

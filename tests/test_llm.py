@@ -5,11 +5,13 @@ import pytest
 
 from src.core.llm import (
     RunCancelled,
+    TRUNCATION_MESSAGE,
     _extract_total_tokens,
     _extract_usage,
     call_llm_and_stream,
     close_llm_stream,
     safe_get_choice_content,
+    saw_finish_reason,
     warmup_model,
 )
 
@@ -145,6 +147,94 @@ class TestCallLlmAndStreamTiming:
         assert result.text == ""
         assert result.gen_duration == 1.0
         assert [e["event"] for e in events if e["event"] == "token"] == []
+
+
+class TestStreamTruncationDetection:
+    """A stream the server cut short must not look like a finished answer.
+
+    litellm fabricates ``finish_reason: "stop"`` when no chunk carried one, so
+    the only honest signal is the wrapper's own ``received_finish_reason``.
+    """
+
+    class Wrapper:
+        """Stands in for litellm's CustomStreamWrapper."""
+
+        def __init__(self, chunks, received=None, intermittent=None):
+            self._chunks = chunks
+            self.received_finish_reason = received
+            self.intermittent_finish_reason = intermittent
+
+        def __iter__(self):
+            return iter(self._chunks)
+
+    def _run(self, monkeypatch, generator):
+        monkeypatch.setattr("src.core.llm.completion", lambda **kwargs: generator)
+        events = []
+        result = call_llm_and_stream(
+            "m", "http://server:8080/v1",
+            {"uuid": "u", "question": "q", "expected": "e"}, events.append,
+        )
+        return result, events
+
+    def test_plain_iterable_without_the_attributes_is_not_flagged(self, monkeypatch):
+        # Fails open: a wrapper shape we do not recognise must never raise a
+        # false alarm on a complete answer (this is what every other test in
+        # this file feeds the loop).
+        result, events = self._run(
+            monkeypatch, iter([content_chunk("whole answer")])
+        )
+        assert result.truncated is False
+        assert [e["event"] for e in events] == ["token"]
+
+    def test_no_finish_reason_ever_received_flags_the_answer(self, monkeypatch):
+        result, events = self._run(
+            monkeypatch,
+            self.Wrapper([content_chunk("half an "), content_chunk("answer")]),
+        )
+        assert result.truncated is True
+        # The fragment is still returned (it is what the user should read), but
+        # the run is told it is not a completed answer.
+        assert result.text == "half an answer"
+        errors = [e for e in events if e["event"] == "run_error"]
+        assert [e["message"] for e in errors] == [TRUNCATION_MESSAGE]
+
+    def test_received_finish_reason_leaves_the_answer_alone(self, monkeypatch):
+        result, events = self._run(
+            monkeypatch,
+            self.Wrapper([content_chunk("done")], received="stop"),
+        )
+        assert result.truncated is False
+        assert [e["event"] for e in events] == ["token"]
+
+    def test_intermittent_finish_reason_counts_as_received(self, monkeypatch):
+        # Some servers report the reason out of band; litellm keeps it on a
+        # separate attribute and trusts it, so we must too.
+        result, _ = self._run(
+            monkeypatch,
+            self.Wrapper([content_chunk("ok")], intermittent="length"),
+        )
+        assert result.truncated is False
+
+    def test_reasoning_only_cut_is_flagged(self, monkeypatch):
+        # A thinking model cut mid-reasoning streams an empty answer: gating on
+        # the answer buffer would let that turn pass as a clean empty answer.
+        result, events = self._run(
+            monkeypatch, self.Wrapper([reasoning_chunk("thinking hard")])
+        )
+        assert result.truncated is True
+        assert any(e["event"] == "run_error" for e in events)
+
+    def test_empty_stream_is_not_flagged(self, monkeypatch):
+        # Nothing was generated, so there is nothing to call incomplete.
+        result, events = self._run(monkeypatch, self.Wrapper([]))
+        assert result.truncated is False
+        assert events == []
+
+    def test_saw_finish_reason_directly(self):
+        assert saw_finish_reason(object()) is True  # attributes absent
+        assert saw_finish_reason(self.Wrapper([])) is False
+        assert saw_finish_reason(self.Wrapper([], received="stop")) is True
+        assert saw_finish_reason(self.Wrapper([], intermittent="tool_calls")) is True
 
 
 class TestCloseLlmStream:

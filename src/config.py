@@ -1,10 +1,11 @@
 """Application configuration: .env loading, questions, and endpoint config."""
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
@@ -43,6 +44,7 @@ SETTING_KEYS: Tuple[str, ...] = (
     "REPEAT_PENALTY",
     "PRESENCE_PENALTY",
     "REASONING",
+    "LITELLM_DEBUG",
     "SUPPORTS_VISION",
     "QUESTION_SET",
     "VERIFIER_AGENT_SYSPROMPT",
@@ -67,6 +69,182 @@ REQUIRED_SETTING_KEYS: Tuple[str, ...] = ("SERVER_URL", "ENDPOINT")
 # resurrect a stale value at the next boot. The boot default below is the
 # single persistence rule: a restart always lands on the install directory.
 PATH_LOCATION_KEY = "BENCHMARKIT_PATH_LOCATION"
+
+
+# Debug switch for the LiteLLM *client* library. When set, litellm's own
+# loggers (``LiteLLM`` / ``LiteLLM Router`` / ``LiteLLM Proxy``) are raised to
+# DEBUG, which is what makes a failed call legible: without it the exception
+# handed to the ``except Exception`` in the core loops is only litellm's
+# one-line summary, while the provider's real status/body stays unrendered.
+#
+# The value lives in ``.env`` (a managed ``SETTING_KEYS`` key) rather than in
+# code so it can be flipped from the settings dialog, and it is applied to the
+# live process at startup and on every save — no restart needed.
+LITELLM_DEBUG_KEY = "LITELLM_DEBUG"
+
+TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+
+# The three loggers ``litellm._turn_on_debug()`` touches; the off path resets
+# exactly these back to ``NOTSET`` (inherited from the root logger).
+LITELLM_LOGGER_NAMES: Tuple[str, ...] = ("LiteLLM", "LiteLLM Router", "LiteLLM Proxy")
+
+
+def env_flag(key: str) -> bool:
+    """True when an env var is set to a truthy value (1/true/yes/on)."""
+    return (os.environ.get(key) or "").strip().lower() in TRUTHY_VALUES
+
+
+def normalize_env_flag(raw: Optional[str]) -> str:
+    """Normalise a flag-ish submitted value to the ``.env`` form ("1" or "").
+
+    Used by the settings API for the boolean-ish keys: any truthy spelling
+    (1/true/yes/on) becomes the canonical ``1``, and anything else — including
+    the explicit off spellings (0/false/no/off) and an empty field — becomes
+    "", which ``save_settings`` writes as a commented-out line.
+    """
+    return "1" if (raw or "").strip().lower() in TRUTHY_VALUES else ""
+
+
+def litellm_debug_enabled() -> bool:
+    """True when LiteLLM's internal debug logging was requested."""
+    return env_flag(LITELLM_DEBUG_KEY)
+
+
+def apply_litellm_debug() -> bool:
+    """Raise litellm's own loggers to DEBUG when ``LITELLM_DEBUG`` is set.
+
+    Called at app startup (right after the .env is read) and again on every
+    settings save, so flipping the switch takes effect without restarting the
+    server. The off path is just as explicit: levels go back to ``NOTSET`` and
+    litellm's own debug-info banner comes back, so a process never stays
+    chatty (nor silent) after the flag is cleared.
+
+    litellm's own log handler already accepts DEBUG records — the level it
+    publishes under is gated by its *loggers*, which default to ``NOTSET`` and
+    therefore inherit WARNING from the root logger. Raising those three is all
+    that is needed; the records land on stderr like the rest of uvicorn's
+    output. ``litellm`` is imported lazily on purpose: it is a heavy package,
+    and this module is also imported by code paths that never call an LLM.
+
+    With debug on, ``suppress_debug_info`` is set too: the
+    "LiteLLM.Info: If you need to debug this error, use
+    `litellm._turn_on_debug()'" banner litellm prints on every mapped
+    exception would only repeat advice this function already followed, and it
+    buries the real tracebacks. Returns whether the switch is now on.
+    """
+    import litellm  # noqa: PLC0415 — heavy dependency, imported only on demand
+
+    enabled = litellm_debug_enabled()
+    if enabled:
+        litellm._turn_on_debug()
+        litellm.suppress_debug_info = True
+    else:
+        for name in LITELLM_LOGGER_NAMES:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        litellm.suppress_debug_info = False
+    return enabled
+
+
+# The provider prefix every LLM call in this project uses: ``core/llm.py`` and
+# ``core/chat.py`` pass ``model=f"openai/{name}"`` to ``litellm.completion()``,
+# so a cost entry must be keyed the same way to be found by the same lookup.
+LITELLM_MODEL_PREFIX: str = "openai/"
+
+# Cost-table entry litellm needs for a model it has never heard of.
+#
+# The shape mirrors what ``litellm.register_model`` documents and what the
+# bundled ``model_prices_and_context_window.json`` stores per entry: a
+# provider-qualified **key** plus ``litellm_provider`` / ``mode`` inside the
+# value. Both halves matter:
+#
+# * Keying by the bare name (``qwen3.8-flash-next-iq3_s``) makes registration
+#   itself go look the name up first — ``register_model`` calls
+#   ``get_model_info`` → ``get_supported_openai_params`` → ``get_llm_provider``,
+#   and with no prefix in the key that last one cannot infer a provider, so
+#   litellm prints its red ``Provider List: https://docs.litellm.ai/...``
+#   banner (twice per model, at startup) and the entry lands as
+#   ``mode: None``. The prefix is what carries the provider here.
+# * ``litellm_provider`` also decides which provider list the name is added to
+#   (``open_ai_chat_completion_models`` for ``"openai"``), and without
+#   ``"mode": "chat"`` the entry declares no modality.
+#
+# Prices are all zeros: benchmarkit talks to local / self-hosted endpoints and
+# never reports a monetary cost, so the only correct price is 0 — and *having*
+# an entry is what stops litellm from raising on every single call (see below).
+# The two cache keys are part of the entry so ``register_model`` does not add a
+# "no cache cost tracking" warning of its own.
+ZERO_COST_MODEL_INFO: Dict[str, Any] = {
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0,
+    "cache_read_input_token_cost": 0,
+    "cache_creation_input_token_cost": 0,
+    "litellm_provider": "openai",
+    "mode": "chat",
+}
+
+
+def register_unmapped_models(model_names: Iterable[str]) -> List[str]:
+    """Give litellm a zero-cost entry for every model it cannot price.
+
+    A quantised local model name (``qwen3.8-flash-next-iq3_s``) is by
+    definition absent from litellm's ``model_prices_and_context_window.json``,
+    so its per-call cost calculator raises ``ModelNotMappedError``. litellm
+    catches that internally — the call itself succeeds — but with
+    ``LITELLM_DEBUG=1`` it logs the whole exception *plus traceback* once per
+    call, which buries the lines that debug mode exists to show (a real
+    upstream failure hides among ~50 identical cost-table dumps).
+
+    Registering a zero-cost entry removes that noise at the source. Only models
+    litellm genuinely cannot price are registered: one already in its cost map
+    keeps its real pricing, so this never rewrites a figure the library knows.
+
+    Called at startup and on every settings save (next to
+    ``apply_litellm_debug``), because ``ENDPOINT`` / ``VERIFIER_AGENT_ENDPOINT``
+    are exactly what the settings dialog edits — but it deliberately does *not*
+    read them through :func:`load_endpoints_config`: that runs on every API
+    request, and mutating litellm's process-wide cost map per request is not
+    something a read endpoint should do. Returns the names registered, which
+    makes the effect observable in tests. Never raises: a cost table is pure
+    log hygiene, and a failure here must not break app startup.
+    """
+    import litellm  # noqa: PLC0415 — heavy dependency, imported only on demand
+
+    registered: List[str] = []
+    for name in model_names:
+        name = (name or "").strip()
+        if not name or name in registered:
+            continue
+        try:
+            # Same lookup the failing cost calculator performs (and the same
+            # provider-qualified form ``core/llm.py`` calls ``completion()``
+            # with), so the guard cannot disagree with it.
+            litellm.get_model_info(
+                model=f"{LITELLM_MODEL_PREFIX}{name}", custom_llm_provider="openai"
+            )
+        except Exception:
+            # Not in the cost map (the ModelNotMappedError case) — teach it.
+            try:
+                litellm.register_model(
+                    {f"{LITELLM_MODEL_PREFIX}{name}": dict(ZERO_COST_MODEL_INFO)}
+                )
+                registered.append(name)
+            except Exception:  # noqa: BLE001 — hygiene only, never fatal
+                pass
+    return registered
+
+
+def register_configured_models() -> List[str]:
+    """Register the model names the current environment points at.
+
+    Reads the two endpoint keys straight from ``os.environ`` rather than
+    building an :class:`EndpointsConfig`: startup must survive an invalid
+    ``.env`` (the API surfaces that error, the process must not die on it),
+    and after ``save_settings`` the environment already carries the new
+    values.
+    """
+    return register_unmapped_models(
+        (os.environ.get("ENDPOINT", ""), os.environ.get("VERIFIER_AGENT_ENDPOINT", ""))
+    )
 
 
 def load_dotenv_once() -> None:
@@ -324,6 +502,15 @@ def save_settings(values: Dict[str, str]) -> None:
             os.environ[key] = clean[key]
         else:
             os.environ.pop(key, None)
+    # Re-apply the LiteLLM debug switch from the values just written, so
+    # ticking the box in the settings dialog takes effect on the *current*
+    # process (the next call is what gets the extra logging) instead of
+    # waiting for a server restart.
+    apply_litellm_debug()
+    # Same reason to redo it here: the endpoints are what just changed, so a
+    # newly typed model name gets its zero-cost cost-table entry at once
+    # instead of leaking one cost-table traceback per call until the restart.
+    register_configured_models()
 
 
 def _render_env(values: Dict[str, str]) -> str:
@@ -356,6 +543,15 @@ def _render_env(values: Dict[str, str]) -> str:
         line("PRESENCE_PENALTY"),
         line("REASONING"),
         line("QUESTION_SET"),
+        "",
+        "# LITELLM_DEBUG=1 raises the LiteLLM client's own loggers to DEBUG so",
+        "# a failed call shows its real upstream status/body on the server",
+        "# console instead of just litellm's one-line summary (it also silences",
+        "# the 'use litellm._turn_on_debug()' hint, whose advice is redundant",
+        "# here). Applies to the next saved settings / server start; it floods",
+        "# the console with every request payload, so switch it back off once",
+        "# the failure is diagnosed.",
+        line("LITELLM_DEBUG"),
         "",
         "# Verifier agent (optional)",
         line("VERIFIER_AGENT_SYSPROMPT"),

@@ -143,3 +143,85 @@ class TestTimingEvents:
         done = next(e for e in events if isinstance(e, dict) and e["event"] == "question_done")
         # completion tokens / gen duration, not total_tokens / took.
         assert done["stats"]["tokenRate"] == pytest.approx(10 / 1.2)
+
+
+class TestTruncatedAnswer:
+    """A server-cut answer is never verified, and is marked everywhere.
+
+    Sending a fragment to the verifier measures the transport failure rather
+    than the model, and the resulting verdict would land in the score as if the
+    model had answered badly.
+    """
+
+    def _patch_truncated(self, monkeypatch, events, verifier_calls):
+        def fake_call(*args, **kwargs):
+            return LLMResult(
+                text="half an answer",
+                took=1.0,
+                ttft=0.2,
+                gen_duration=0.8,
+                completion_tokens=4,
+                prompt_tokens=6,
+                truncated=True,
+            )
+
+        def fake_verify(verifier, question, response_text, emit):
+            verifier_calls.append(response_text)
+            return True
+
+        monkeypatch.setattr("src.core.bench.warmup_model", lambda *a, **k: None)
+        monkeypatch.setattr("src.core.bench.call_llm_and_stream", fake_call)
+        monkeypatch.setattr("src.core.bench.verify_response", fake_verify)
+        monkeypatch.setattr("src.core.bench.save_results", lambda job, *a: None)
+
+    def test_verifier_is_skipped_and_the_question_is_failed(
+        self, monkeypatch, job, config, questions
+    ):
+        events: List[Any] = []
+        verifier_calls: List[str] = []
+        self._patch_truncated(monkeypatch, events, verifier_calls)
+
+        run_benchmark([questions[0]], config, job, events.append)
+
+        assert verifier_calls == []  # the fragment never reached the verifier
+        assert job.get_failed_questions() == [1]
+        assert job.results[0]["score"] == "0/1"
+
+    def test_events_and_results_carry_the_flag(
+        self, monkeypatch, job, config, questions
+    ):
+        events: List[Any] = []
+        self._patch_truncated(monkeypatch, events, [])
+
+        run_benchmark([questions[0]], config, job, events.append)
+
+        answer_done = next(
+            e for e in events if isinstance(e, dict) and e["event"] == "answer_done"
+        )
+        question_done = next(
+            e for e in events if isinstance(e, dict) and e["event"] == "question_done"
+        )
+        assert answer_done["truncated"] is True
+        assert question_done["truncated"] is True
+        assert question_done["succeeded"] is False
+        # The fragment is still recorded (it is what came back), flagged.
+        stored = job.results[0]["responses"][0]
+        assert stored["response"] == "half an answer"
+        assert stored["truncated"] is True
+        assert stored["succeeded"] is False
+
+    def test_normal_answers_are_not_flagged(self, monkeypatch, job, config, questions):
+        # Same run through the shared patch_llm (whose stub verifier returns
+        # True): the flag must be False, and the answer must have gone through
+        # verification — evidenced by the success it can only get there.
+        events: List[Any] = []
+        patch_llm(monkeypatch, events)
+
+        run_benchmark([questions[0]], config, job, events.append)
+
+        done = next(e for e in events if isinstance(e, dict) and e["event"] == "answer_done")
+        assert done["truncated"] is False
+        assert job.get_failed_questions() == []
+        stored = job.results[0]["responses"][0]
+        assert stored["truncated"] is False
+        assert stored["succeeded"] is True

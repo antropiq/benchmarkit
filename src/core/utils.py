@@ -29,6 +29,12 @@ class LLMResult:
     completion_tokens: int = 0
     tokens_estimated: bool = False
     prompt_tokens: int = 0
+    # True when the provider ended the stream without ever sending a finish
+    # reason: the answer is a fragment, not a completed reply (see
+    # core.llm.saw_finish_reason). Every metric of such a turn — ``took``, the
+    # token rate, and above all the verifier's verdict — describes an answer
+    # that was never finished, so consumers must be able to tell.
+    truncated: bool = False
 
 
 def estimate_completion_tokens(text: str) -> int:

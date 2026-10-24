@@ -739,6 +739,11 @@ function applyEvent(name, data, assistant) {
     }
     case 'error':
       state.error = data.message || 'Chat request failed.'
+      // A server-cut reply keeps its partial text in the conversation (unlike
+      // an explicit Stop, which discards it) and that fragment is re-posted on
+      // the next send — so the message itself carries the marker, not just the
+      // transient error line.
+      if (data.truncated) assistant.truncated = true
       break
     default:
       break
@@ -860,6 +865,9 @@ export function useChat() {
       decode: 0, // cumulative decode seconds from the `done` event
       contextTokens: 0, // LAST round's prompt + completion = context occupancy
       contextEstimated: false, // occupancy figure involves a char estimate
+      // Set by a `truncated` error frame: the server ended the stream before
+      // the reply was finished, so this turn is a fragment (see applyEvent).
+      truncated: false,
     })
     // Keep the reactive proxy so token mutations re-render.
     const assistant = state.messages[state.messages.length - 1]
