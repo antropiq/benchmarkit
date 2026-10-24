@@ -198,7 +198,7 @@ async function onSessionFilePicked(event) {
   input.value = ''
   if (!file || streaming.value) return
   if (file.size > MAX_SESSION_FILE_BYTES) {
-    state.error = `Session file too large (${humanFileSize(file.size)}, max 2 MB).`
+    state.error = `Session file too large (${humanFileSize(file.size)}, max ${humanFileSize(MAX_SESSION_FILE_BYTES)}).`
     return
   }
   let text
