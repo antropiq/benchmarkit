@@ -1174,6 +1174,27 @@ def build_router(state: RunState) -> APIRouter:
         except editorfs.WorkspacePathError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
+    @router.get("/fs/file")
+    def get_fs_file(path: str) -> Dict[str, Any]:
+        """The whole text of one workspace-relative file, for the Editor tab.
+
+        The same gate as the tree — ``editorfs`` resolves the path inside the
+        working location and applies the connector deny-list — so the browser
+        can never ask for a file the connectors refuse (decision D3: one policy
+        per surface that touches disk). Past ``editorfs.constants.MAX_EDITOR_BYTES``
+        the answer is 413 naming the size; a binary file answers ``binary: true``
+        with no ``text`` key rather than an error, so the pane can label it.
+
+        ``mtime`` in the payload is the write guard's token for the write layer
+        of ed-10, and what ed-09's live reload compares against ``/api/fs/stat``.
+        Still read-only: the tree, this read and the probe are all ``/api/fs``
+        answers, and no hub may ever gain a write route (decision D4).
+        """
+        try:
+            return editorfs.read_file(path)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
     @router.get("/fs/stat")
     def get_fs_stat(path: List[str] = Query(default_factory=list)) -> Dict[str, Any]:
         """``mtime``/``size``/``exists`` for a handful of exact paths.

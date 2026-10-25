@@ -7,8 +7,9 @@ Core-only (no FastAPI, no browser concerns), a sibling of ``mcphub/`` and
 * :mod:`editorfs.policy` the one gate: ``resolve_in_workspace`` + the two
   ``listable``/``writable`` predicates, reusing ``mcp_connectors/path_policy``
 * :mod:`editorfs.tree` one directory level -> entry dicts (``GET /api/fs/tree``)
-* :mod:`editorfs.files` ``stat_paths`` (ed-03 adds the read half; ed-09 the
-  probe; ed-10, a future version, the guarded write — see decision D4)
+* :mod:`editorfs.files` ``read_file`` (``GET /api/fs/file``) and ``stat_paths``
+  (the live-reload probe); ed-10, a future version, adds the guarded write —
+  see decision D4)
 
 Two invariants the whole Editor lot rests on:
 
@@ -23,7 +24,7 @@ Two invariants the whole Editor lot rests on:
 from typing import TYPE_CHECKING, Any
 
 from . import constants
-from .files import stat_paths
+from .files import read_file, stat_paths
 from .policy import (
     WorkspacePathError,
     listable,

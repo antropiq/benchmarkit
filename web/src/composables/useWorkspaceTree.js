@@ -126,9 +126,13 @@ export function useWorkspaceTree() {
   }
 
   // Selection is a row click: a folder only toggles (an open folder is not a
-  // thing ed-03 could load), a file is recorded — nothing else consumes it.
+  // thing ed-03 could load), a file is recorded.
   // The entry travels with the path, so the consumer has its size and mtime
   // without a second request.
+  //
+  // ed-03 consumes it: EditorArea watches it and opens the file. Selection and
+  // the editor's active buffer stay separate on purpose — a refused click
+  // (binary, over the cap) selects a row without putting anything in a tab.
   function select(entry) {
     if (!entry) return
     state.focused = entry.path

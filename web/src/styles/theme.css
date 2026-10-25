@@ -2337,13 +2337,63 @@ body {
   min-height: 2rem;
 }
 
-/* The open-file tabs (ed-04 owns their content). */
+/* The open-file tabs: one chip per buffer (ed-04 keeps this markup, and its
+   CodeMirror panes replace the body below). */
 .editor-tabs {
   display: flex;
   align-items: center;
   gap: var(--bi-space-1);
   min-width: 0;
   overflow-x: auto;
+}
+
+/* A chip is a span wrapping two buttons (a button cannot contain one), so it
+   carries the path in `title` and the active state. */
+.editor-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  max-width: 22ch;
+  padding: 0.1rem 0.15rem 0.1rem 0.45rem;
+  border: 1px solid var(--bi-border);
+  border-radius: 999px;
+  background-color: var(--bi-surface);
+  color: var(--pico-muted-color);
+}
+
+.editor-tab.active {
+  border-color: color-mix(in srgb, var(--pico-primary) 45%, var(--bi-border));
+  background-color: color-mix(in srgb, var(--pico-primary) 10%, var(--bi-surface));
+  color: var(--pico-color);
+}
+
+.editor-tab-name {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.editor-tab-close {
+  flex: 0 0 auto;
+  padding: 0 0.3rem;
+  border: 0;
+  background: none;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+
+.editor-tab-close:hover {
+  color: var(--bi-danger);
 }
 
 .editor-badge {
@@ -2358,7 +2408,85 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  overflow: hidden;
+}
+
+/* One column: the message line (refusal or note), then the scrolling text. */
+.editor-body-col {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bi-space-1);
+  padding: var(--bi-space-1) var(--bi-space-2) var(--bi-space-2);
+}
+
+.editor-raw-message {
+  flex: 0 0 auto;
+  word-break: break-word;
+  display: flex;
+  align-items: baseline;
+  gap: var(--bi-space-1);
+}
+
+.editor-raw-message-path {
+  font-family: var(--pico-font-family-monospace);
+  opacity: 0.75;
+}
+
+.editor-raw-message-dismiss {
+  flex: 0 0 auto;
+  padding: 0 0.3rem;
+  border: 0;
+  background: none;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+
+.editor-raw-note {
+  flex: 0 0 auto;
+}
+
+/* One scroll container for gutter and text together, so a horizontal scroll
+   never separates a line from its number; the gutter sticks to the left edge
+   while the text slides under it. `white-space: pre` guarantees one row per
+   line, which is what keeps the two columns aligned. */
+.editor-raw-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bi-space-2);
   overflow: auto;
+}
+
+.editor-gutter {
+  position: sticky;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
+  padding-right: var(--bi-space-1);
+  border-right: 1px solid var(--bi-border);
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--pico-muted-color);
+  user-select: none;
+}
+
+.editor-raw {
+  margin: 0;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+  color: var(--pico-color);
 }
 
 /* -- terminal strip (ed-06 / ed-07 mount the real session here) --------------- */
