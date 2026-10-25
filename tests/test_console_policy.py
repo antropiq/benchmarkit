@@ -182,8 +182,9 @@ def test_the_verdict_of_each_statement_is_its_own():
     assert outside is not None and "nc" in outside
     # A command whose only path is outside the root is judged on its own, not
     # on the first word of a longer string.
-    assert c.statement_policy_error(c.parse_shell_statements("rm -rf /tmp/x")[0])
-    assert "blocked" in c.statement_policy_error(c.parse_shell_statements("rm -rf /tmp/x")[0])
+    destructive = c.statement_policy_error(c.parse_shell_statements("rm -rf /tmp/x")[0])
+    assert destructive
+    assert "blocked" in destructive
 
 
 def test_error_messages_name_the_statement_that_triggered_them():

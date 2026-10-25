@@ -536,11 +536,14 @@ ESCAPED_BYTE_RE = re.compile(r"\\x[0-9a-f]{2}")
 TIMEOUT_DRAIN_SECONDS: float = 2.0
 
 
-def decode_stream(raw: bytes) -> str:
+def decode_stream(raw: Optional[bytes]) -> str:
     """Decode captured output without ever raising (C-7).
 
     ``errors="backslashreplace"`` keeps the bytes that decoded and shows the
     rest as \\xNN escapes, which is what ``decode_note`` then counts.
+
+    A stream the child never wrote to can reach here as ``None`` (a killed
+    process, a pipe closed early), so it is treated as the empty stream.
     """
     return (raw or b"").decode("utf-8", errors="backslashreplace")
 

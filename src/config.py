@@ -136,7 +136,10 @@ def apply_litellm_debug() -> bool:
 
     enabled = litellm_debug_enabled()
     if enabled:
-        litellm._turn_on_debug()
+        # Private litellm API on purpose: it is the only switch that turns the
+        # library's own debug logging on, and it is stable across the versions
+        # this project pins.
+        litellm._turn_on_debug()  # type: ignore[reportPrivateImportUsage]
         litellm.suppress_debug_info = True
     else:
         for name in LITELLM_LOGGER_NAMES:
@@ -183,8 +186,12 @@ ZERO_COST_MODEL_INFO: Dict[str, Any] = {
 }
 
 
-def register_unmapped_models(model_names: Iterable[str]) -> List[str]:
+def register_unmapped_models(model_names: Iterable[Optional[str]]) -> List[str]:
     """Give litellm a zero-cost entry for every model it cannot price.
+
+    Names arrive from the settings payload, where a blank optional field can be
+    ``None`` rather than ``""``, so the element type allows it: each entry is
+    normalised and blanks are skipped.
 
     A quantised local model name (``qwen3.8-flash-next-iq3_s``) is by
     definition absent from litellm's ``model_prices_and_context_window.json``,

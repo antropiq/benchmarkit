@@ -795,6 +795,9 @@ class TestChatPauseEndpoint:
                  pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
             seen["pause_event"] = pause_event
             started.set()
+            # The route always hands the stream a flag; the default None only
+            # exists so other fakes can omit it.
+            assert pause_event is not None
             # Stands in for the core: the flag is what the real loop checks.
             while not pause_event.is_set():
                 time.sleep(0.01)

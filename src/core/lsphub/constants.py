@@ -43,6 +43,15 @@ DEFAULT_MAX_DIAGNOSTICS = 40
 DEFAULT_IDLE_SHUTDOWN_SECONDS = 300
 # How often the idle reaper wakes up on the hub thread.
 REAPER_INTERVAL_SECONDS = 30.0
+# A server left in ``starting`` for longer than the handshake plus its
+# teardown grace is stuck, not slow. This is the one status no other path
+# clears on its own, so the reaper turns it into ``error``: the panel then
+# says so, and the settings toggle (which retries anything but ``running``)
+# can start it again. The budget is deliberately above what a *successful*
+# cold start can take, so a healthy server is never interrupted.
+STARTING_STUCK_SECONDS = (
+    INIT_TIMEOUT + 2 * STOP_GRACE_SECONDS + 15.0
+)
 # Result text cap, mirroring extract_tool_result_text's truncation idea.
 MAX_RESULT_CHARS = 12_000
 

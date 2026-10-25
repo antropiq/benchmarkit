@@ -92,13 +92,11 @@ route list belongs to `api/routes.py` — what matters architecturally:
 ### SSE is the UI's only source of truth
 
 Core emits plain dicts into the `EventBus`, which numbers them so a
-reconnecting client replays what it missed. Two independent streams: the run
-stream (`run_started` → `model_started` → per-question `question_started` /
-`token` / `answer_done` / `question_done` → `run_finished`, with `run_error`
-on failure) and the per-reply chat stream (`token`, `reasoning_delta`, and
-`tool_call` / `tool_result` when tools are active, ending in exactly one
-`done`, `error` or `pause_ack` — the last one terminates a reply the user
-paused with `POST /api/chat/pause`, keeping its partial turn).
+reconnecting client replays what it missed. Two independent streams (event
+names live in `api/routes.py` and `core/`): the run stream, and the per-reply
+chat stream, which ends in exactly one `done`, `error` or `pause_ack` — the
+last ends a reply the user paused with `POST /api/chat/pause`, keeping its
+partial turn.
 
 Two measurement rules hold across both:
 
@@ -132,9 +130,8 @@ Four rules tie them together:
 - **Both accept `${NAME}` / `${NAME:-fallback}`**, expanded at read time by each
   hub's `discovery` module via shared helpers in `mcphub/validation.py`, so a
   per-machine path or key stays in the environment. Expansion runs *before*
-  validation; only the braced form is special (a bare `$` stays literal, which
-  protects npm pins and regexes); an unresolved name is kept verbatim with a
-  validation note rather than blanked.
+  validation, and only the braced form is special (a bare `$` stays literal).
+  An unresolved name is kept verbatim with a note, never blanked.
 - **`BENCHMARKIT_PATH_LOCATION`** is the working-location both files point their
   file-touching tools at (`--root-dir`, `workspaceRoot`, `--tsdk`), so one value
   moves them together. Seeded at boot from the install dir; deliberately not a
@@ -153,6 +150,13 @@ Four rules tie them together:
 - **Hubs are long-lived singletons**: a restart rebuilds the *internals* of the
   same `McpManager`/`LspManager`. Never swap the object in `app.state` — chat
   workers hold the reference across a request.
+- **An activated language server is never invisible**: one with no live session
+  (not started, mid-handshake, or reaped for idleness) is still published from
+  its declared tools and revived by its first call. Only `enable: false` and
+  `error` keep it out.
+- **Hub teardown kills process *trees*, not wrappers**: every child leads its
+  own process group and is signalled by group, so the children a language
+  server spawns of its own never outlive the app that started them.
 - **Tools are read-only by design**: LSP tools return information (even
   `formatting` returns a proposed diff), the `console` connector execs one argv
   with no shell (pipes, chains, redirections and `$VAR` expansion are refused,
@@ -160,14 +164,13 @@ Four rules tie them together:
   bounded by a deny-list — `lsp_connectors/restricted-paths.txt` for paths,
   `mcp_connectors/restricted-fqdn.txt` for hosts.
 - **AGENTS.md feeds the chat**: when the working location carries an
-  `AGENTS.md`, its text is appended to every chat system prompt, re-read on
-  each request. Keep it accurate and short — the model acts on it.
+  `AGENTS.md`, it is appended to every chat system prompt, re-read per request.
+  Keep it accurate and short — the model acts on it.
 - **Python style**: explicit type annotations (`: str`, `Dict`, `typing`
   imports).
 - **Tests stay hermetic**: `BENCHMARKIT_DISABLE_MCP=1` / `_LSP=1` skip
-  connecting and spawning; the patchable file locations live on
-  `mcphub.constants` / `lsphub.constants` and must be patched through those
-  modules.
+  connecting and spawning; patchable file locations live on `mcphub.constants`
+  / `lsphub.constants` and must be patched through those modules.
 
 ## Gotchas
 
@@ -188,10 +191,9 @@ Four rules tie them together:
   provider-qualified entry per configured model to keep it silent.
 - **Node language servers need a real TypeScript compiler** — the frontend's
   `node_modules/typescript`, passed to Vue via `--tsdk`. Volar delegates `.vue`
-  TypeScript semantics back to its client and awaits the answer, so the hub
-  implements that relay (`lsphub/tsserver.py`); an unanswered request hangs
-  every later request for that file. So `lsp_vue_*` reports Volar's template
-  checks only, not `<script>` type errors.
+  semantics to its client and awaits the answer, so the hub relays it
+  (`lsphub/tsserver.py`); `lsp_vue_*` checks templates only, not `<script>`
+  type errors.
 - **Adding a connector is never a module in `src/`**: the local connectors are
   the scripts in `mcp_connectors/`, referenced as `local` entries in
   `externals.json`. Add the file *and* the entry.

@@ -13,10 +13,15 @@ answers over the private ``tsserver/request`` protocol and blocks every
 per-document request until the answer arrives, which is how the hub's
 tsserver relay is tested.
 
+``--child <pidfile>`` spawns a grandchild that *ignores SIGTERM*, the way
+tsserver outlives the wrapper that spawned it: the hub's teardown has to
+reach it through the process group and escalate to SIGKILL.
+
 Run with ``sys.executable fake_langserver.py [flags]``.
 """
 
 import json
+import subprocess
 import sys
 
 CAPABILITIES = {
@@ -47,9 +52,35 @@ def main() -> int:
     relay_mode = "--relay" in sys.argv
     relay_unknown = "--relay-unknown" in sys.argv
     crash_after = None
+    child_pidfile = None
     for index, arg in enumerate(sys.argv):
         if arg == "--crash-after" and index + 1 < len(sys.argv):
             crash_after = int(sys.argv[index + 1])
+        if arg == "--child" and index + 1 < len(sys.argv):
+            child_pidfile = sys.argv[index + 1]
+
+    if child_pidfile:
+        # A grandchild that survives SIGTERM, so a teardown that only signals
+        # the wrapper provably leaves it behind. It inherits this process'
+        # group, exactly like the tsserver a language server forks.
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import signal, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "print(__import__('os').getpid(), flush=True)\n"
+                "time.sleep(120)\n",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        pid_line = child.stdout.readline().strip() if child.stdout else ""
+        if pid_line:
+            with open(child_pidfile, "w", encoding="utf-8") as handle:
+                handle.write(pid_line)
+        # Deliberately not waited on: an unwaited child is the realistic case.
 
     stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
     opened = {}

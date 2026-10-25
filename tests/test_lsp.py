@@ -529,6 +529,123 @@ class TestLspLifecycle:
         assert hub.server_status("fake") == "running"
 
     @pytest.mark.anyio
+    async def test_start_server_recovers_a_server_stuck_in_starting(self, hub, tmp_path):
+        # The regression: a hot toggle publishes ``starting`` synchronously and
+        # then dispatches the start onto the hub thread. A guard on *status*
+        # used to reject that very start, so the server stayed in ``starting``
+        # forever — no process, toolCount 0, and every other path (catalogue,
+        # lazy wake-up, the settings toggle) refusing to touch it.
+        entry = _fake_server_entry(tmp_path, "fake", lazy=True)
+        _declare(hub, entry)
+        hub._servers["fake"]["status"] = "starting"
+        hub._servers["fake"]["startingSince"] = hub._loop.time()
+
+        hub.start_server("fake")
+        for _ in range(200):
+            if hub.server_status("fake") in ("running", "error"):
+                break
+            await asyncio.sleep(0.05)
+
+        assert hub.server_status("fake") == "running", hub._servers["fake"]["error"]
+        tools, _mapping = hub.active_tool_defs(["fake"])
+        assert tools
+
+    @pytest.mark.anyio
+    async def test_start_server_is_idempotent_while_an_attempt_is_in_flight(
+        self, hub, tmp_path
+    ):
+        # A second click must not tear down the handshake the first one began.
+        entry = _fake_server_entry(tmp_path, "fake", lazy=True)
+        _declare(hub, entry)
+        hub.start_server("fake")
+        first_pid: Optional[int] = None
+        for _ in range(200):
+            session = hub._sessions.get("fake")
+            if session is not None:
+                first_pid = session.process.pid
+                break
+            await asyncio.sleep(0.05)
+        assert first_pid is not None
+        hub.start_server("fake")  # in flight / already up: a no-op
+        for _ in range(200):
+            if hub.server_status("fake") == "running":
+                break
+            await asyncio.sleep(0.05)
+        assert hub._sessions["fake"].process.pid == first_pid
+
+    @pytest.mark.anyio
+    async def test_lazy_server_is_published_while_starting(self, hub, tmp_path):
+        # tsserver's cold start is multi-second: a lazy server mid-handshake
+        # must not vanish from the next request's tool list.
+        entry = _fake_server_entry(tmp_path, "fake", lazy=True)
+        _declare(hub, entry)
+        hub._servers["fake"]["status"] = "starting"
+        tools, mapping = hub.active_tool_defs(["fake"])
+        assert [d["function"]["name"] for d in tools] == [
+            "lsp_fake_diagnostics",
+            "lsp_fake_hover",
+            "lsp_fake_definition",
+            "lsp_fake_document_symbols",
+        ]
+        assert set(mapping.values()) == {"fake"}
+
+    @pytest.mark.anyio
+    async def test_starting_without_a_handshake_expires_as_error(self, hub, tmp_path):
+        # Whatever left a server ``starting`` with no session behind it, the
+        # reaper must name it (and free the status for the toggle to retry).
+        entry = _fake_server_entry(tmp_path, "fake", lazy=True)
+        _declare(hub, entry)
+        hub._servers["fake"]["status"] = "starting"
+        hub._servers["fake"]["startingSince"] = (
+            hub._loop.time() - lsp_constants.STARTING_STUCK_SECONDS - 1.0
+        )
+
+        hub._reap()
+
+        info = hub._servers["fake"]
+        assert info["status"] == "error"
+        assert "without completing its handshake" in info["error"]
+        assert "fake" not in hub._sessions
+
+    @pytest.mark.anyio
+    async def test_a_reaped_non_lazy_server_revives_on_next_call(self, hub, tmp_path):
+        # pyright is not lazy, so the idle reaper still tears it down after
+        # idleShutdownSeconds. Before, the catalogue published a non-lazy
+        # server only while it was *running*: a reaped pyright vanished from
+        # the next request's tools with no path back, mid-conversation.
+        entry = _fake_server_entry(tmp_path, "fake")
+        await _start(hub, entry)
+        assert hub.server_status("fake") == "running"
+
+        await _run(hub, hub._reap_one("fake"))
+
+        assert hub.server_status("fake") == "stopped"
+        assert "fake" not in hub._sessions
+        tools, mapping = hub.active_tool_defs(["fake"])
+        assert [d["function"]["name"] for d in tools] == [
+            "lsp_fake_diagnostics",
+            "lsp_fake_hover",
+            "lsp_fake_definition",
+            "lsp_fake_document_symbols",
+        ]
+        assert set(mapping.values()) == {"fake"}
+        # And its next tool call brings the process back rather than failing.
+        (Path(entry["workspaceRoot"]) / "x.py").write_text("x = 1\n", encoding="utf-8")
+        result = hub.call_tool_sync(
+            "fake", "lsp_fake_hover", {"path": "x.py", "line": 0, "character": 0}
+        )
+        assert not result.startswith("Error:")
+        assert hub.server_status("fake") == "running"
+
+    @pytest.mark.anyio
+    async def test_a_healthy_start_is_never_expired_by_the_reaper(self, hub, tmp_path):
+        entry = _fake_server_entry(tmp_path, "fake", lazy=True)
+        await _start(hub, entry)
+        assert hub.server_status("fake") == "running"
+        hub._reap()
+        assert hub.server_status("fake") == "running"
+
+    @pytest.mark.anyio
     async def test_crashed_server_surfaces_as_error_status(self, hub, tmp_path):
         # The fake dies instead of answering its first post-init request
         # (hover): the pending call fails fast (pygls cancels it on process
@@ -560,6 +677,68 @@ class TestLspLifecycle:
                 break
             await asyncio.sleep(0.05)
         assert process.returncode is not None
+
+    @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
+    @pytest.mark.anyio
+    async def test_server_leads_its_own_process_group(self, hub, tmp_path):
+        # The teardown signals a *group*, which only works because the spawn
+        # put the server in a group of its own. Without start_new_session the
+        # pgid would be the app's, and a teardown would aim at the app itself.
+        entry = _fake_server_entry(tmp_path)
+        await _start(hub, entry)
+        pid = hub._sessions["fake"].process.pid
+        assert os.getpgid(pid) == pid
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"),
+                        reason="uses /proc to tell a zombie from a live process")
+    @pytest.mark.anyio
+    async def test_close_session_kills_the_whole_process_tree(self, hub, tmp_path,
+                                                             monkeypatch):
+        # The ghost this prevents: typescript-language-server spawns tsserver,
+        # and a SIGTERM sent to the wrapper alone leaves that child reparented
+        # to init, holding a project index the next hub knows nothing about.
+        # The fake's --child is a grandchild that ignores SIGTERM on purpose,
+        # so only reaching the group and escalating to SIGKILL can clear it.
+        monkeypatch.setattr(lsp_constants, "STOP_GRACE_SECONDS", 1.0)
+        pidfile = tmp_path / "grandchild.pid"
+        entry = _fake_server_entry(tmp_path, "fake", "--child", str(pidfile))
+        await _start(hub, entry)
+
+        grandchild: Optional[int] = None
+        for _ in range(100):
+            if pidfile.exists():
+                grandchild = int(pidfile.read_text(encoding="utf-8").strip())
+                break
+            await asyncio.sleep(0.05)
+        assert grandchild is not None, "the fake never reported its grandchild"
+        assert _process_alive(grandchild), f"grandchild {grandchild} never came up"
+
+        await _run(hub, hub._close_session("fake"))
+
+        for _ in range(100):
+            if not _process_alive(grandchild):
+                break
+            await asyncio.sleep(0.05)
+        assert not _process_alive(grandchild), (
+            f"grandchild {grandchild} survived the teardown — the hub killed "
+            "the wrapper but not its descendants"
+        )
+
+
+def _process_alive(pid: int) -> bool:
+    """True while ``pid`` names a live (not merely unreaped) process.
+
+    A descendant the hub did not spawn itself is reparented to init, so it can
+    linger as a zombie: signal 0 still answers 'there', while /proc reports the
+    truth.
+    """
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    # 'pid (comm) state …' — comm may contain spaces, hence the rsplit.
+    state = stat.rsplit(")", 1)[1].split()[0]
+    return state != "Z"
 
 
 class TestLspToolCalls:

@@ -17,6 +17,7 @@ so discovery and the settings panel keep working without the ``[lsp]`` extra.
 import asyncio
 import logging
 import os
+import signal
 import threading
 from contextlib import suppress
 from pathlib import Path
@@ -32,6 +33,10 @@ from .tsserver import find_project_config
 from .tools import TOOL_SPECS, action_of_tool_name, tools_for_server
 
 logger = logging.getLogger("benchmarkit.lsp")
+
+# How often a process-group teardown probes for surviving members between its
+# SIGTERM and its SIGKILL (same idea as the MCP hub's own tree killer).
+_GROUP_POLL_INTERVAL_SECONDS = 0.01
 
 
 class LspManager:
@@ -61,6 +66,10 @@ class LspManager:
         self._started = False
         self._stopped = False
         self._installed = lsp_installed()
+        #: ids whose start attempt is currently running on the hub thread
+        self._starting: Set[str] = set()
+        #: stops requested while a start attempt was still in flight
+        self._stop_requested: Set[str] = set()
         self._reaper: Optional[asyncio.TimerHandle] = None
 
     @staticmethod
@@ -72,6 +81,7 @@ class LspManager:
                 "status": "stopped",
                 "error": None,
                 "last_used": 0.0,
+                "startingSince": 0.0,
             }
             for server in servers
         }
@@ -194,16 +204,40 @@ class LspManager:
         return env
 
     async def _start_one(self, server_id: str) -> None:
-        """Bring one server up, handshake included. Never raises."""
+        """Bring one server up, handshake included. Never raises.
+
+        The guard is deliberately *not* on ``status``. The synchronous entry
+        point (:meth:`start_server`) publishes ``starting`` *before* dispatching
+        this coroutine onto the hub thread, so a status-based guard rejects the
+        very start that put the server there: it would sit in ``starting``
+        forever — no process, no tools, and no status the settings toggle can
+        retry. "Already up" is a live session; "an attempt is already running"
+        is membership in :attr:`_starting`.
+        """
         info = self._servers.get(server_id)
-        if info is None or info["status"] in ("running", "starting"):
+        if info is None or server_id in self._sessions or server_id in self._starting:
             return
+        self._starting.add(server_id)
+        self._stop_requested.discard(server_id)
         try:
-            await self._start_session(server_id, info)
-        except Exception as exc:  # noqa: BLE001 — startup errors land in status
-            info["status"] = "error"
-            info["error"] = str(exc) or exc.__class__.__name__
-            await self._close_session(server_id)
+            try:
+                await self._start_session(server_id, info)
+            except Exception as exc:  # noqa: BLE001 — startup errors land in status
+                info["status"] = "error"
+                info["error"] = str(exc) or exc.__class__.__name__
+                await self._close_session(server_id)
+        finally:
+            self._starting.discard(server_id)
+            if server_id in self._stop_requested:
+                # A stop landed while this attempt was in flight (the user
+                # disabled the server mid-handshake): honour it whatever the
+                # attempt did, so the teardown it triggered cannot be undone by
+                # a handshake that happened to succeed, nor a deliberate stop
+                # reported as a spawn failure.
+                self._stop_requested.discard(server_id)
+                await self._close_session(server_id)
+                info["status"] = "stopped"
+                info["error"] = None
 
     async def _start_session(self, server_id: str, info: Dict[str, Any]) -> None:
         from lsprotocol import types as lsp
@@ -212,6 +246,7 @@ class LspManager:
 
         info["status"] = "starting"
         info["error"] = None
+        info["startingSince"] = asyncio.get_event_loop().time()
         self._logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = self._logs_dir / f"{server_id}.log"
         argv = list(info["command"])
@@ -237,6 +272,10 @@ class LspManager:
                 *argv[1:],
                 cwd=info["workspaceRoot"],
                 env=self._environment(info),
+                # pygls forwards these to create_subprocess_exec. Leading its
+                # own process group is what lets the teardown signal the whole
+                # tree rather than only the wrapper (see _kill_process_tree).
+                start_new_session=True,
             )
         except OSError as exc:
             info["status"] = "error"
@@ -316,11 +355,20 @@ class LspManager:
     # -- hot toggles ---------------------------------------------------------
 
     def start_server(self, server_id: str) -> None:
-        """Start (or restart) one server from a synchronous caller. Never raises."""
+        """Start (or restart) one server from a synchronous caller. Never raises.
+
+        Idempotent: an attempt already in flight on the hub thread is left
+        alone, so a second click cannot tear down a handshake the first one
+        started. A ``starting`` with nothing in flight behind it (a start that
+        died before recording anything) is exactly what this call can repair.
+        """
         info = self._servers.get(server_id)
         if info is None or self._loop is None or self._stopped:
             return
+        if server_id in self._starting:
+            return
         info["status"] = "starting"
+        info["startingSince"] = self._loop.time()
         info["error"] = None
         with suppress(Exception):
             asyncio.run_coroutine_threadsafe(self._restart_one(server_id), self._loop)
@@ -339,6 +387,7 @@ class LspManager:
         await self._start_one(server_id)
 
     async def _stop_one(self, server_id: str) -> None:
+        self._stop_requested.add(server_id)
         await self._close_session(server_id)
         info = self._servers[server_id]
         info["status"] = "stopped"
@@ -365,9 +414,16 @@ class LspManager:
         A tool name is attributed to the first server offering it in
         ``server_ids`` order (names are namespaced, so they never collide).
 
-        A lazy server that has not spawned yet is still represented, using
-        the tools its config declares (its real capabilities are only known
-        after the handshake its first call triggers).
+        A server that is asked for but has no live session yet is still
+        represented, using the tools its config declares (its real
+        capabilities are only known after the handshake, which its first call
+        triggers). This covers both ways a hub ends up without one: a *lazy*
+        server that has not been called yet, and a server the idle reaper tore
+        down mid-conversation — a reaped ``pyright`` would otherwise vanish from
+        the next request's tool list with nothing to bring it back. Including
+        ``starting`` matters too: tsserver's cold start is multi-second, and a
+        server just switched on must not be absent from the very next request.
+        A server that failed (``error``) is deliberately not published.
         """
         tools: List[Dict[str, Any]] = []
         tool_to_server: Dict[str, str] = {}
@@ -377,7 +433,10 @@ class LspManager:
                 continue
             definitions = self._defs.get(server_id)
             if definitions is None:
-                if not (info["enable"] and info["lazy"] and info["status"] == "stopped"):
+                if not (
+                    info["enable"]
+                    and info["status"] in ("stopped", "starting")
+                ):
                     continue
                 definitions = tools_for_server(info, None)
             for definition in definitions:
@@ -414,8 +473,12 @@ class LspManager:
         if info["status"] != "running":
             if not info["enable"]:
                 return f"Error: language server '{server_id}' is disabled in Settings"
-            if info["status"] == "stopped":
-                # Lazy server: bring it up on its first tool call.
+            if info["status"] in ("stopped", "starting"):
+                # Bring it up on its first tool call — the lazy path, and the
+                # way back for a server the idle reaper stopped. ``starting`` is
+                # accepted too, so a start attempt that never completed (no
+                # session behind the status) is retried here instead of staying
+                # unreachable; an attempt still in flight is a no-op.
                 await self._start_one(server_id)
             if info["status"] != "running":
                 return (
@@ -558,7 +621,7 @@ class LspManager:
     # -- teardown -------------------------------------------------------------
 
     async def _close_session(self, server_id: str) -> None:
-        """shutdown/exit, then SIGTERM and SIGKILL after a grace period."""
+        """shutdown/exit, then SIGTERM the whole process group, then SIGKILL."""
         session = self._sessions.pop(server_id, None)
         self._defs.pop(server_id, None)
         if session is None:
@@ -581,16 +644,75 @@ class LspManager:
             with suppress(Exception):
                 await asyncio.wait_for(client.stop(), timeout=constants.STOP_GRACE_SECONDS)
         process = session.process
-        if process is not None and process.returncode is None:
-            with suppress(ProcessLookupError):
-                process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=constants.STOP_GRACE_SECONDS)
-            except (asyncio.TimeoutError, TimeoutError):
+        if process is not None:
+            # Signalling only the wrapper is not enough: typescript-language-server
+            # spawns tsserver, and Volar spawns workers. A SIGTERM aimed at the
+            # wrapper leaves those alive, reparented to init, holding a project
+            # index no later hub will ever know about. The server leads its own
+            # process group (``start_new_session``), so ``killpg`` reaches every
+            # descendant — the same teardown the MCP hub applies. This runs even
+            # when the graceful shutdown/exit already stopped the leader: what
+            # has to be empty is the *group*, and the leader's pid names it
+            # whether or not the leader is still running.
+            pid = getattr(process, "pid", None)
+            if os.name == "posix" and isinstance(pid, int):
+                await self._kill_process_tree(process, pid)
+            elif process.returncode is None:
                 with suppress(ProcessLookupError):
-                    process.kill()
-                with suppress(Exception):
-                    await process.wait()
+                    process.terminate()
+                try:
+                    await asyncio.wait_for(
+                        process.wait(), timeout=constants.STOP_GRACE_SECONDS
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    with suppress(ProcessLookupError):
+                        process.kill()
+                    with suppress(Exception):
+                        await process.wait()
+
+    @staticmethod
+    def _group_alive(pgid: int) -> bool:
+        """Probe the group with signal 0 — only ESRCH proves it is gone.
+
+        EPERM is ambiguous (a foreign-euid member), so it counts as alive and
+        keeps waiting rather than pretending the group drained.
+        """
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+        return True
+
+    async def _kill_process_tree(self, process: Any, pgid: int) -> None:
+        """SIGTERM the group, reap the leader, SIGKILL whatever outlives it.
+
+        The leader's pid *is* the pgid, which is why no ``getpgid()`` is used —
+        and none could work here: it fails once the leader has been reaped, even
+        while other members are still running. The leader is reaped *before* the
+        group is probed, because a group only disappears once every member is
+        dead **and** reaped, so an unreaped leader would keep the probe — and so
+        the whole grace period — alive.
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + constants.STOP_GRACE_SECONDS
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except ProcessLookupError:
+            return  # the whole group is already gone
+        except PermissionError:
+            logger.warning("No permission to signal process group %d", pgid)
+        with suppress(Exception):
+            await asyncio.wait_for(
+                process.wait(), timeout=max(deadline - loop.time(), 0.01)
+            )
+        while loop.time() < deadline:
+            if not self._group_alive(pgid):
+                return
+            await asyncio.sleep(_GROUP_POLL_INTERVAL_SECONDS)
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
 
     # -- idle reaper ----------------------------------------------------------
 
@@ -600,11 +722,32 @@ class LspManager:
         self._reaper = self._loop.call_later(constants.REAPER_INTERVAL_SECONDS, self._reap)
 
     def _reap(self) -> None:
-        """Tear down servers untouched for ``idleShutdownSeconds`` (0 = never)."""
+        """Tear down idle servers, and expire a ``starting`` that will never
+        finish."""
         if self._loop is None or self._stopped:
             return
         now = self._loop.time()
         for server_id, info in self._servers.items():
+            if info["status"] == "starting":
+                # A ``starting`` that outlived the whole start budget is stuck,
+                # not slow: it is the one status no other path clears, so an
+                # attempt that died before recording anything would otherwise
+                # be permanent. The budget (handshake + teardown grace + slack)
+                # is above anything a *successful* attempt can take, so a
+                # healthy cold start is never interrupted — and if an attempt
+                # later does succeed, it simply overwrites this with
+                # ``running``. Naming it as ``error`` makes the panel say so and
+                # lets the settings toggle retry.
+                elapsed = now - info.get("startingSince", now)
+                if elapsed >= constants.STARTING_STUCK_SECONDS:
+                    info["status"] = "error"
+                    info["error"] = (
+                        f"{server_id} has been starting for {elapsed:.0f}s "
+                        f"without completing its handshake"
+                    )
+                    self._append_log(
+                        self._logs_dir / f"{server_id}.log", f"[hub] {info['error']}"
+                    )
             idle = info.get("idleShutdownSeconds") or 0
             if info["status"] != "running" or idle <= 0:
                 continue
@@ -674,6 +817,8 @@ class LspManager:
         self._servers = self._index(servers)
         self._sessions.clear()
         self._defs.clear()
+        self._starting.clear()
+        self._stop_requested.clear()
         self._loop = None
         self._thread = None
         self._reaper = None

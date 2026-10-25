@@ -969,7 +969,12 @@ def build_router(state: RunState) -> APIRouter:
             for server in servers:
                 server_id = server["id"]
                 current = manager.server_status(server_id)
-                if server_id in enabled and current not in ("running", "starting"):
+                # Only ``running`` means "nothing to do". The hub decides
+                # whether a start is worth starting (a live session or an
+                # attempt already in flight is a no-op), so a server stuck in
+                # ``starting`` can be re-activated from the panel instead of
+                # being un-clickable until a full hub restart.
+                if server_id in enabled and current != "running":
                     manager.start_server(server_id)
                 elif server_id not in enabled and current in ("running", "starting"):
                     manager.stop_server(server_id)
