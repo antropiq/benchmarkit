@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
 import { loadChatLsp, loadChatMcp } from './useChat'
+import { useWorkspaceTree } from './useWorkspaceTree'
 
 // Read handle on "a batch is running", registered by useBatch on import — the
 // same one-way hook useChat uses for its hub guards, so the two hubs' owners
@@ -16,7 +17,7 @@ const state = reactive({
   configError: null,
   startError: null,
   status: 'idle', // idle | running | finished | failed | cancelled
-  activeTab: 'benchmark', // benchmark | chat
+  activeTab: 'benchmark', // benchmark | chat | editor
   runId: null,
   stopping: false,
   totalTests: 0,
@@ -429,6 +430,9 @@ export function useBenchmark() {
   }
 
   function setTab(tab) {
+    // Keyed on 'chat' on purpose: a running run needs the conversation to stay
+    // put, but the Editor tab is reachable during a run — reading files harms
+    // nothing the run is doing.
     if (tab === 'chat' && state.status === 'running') return
     if (batchRunning() && tab !== state.activeTab) return
     state.activeTab = tab
@@ -834,6 +838,11 @@ export function useBenchmark() {
           .map((server) => server.id)
         loadChatLsp()
       }
+      // The Editor tab's tree browses this location, so it re-roots here —
+      // from the save path rather than from the tab, which may never have been
+      // opened. (The terminal's `cwd` moves with the same value; ed-07
+      // restarts its session off `pathLocationCurrent`.)
+      useWorkspaceTree().refresh()
     } catch (exc) {
       state.pathLocationError = `Could not reach the API: ${exc}`
     } finally {

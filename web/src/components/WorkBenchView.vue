@@ -201,7 +201,7 @@ const {
     </div>
 
     <div
-      class="chat-resizer"
+      class="pane-resizer chat-resizer"
       :class="{ dragging }"
       role="separator"
       aria-orientation="horizontal"

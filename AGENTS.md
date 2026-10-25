@@ -9,12 +9,14 @@ answers, and grades every answer against the expected one with a secondary
 **verifier LLM**. Everything reaches the browser live over Server-Sent Events.
 Desktop browsers only.
 
-The app has two tabs, sharing one LLM configuration and one streaming layer:
+The app has three tabs, sharing one LLM configuration and one streaming layer:
 
 - **Benchmark** — runs a question set against the configured model, showing
   answers, scores, timings and token/s as they arrive.
 - **WorkBench** — interactive streaming chat with that same model, optionally
   augmented with MCP connectors and language servers.
+- **Editor** — the working location as a file tree, a code pane and (later) a
+  terminal. Read-only: there is no write route for a hub — or a human — to hit.
 
 ## Commands
 
@@ -70,7 +72,7 @@ touching either one.
 |---|---|
 | `composables/` | One reactive singleton per concern; components use them directly. |
 | `lib/markdown.js` | The single markdown renderer (marked + DOMPurify + KaTeX + hljs). |
-| `App.vue` | App bar and the two tab views. |
+| `App.vue` | App bar and the three tab views (`v-show`, so every view stays mounted; the Editor view is a lazy chunk). |
 | `components/` | Benchmark widgets, WorkBench widgets, shared chrome. |
 | `styles/theme.css` | Pico CSS variable overrides + app classes (light and dark). |
 

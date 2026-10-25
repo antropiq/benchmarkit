@@ -6,13 +6,21 @@ import { useBatch } from '../composables/useBatch'
 const { state, setTab } = useBenchmark()
 const { state: batch } = useBatch()
 
-// A running batch pins the app to WorkBench (B11): both tabs go inert, and
-// setTab refuses the switch too, so a keyboard path cannot escape mid-lot.
+// A running batch pins the app to WorkBench (B11): every other tab goes inert,
+// and setTab refuses the switch too, so a keyboard path cannot escape mid-lot.
 const disabled = computed(() => state.status === 'running' || batch.active)
 const tabTitle = computed(() =>
   batch.active
     ? 'Unavailable while a batch runs'
     : 'Available when the benchmark is idle',
+)
+// A benchmark run locks WorkBench out but not the Editor: browsing files is
+// read-only and touches nothing the run is using. A running batch does pin
+// this tab too — it is the app-wide pin, not a WorkBench rule — which is the
+// same `disabled` flag, and setTab refuses the switch as well.
+const editorDisabled = computed(() => batch.active)
+const editorTitle = computed(() =>
+  batch.active ? 'Unavailable while a batch runs' : 'Editor',
 )
 </script>
 
@@ -41,6 +49,18 @@ const tabTitle = computed(() =>
       @click="setTab('chat')"
     >
       WorkBench
+    </button>
+    <button
+      class="tab-btn"
+      role="tab"
+      type="button"
+      :class="{ active: state.activeTab === 'editor' }"
+      :aria-selected="state.activeTab === 'editor'"
+      :disabled="editorDisabled"
+      :title="editorTitle"
+      @click="setTab('editor')"
+    >
+      Editor
     </button>
   </nav>
 </template>

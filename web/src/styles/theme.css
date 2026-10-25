@@ -1197,12 +1197,13 @@ body {
   gap: 0.75rem;
 }
 
-/* Draggable separator between the chat output and the input row.
-   Thin pill on hover/focus/drag; row-resize cursor, touch-friendly. */
-.chat-resizer {
+/* Draggable separator between two panes — the shared look of every splitter in
+   the app (chat output/input, editor sidebar, editor terminal): a 10 px hit
+   area showing a thin pill on hover/focus/drag, pointer-captured and
+   touch-friendly. `--vertical` names the *bar*, as aria-orientation does: a
+   standing bar measures width instead of height, so its pill is tall. */
+.pane-resizer {
   flex: 0 0 auto;
-  height: 10px;
-  margin: -3px 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1213,7 +1214,7 @@ body {
   background: transparent;
 }
 
-.chat-resizer::before {
+.pane-resizer::before {
   content: '';
   width: 48px;
   height: 3px;
@@ -1222,15 +1223,43 @@ body {
   transition: background-color 120ms ease, width 120ms ease;
 }
 
-.chat-resizer:hover::before,
-.chat-resizer:focus-visible::before,
-.chat-resizer.dragging::before {
+.pane-resizer:hover::before,
+.pane-resizer:focus-visible::before,
+.pane-resizer.dragging::before {
   width: 72px;
   background-color: var(--pico-primary);
 }
 
-.chat-resizer.dragging::before {
+.pane-resizer.dragging::before {
   width: 96px;
+}
+
+.pane-resizer--vertical {
+  cursor: col-resize;
+}
+
+.pane-resizer--vertical::before {
+  width: 3px;
+  height: 48px;
+  transition: background-color 120ms ease, height 120ms ease;
+}
+
+.pane-resizer--vertical:hover::before,
+.pane-resizer--vertical:focus-visible::before,
+.pane-resizer--vertical.dragging::before {
+  width: 3px;
+  height: 72px;
+}
+
+.pane-resizer--vertical.dragging::before {
+  width: 3px;
+  height: 96px;
+}
+
+/* Chat: the lying bar between the output row and the input row. */
+.chat-resizer {
+  height: 10px;
+  margin: -3px 0;
 }
 
 .chat-textarea {
@@ -2077,9 +2106,91 @@ body {
 }
 
 /* -- editor screen ------------------------------------------------------------
-   The Editor tab's panes (ed-01 … ed-07). Only the navigator lives here so
-   far: the file tree of the active workspace, themed from the same tokens as
-   everything else, plus the dev-preview wrapper ed-02 removes. */
+   The Editor tab (ed-02 …): a grid with the navigator spanning both rows on
+   the left, the code pane in the right column's top row and the terminal strip
+   under it. The two splitter bars are grid tracks of their own, so the panes
+   never shift when a track is resized. */
+
+.editor-shell {
+  /* Tracks. `auto` is a resizer bar, so a dragged size only ever names a pane;
+     both custom properties are set by useSplitter once the user drags, and a
+     double-click / Home brings these untouched defaults back. */
+  --bi-editor-sidebar: minmax(200px, 260px);
+  --bi-editor-terminal: 220px;
+  display: grid;
+  grid-template-columns: var(--bi-editor-sidebar) auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto var(--bi-editor-terminal);
+  gap: var(--bi-space-2);
+  box-sizing: border-box;
+  width: 100%;
+  height: calc(100vh - var(--bi-appbar-height));
+  padding: var(--bi-space-2) clamp(1rem, 3vw, 2rem) var(--bi-space-3);
+}
+
+/* Placement stated explicitly rather than left to auto-placement, so adding a
+   pane later cannot reshuffle the grid. The navigator spans every row: its
+   right border and the terminal's left edge are the same line, which is the
+   brief's "terminal full width minus the bottom of the file explorer". */
+.editor-nav-col {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-resizer-v {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+.editor-area-slot {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.editor-resizer-h {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.editor-terminal-slot {
+  grid-column: 3;
+  grid-row: 3;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Standing bar between the tree and the code pane: 10 px wide, no vertical
+   margin (its row is exactly its height). */
+.editor-resizer-v {
+  width: 10px;
+  align-self: stretch;
+}
+
+/* Lying bar between the code pane and the terminal. */
+.editor-resizer-h {
+  height: 10px;
+}
+
+/* -- navigator ---------------------------------------------------------------- */
+
+/* The column's slot: the navigator fills it, so its tree column is what
+   scrolls rather than the panel overflowing the screen. */
+.editor-nav-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Drawer toggle, shown only in the single-column fallback below. */
+.editor-nav-toggle {
+  display: none;
+}
 
 .editor-nav {
   display: flex;
@@ -2195,22 +2306,158 @@ body {
   padding-left: calc(var(--bi-space-2) + 1.2rem);
 }
 
-/* ed-01 dev preview only (`?editor-preview=1`): the navigator has no layout
-   until ed-02 builds the Editor tab, so it floats over the Benchmark screen. */
-.editor-preview {
-  position: fixed;
-  top: calc(var(--bi-appbar-height) + var(--bi-space-3));
-  left: clamp(1rem, 3vw, 2rem);
-  width: 320px;
-  max-height: calc(100vh - var(--bi-appbar-height) - 2 * var(--bi-space-3));
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-}
-
-/* The wrapper bounds the height; the navigator takes it, so its tree column is
+/* The slot bounds the height; the navigator takes it, so its tree column is
    what scrolls instead of the whole panel overflowing the screen. */
-.editor-preview .editor-nav {
+.editor-nav-slot .editor-nav {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* -- code pane (ed-03 / ed-04 fill this body) ---------------------------------- */
+
+.editor-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bi-space-1);
+  min-height: 0;
+  padding: var(--bi-space-1) 0 var(--bi-space-2);
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+  background-color: var(--bi-surface);
+  box-shadow: var(--bi-shadow-sm);
+}
+
+.editor-area-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bi-space-2);
+  padding: 0 var(--bi-space-2);
+  border-bottom: 1px solid var(--bi-border);
+  min-height: 2rem;
+}
+
+/* The open-file tabs (ed-04 owns their content). */
+.editor-tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--bi-space-1);
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.editor-badge {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.editor-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+}
+
+/* -- terminal strip (ed-06 / ed-07 mount the real session here) --------------- */
+
+.editor-terminal {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+  background-color: var(--bi-surface);
+  box-shadow: var(--bi-shadow-sm);
+  overflow: hidden;
+}
+
+.editor-terminal-head {
+  display: flex;
+  align-items: center;
+  gap: var(--bi-space-2);
+  padding: var(--bi-space-1) var(--bi-space-2);
+  border-bottom: 1px solid var(--bi-border);
+}
+
+.editor-terminal-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pico-muted-color);
+}
+
+.editor-terminal-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: auto;
+}
+
+/* Reconnect dot: muted while there is no session; ed-07 adds the live and
+   reconnecting tones from the status-pill palette already in use. */
+.editor-terminal-dot {
+  background-color: color-mix(in srgb, var(--pico-muted-color) 45%, transparent);
+}
+
+.editor-terminal-kill {
+  width: 28px;
+  height: 28px;
+}
+
+.editor-terminal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--bi-space-1) var(--bi-space-2);
+}
+
+/* -- narrow screens: one column, tree as a drawer ------------------------------
+   Desktop-only is the documented scope, so this is a usability floor: nothing
+   is clipped and the tree stays reachable, but there is no phone layout. The
+   shell stays a grid and re-places every pane explicitly (the wide layout
+   places by grid line, not by area name), and the terminal stays draggable —
+   only the sidebar track disappears, so its bar is hidden and its variable
+   goes unused. */
+@media (max-width: 1024px) {
+  .editor-shell {
+    --bi-editor-terminal: 180px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto var(--bi-editor-terminal);
+    height: auto;
+    min-height: calc(100vh - var(--bi-appbar-height));
+  }
+
+  .editor-nav-col { grid-column: 1; grid-row: 1; }
+  .editor-area-slot { grid-column: 1; grid-row: 2; min-height: 40vh; }
+  .editor-resizer-h { grid-column: 1; grid-row: 3; }
+  .editor-terminal-slot { grid-column: 1; grid-row: 4; }
+
+  /* No sidebar to size in a single column: the bar has no track to sit in. */
+  .editor-resizer-v {
+    display: none;
+  }
+
+  .editor-nav-toggle {
+    display: block;
+    width: 100%;
+    margin: 0 0 var(--bi-space-1);
+    padding: 0.35rem 0.6rem;
+    font-size: 0.75rem;
+    text-align: left;
+  }
+
+  .editor-nav-slot {
+    display: none;
+  }
+
+  .editor-shell:not(.nav-collapsed) .editor-nav-slot {
+    display: flex;
+    max-height: 45vh;
+  }
 }
