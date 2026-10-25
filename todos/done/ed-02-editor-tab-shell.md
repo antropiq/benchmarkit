@@ -154,3 +154,49 @@ No backend change in this step.
   in both.
 * Network tab on first load of the Benchmark tab: **no** CodeMirror or xterm
   chunk downloaded.
+
+## Delivered
+
+| File | Change |
+|---|---|
+| `web/src/components/EditorView.vue` | new: the three-pane shell — both splitters wired, the sizes carried as `--bi-editor-sidebar` / `--bi-editor-terminal` on the shell, drawer toggle for narrow screens |
+| `web/src/components/EditorArea.vue` | new placeholder: tab strip, `read-only` badge (D4), `stream-empty` centre |
+| `web/src/components/EditorTerminal.vue` | new placeholder: `Terminal` header, reconnect dot, disabled Kill session |
+| `web/src/composables/useSplitter.js` | generalised, the chat call site unchanged: `orientation` (width vs height, `←→` vs `↑↓`), `storageKey` / `minResized` / `minOther` / `maxRatio`, and `sizeVar` → `shellStyle` for grid shells |
+| `web/src/styles/theme.css` | `.editor-shell` grid (navigator spans every row), explicit `grid-column/row` per pane, `.pane-resizer` (+ `--vertical`) extracted from `.chat-resizer`, pane chrome, `@media (max-width: 1024px)` fallback; the ed-01 dev-preview wrapper deleted |
+| `web/src/App.vue` | `EditorView` via `defineAsyncComponent`, `v-if` once then `v-show` |
+| `web/src/components/TabNav.vue` | third `role="tab"` button, enabled during a run (D6) |
+| `web/src/composables/useBenchmark.js` | `activeTab` comment, `setTab` guard documented as chat-keyed, `setPathLocation` refreshes the tree |
+| `web/src/components/WorkBenchView.vue` | resizer markup `pane-resizer chat-resizer` |
+| `AGENTS.md` | three tabs; the `App.vue` row notes `v-show` and the lazy Editor chunk |
+
+### What differs from the plan, and why
+
+* **Lazy loading needs a first-mount gate.** An async component behind a plain
+  `v-show` resolves its import at boot, so the default screen would have paid
+  for the tab. `App.vue` flips `editorMounted` the first time `activeTab`
+  reaches `'editor'`; from then on only `v-show` acts, so the view never
+  unmounts again — which is what D5 (and ed-07's terminal session) needs.
+  Verified in the build output: the tab ships as its own chunk
+  (`EditorView-*.js`, ~9.7 kB) and nothing in the entry references it eagerly.
+* **The workspace-change hook sits in the save path, not in the tab.** The
+  plan had `EditorView` watch `pathLocationCurrent`; the tab may never be
+  mounted, so that watch would not exist yet. `setPathLocation` (which already
+  refreshes both hubs) now calls `useWorkspaceTree().refresh()`, keeping the
+  "one hook, all four surfaces" rule. The terminal restart joins that same call
+  in ed-07.
+* **Editor inert during a *batch*.** D6 keys off a benchmark run, and the
+  Editor stays reachable there. A running batch is the app-wide pin from
+  batch-mode B11 (every other tab goes inert, and `setTab` refuses), so the new
+  button follows `batch.active` only.
+* **`useSplitter` measures the shell's content box.** The panes live inside the
+  shell's padding, so `clientHeight` alone counted it twice and let the
+  terminal grow past the bottom edge; the clamp now subtracts the padding, and
+  a hidden shell (`<= 0`) is treated as "nothing to clamp against" — the same
+  zero-layout guard the chat splitter needed.
+* **Default sidebar track is the brief's `minmax(200px, 260px)`**, so a
+  double-click or `Home` returns to the CSS default rather than to a fixed
+  240 px that would ignore a narrow window.
+
+No backend change, no new dependency: ed-01's read-only assertion (no non-`GET`
+route under `/api/fs`) still holds because no route was added.
