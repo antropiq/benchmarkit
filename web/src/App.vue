@@ -9,6 +9,12 @@ import Chronometer from './components/Chronometer.vue'
 import StreamPanel from './components/StreamPanel.vue'
 import WorkBenchView from './components/WorkBenchView.vue'
 import { useBenchmark } from './composables/useBenchmark'
+import { useTabTitle } from './composables/useTabTitle'
+
+// Mirrors the inference state into the browser tab title (⚡ / ✨), so a
+// backgrounded tab still answers "is it generating?". Started here because App
+// is where every composable's state gets mounted.
+useTabTitle()
 
 const { state, loadConfig, start, stop, loadPathLocation } = useBenchmark()
 
