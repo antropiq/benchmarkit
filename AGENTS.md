@@ -54,6 +54,7 @@ report progress through it.
 | `core/chat.py` | One streamed chat reply, including the shared tool-call loop. |
 | `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
 | `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
+| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, the three locks + `path_policy` reuse, one directory level per call. Read-only — no write route exists. |
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
 | `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |

@@ -2075,3 +2075,142 @@ body {
   max-width: 12rem;
   margin-top: 1rem;
 }
+
+/* -- editor screen ------------------------------------------------------------
+   The Editor tab's panes (ed-01 … ed-07). Only the navigator lives here so
+   far: the file tree of the active workspace, themed from the same tokens as
+   everything else, plus the dev-preview wrapper ed-02 removes. */
+
+.editor-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bi-space-1);
+  min-height: 0;
+  min-width: 0;
+  padding: var(--bi-space-1) 0;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+  background-color: var(--bi-surface);
+  box-shadow: var(--bi-shadow-sm);
+}
+
+.editor-nav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--bi-space-1);
+  padding: 0 var(--bi-space-2);
+}
+
+/* The browsed workspace by name; the absolute path stays in the title, so the
+   label never has to be truncated to say *which* checkout this is. */
+.editor-nav-title {
+  margin: 0;
+  font-weight: 600;
+  font-family: var(--pico-font-family-monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-nav-error,
+.editor-nav-empty,
+.editor-nav-footer {
+  margin: 0;
+  padding: 0 var(--bi-space-2);
+}
+
+.editor-nav-footer {
+  border-top: 1px solid var(--bi-border);
+  padding-top: var(--bi-space-1);
+  color: var(--pico-muted-color);
+  font-size: 0.72rem;
+}
+
+.editor-nav-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  outline: none;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem var(--bi-space-2);
+  border-radius: var(--pico-border-radius);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Indent by depth. Each row carries its own depth in --tree-depth (the tree is
+   a stack of `role="group"` wrappers, so nested padding would compound twice),
+   which keeps the rule one line however deep the checkout goes. The
+   `.tree-row.depth-N` class is emitted too, as a hook for later panes. */
+.tree-row {
+  padding-left: calc(var(--bi-space-2) + 0.85rem * var(--tree-depth, 0));
+}
+
+.tree-row:hover {
+  background-color: var(--bi-surface-2);
+}
+
+.tree-row--selected {
+  background-color: color-mix(in srgb, var(--pico-primary) 12%, var(--bi-surface));
+}
+
+.tree-row--focused {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: -2px;
+}
+
+.tree-chevron {
+  display: inline-flex;
+  width: 12px;
+  transition: transform 0.12s ease;
+  color: var(--pico-muted-color);
+}
+
+.tree-chevron.open {
+  transform: rotate(90deg);
+}
+
+.tree-icon {
+  display: inline-flex;
+  color: var(--pico-muted-color);
+}
+
+.tree-name {
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-truncated,
+.tree-error {
+  margin: 0.2rem 0;
+  padding-left: calc(var(--bi-space-2) + 1.2rem);
+}
+
+/* ed-01 dev preview only (`?editor-preview=1`): the navigator has no layout
+   until ed-02 builds the Editor tab, so it floats over the Benchmark screen. */
+.editor-preview {
+  position: fixed;
+  top: calc(var(--bi-appbar-height) + var(--bi-space-3));
+  left: clamp(1rem, 3vw, 2rem);
+  width: 320px;
+  max-height: calc(100vh - var(--bi-appbar-height) - 2 * var(--bi-space-3));
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The wrapper bounds the height; the navigator takes it, so its tree column is
+   what scrolls instead of the whole panel overflowing the screen. */
+.editor-preview .editor-nav {
+  flex: 1 1 auto;
+  min-height: 0;
+}

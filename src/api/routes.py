@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Union
 import os
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -41,6 +41,7 @@ from src.config import (
 )
 from src.core.mcphub import load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
+from src.core import editorfs
 from src.core.bench import run_benchmark
 from src.core import batch as batch_core
 from src.core.chat import stream_chat
@@ -1152,6 +1153,39 @@ def build_router(state: RunState) -> APIRouter:
                 os.environ[PATH_LOCATION_KEY] = previous
             raise
         return _path_location_payload() | {"mcp": mcp, "lsp": lsp}
+
+    @router.get("/fs/tree")
+    def get_fs_tree(path: str = "") -> Dict[str, Any]:
+        """One directory level of the active workspace, for the Editor tab.
+
+        ``path`` is relative to ``BENCHMARKIT_PATH_LOCATION`` ("" is its root)
+        — the same working location both hubs point at, so the tree browses
+        exactly what the tools are working on. One level per call keeps the
+        first paint at one ``listdir`` however big the checkout is.
+
+        All the rules live in ``core/editorfs`` (the three locks on the path,
+        the entry cap, the ignored names, the deny-list); this route only turns
+        a :class:`~src.core.editorfs.policy.WorkspacePathError` into its HTTP
+        status. Read-only by design: there is no write route under ``/api/fs``
+        in this lot, and no hub may ever gain one (decision D4).
+        """
+        try:
+            return editorfs.list_dir(path)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    @router.get("/fs/stat")
+    def get_fs_stat(path: List[str] = Query(default_factory=list)) -> Dict[str, Any]:
+        """``mtime``/``size``/``exists`` for a handful of exact paths.
+
+        The live-reload probe of ed-09: the client names the files it has open,
+        so nothing has to poll a tree or run a file watcher. Every path goes
+        through the same gate as the tree.
+        """
+        try:
+            return {"paths": editorfs.stat_paths(path)}
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
     @router.get("/lsp/log")
     def get_lsp_log(request: Request, server: str = "") -> Dict[str, Any]:

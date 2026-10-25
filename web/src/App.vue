@@ -8,8 +8,14 @@ import RunControls from './components/RunControls.vue'
 import Chronometer from './components/Chronometer.vue'
 import StreamPanel from './components/StreamPanel.vue'
 import WorkBenchView from './components/WorkBenchView.vue'
+import WorkspaceNavigator from './components/WorkspaceNavigator.vue'
 import { useBenchmark } from './composables/useBenchmark'
 import { useTabTitle } from './composables/useTabTitle'
+
+// ed-01 dev preview: the workspace tree has no layout yet (ed-02 builds the
+// Editor tab around it), so `?editor-preview=1` floats it over the Benchmark
+// screen for review. Delete these two lines when ed-02 mounts it properly.
+const EDITOR_PREVIEW = new URLSearchParams(window.location.search).has('editor-preview')
 
 // Mirrors the inference state into the browser tab title (⚡ / ✨), so a
 // backgrounded tab still answers "is it generating?". Started here because App
@@ -120,4 +126,10 @@ const scorePercent = computed(() =>
   </main>
 
   <WorkBenchView v-show="state.activeTab === 'chat'" />
+
+  <!-- ed-01 dev preview of the workspace navigator; removed by ed-02, which
+       mounts it inside the Editor tab's layout. -->
+  <div v-if="EDITOR_PREVIEW" class="editor-preview">
+    <WorkspaceNavigator />
+  </div>
 </template>
