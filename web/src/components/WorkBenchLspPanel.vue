@@ -1,8 +1,10 @@
 <script setup>
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
+import { useBatch } from '../composables/useBatch'
 
 const { state, setChatLsp, restartLsp } = useChat()
+const { state: batch } = useBatch()
 
 // Status dot next to each switch: green when the language server serves its
 // tools, red on a startup/configuration error, gray otherwise (stopped,
@@ -20,9 +22,15 @@ const DOT_CLASS = {
 const visible = computed(
   () => state.lsp.loaded && state.lsp.servers.length > 0,
 )
-const locked = computed(() => state.lsp.locked || state.phase !== 'idle')
+// Same pair as the MCP panel: the batch flag covers the between-tasks window.
+const locked = computed(
+  () => state.lsp.locked || state.phase !== 'idle' || batch.active,
+)
 
 function rowTitle(server) {
+  if (batch.active) {
+    return 'Unavailable while a batch runs — stop it to change the tools'
+  }
   if (locked.value) {
     return 'Toggles apply to the next conversation — restart to change them'
   }
@@ -37,13 +45,13 @@ function rowTitle(server) {
 // mid-call: the button is only usable on an idle conversation, and stays
 // busy until the awaited server-side restart comes back.
 const canRestart = computed(
-  () => state.phase === 'idle' && !state.lsp.restarting,
+  () => state.phase === 'idle' && !state.lsp.restarting && !batch.active,
 )
-const restartTitle = computed(() =>
-  state.lsp.restarting
-    ? 'Restarting language servers…'
-    : 'Restart the LSP hub: respawn every server from lsp_servers.json',
-)
+const restartTitle = computed(() => {
+  if (batch.active) return 'Unavailable while a batch runs'
+  if (state.lsp.restarting) return 'Restarting language servers…'
+  return 'Restart the LSP hub: respawn every server from lsp_servers.json'
+})
 </script>
 
 <template>

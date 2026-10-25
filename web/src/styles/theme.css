@@ -263,6 +263,20 @@ body {
   animation: bi-pulse 1.2s ease-in-out infinite;
 }
 
+/* A batch lot is running (app-bar pill, B10). Same violet as a chat reply —
+   the pill is reading the same violet family for "the model is working" — but
+   with its own branch so the label can stay literal. The post-lot outcome
+   reuses the run-status tones already defined above (status-cancelled /
+   status-failed / status-finished), so no new colour is introduced. */
+.status-batch {
+  color: var(--bi-violet);
+  border-color: color-mix(in srgb, var(--bi-violet) 40%, transparent);
+}
+
+.status-batch .status-dot {
+  animation: bi-pulse 1.2s ease-in-out infinite;
+}
+
 @keyframes bi-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.8); }
@@ -814,6 +828,47 @@ body {
 .progress-row progress::-moz-progress-bar {
   background-color: var(--pico-primary);
   border-radius: 999px;
+}
+
+/* Batch meter, under the stopwatch (BatchProgressBar.vue). The <progress> and
+   its caption come from `.progress-row` / `.caption.mono` above; this block
+   only stacks the three lines and takes the panel's full width, which the
+   stopwatch's own min-width already gives the column. */
+.batch-progress {
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 12rem;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0.4rem;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+  background-color: var(--bi-surface);
+}
+
+.batch-progress .caption {
+  margin: 0;
+}
+
+/* Neutral meter, sized to the panel; `.progress-row` already styles the bar. */
+.batch-progress .progress-row {
+  gap: 0;
+}
+
+/* Native <dialog> launching a task lot (Pico card, see the SettingsDialog and
+   memory-dialog notes above — the element itself is never sized). */
+.batch-dialog > article {
+  width: 620px;
+  max-width: 94vw;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.batch-dialog .caption {
+  margin: 0.25rem 0;
 }
 
 /* -- settings dialog ------------------------------------------------------------ */

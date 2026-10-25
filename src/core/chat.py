@@ -47,6 +47,21 @@ TOOL_NOTICE = (
 )
 
 
+def batch_instructions_block(text: str) -> str:
+    """The lot's big picture rendered as a system-message block.
+
+    Framed the way ``config.agent_instructions_block`` frames AGENTS.md: the
+    wrapper says this describes a lot worked through *one task at a time*, so a
+    big-picture file that reads "implement the editor tab" is taken as context
+    rather than as an instruction to do the whole lot in this turn.
+    """
+    return (
+        "The following is the big-picture description of the task lot being "
+        "worked through, one task at a time. It is context, not a task: do "
+        "only the task you are asked for now.\n\n" + text.strip()
+    )
+
+
 def _collect_tool_call_deltas(chunk: Any, acc: Dict[int, Dict[str, Any]]) -> str:
     """Accumulate streamed tool-call deltas (they can split across chunks).
 
@@ -139,6 +154,7 @@ def stream_chat(
     tool_servers: Optional[Dict[str, str]] = None,
     max_tool_iterations: int = 25,
     agent_instructions: Optional[str] = None,
+    batch_instructions: Optional[str] = None,
 ) -> None:
     """Stream one chat reply, emitting ``token`` / ``reasoning`` / ``done``.
 
@@ -184,6 +200,13 @@ def stream_chat(
     the word — keeping them apart lets that check judge only the prompt the
     user configured. Like the notice above, it is appended to the text of the
     system message (the Chat API only ever sends plain-text system messages).
+
+    ``batch_instructions`` (batch mode's lot big picture) is appended *after*
+    the project instructions, so the system message reads
+    sysprompt → tool notice → AGENTS.md → big picture: the project's rules stay
+    the closest thing to the conversation, and the lot description — framed as
+    context below, not as a task — is the furthest. It is re-sent on every task
+    turn because the per-task context reset means nothing else carries it.
     """
     if not messages or messages[0].get("role") != "system":
         messages = [
@@ -204,6 +227,16 @@ def stream_chat(
         messages[0] = {
             "role": "system",
             "content": _content_text(messages[0]) + "\n\n" + agent_instructions,
+        }
+    if batch_instructions and batch_instructions.strip():
+        # The lot's big picture closes the system message (see the docstring):
+        # framed as context, so a model that reads "implement the editor tab"
+        # in it does not start doing the whole lot on task 1.
+        messages[0] = {
+            "role": "system",
+            "content": _content_text(messages[0])
+            + "\n\n"
+            + batch_instructions_block(batch_instructions),
         }
     sampling_kwargs: Dict[str, Any] = dict(sampling or {})
     # litellm gates reasoning_effort to OpenAI reasoning models only;

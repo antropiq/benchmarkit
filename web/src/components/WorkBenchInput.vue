@@ -13,6 +13,7 @@ import {
   useChat,
 } from '../composables/useChat'
 import { useBenchmark } from '../composables/useBenchmark'
+import { useBatch } from '../composables/useBatch'
 
 const {
   state,
@@ -26,6 +27,7 @@ const {
   loadSession,
 } = useChat()
 const { state: benchmarkState } = useBenchmark()
+const { state: batch, stopBatch, clearBatchRun } = useBatch()
 
 // Let draft insertions (memory bullets) focus the textarea after appending.
 const draftEl = ref(null)
@@ -36,6 +38,9 @@ const dialogOpen = ref(false)
 const dialogIndex = ref(null)
 
 function openBulletDialog(index) {
+  // Unreachable once the bullets are inert, but the guard keeps a keyboard or
+  // synthetic click from opening an editor for a draft nobody can send.
+  if (batch.active) return
   dialogIndex.value = index
   dialogOpen.value = true
 }
@@ -55,9 +60,13 @@ const showToggleCol = computed(() => mcpVisible.value || lspVisible.value)
 const singlePanel = computed(() => mcpVisible.value !== lspVisible.value)
 
 const streaming = computed(() => state.phase !== 'idle')
+// A batch owns every surface but Stop and Restart: `batch.active` is true for
+// the whole lot, including the momentary idle between two task turns, which is
+// why the composer cannot key on `streaming` alone here.
+const locked = computed(() => streaming.value || batch.active)
 const canSend = computed(
   () =>
-    !streaming.value &&
+    !locked.value &&
     (state.draft.raw.trim().length > 0 || state.pendingImage !== null),
 )
 
@@ -74,13 +83,17 @@ function onKeydown(event) {
   }
 }
 
+// Restart stays live during a batch and means Stop + wipe (B15): the only way
+// back to a launchable state after a stopped batch. clearBatchRun first, so the
+// loop can never be left running on a conversation that no longer exists.
 function restart() {
+  clearBatchRun()
   stop()
   reset()
 }
 
 const canRestart = computed(
-  () => state.messages.length > 0 || state.phase !== 'idle',
+  () => state.messages.length > 0 || state.phase !== 'idle' || batch.active,
 )
 
 // --- Image attach (the hidden file input below, driven by the icon button) ---
@@ -94,6 +107,7 @@ const supportsVision = computed(
 const fileInput = ref(null)
 
 function pickImage() {
+  if (locked.value) return
   fileInput.value?.click()
 }
 
@@ -128,7 +142,9 @@ async function copyText(text) {
   }
 }
 
-const canCopy = computed(() => state.messages.length > 0)
+const canCopy = computed(
+  () => state.messages.length > 0 && !batch.active,
+)
 
 const copyState = ref('idle') // idle | copied | failed
 let copyTimer = null
@@ -188,7 +204,7 @@ function saveSession() {
 const sessionInput = ref(null)
 
 function pickSessionFile() {
-  if (streaming.value) return
+  if (locked.value) return
   sessionInput.value?.click()
 }
 
@@ -270,7 +286,7 @@ onBeforeUnmount(() => {
           <button
             class="icon-btn chat-attach"
             type="button"
-            :disabled="!supportsVision || streaming"
+            :disabled="!supportsVision || locked"
             :class="{ 'chat-attach--pending': !!state.pendingImage }"
             :aria-label="
               supportsVision
@@ -342,7 +358,7 @@ onBeforeUnmount(() => {
           <button
             class="icon-btn"
             type="button"
-            :disabled="streaming"
+            :disabled="locked"
             aria-label="Load session from a JSON file"
             title="Load session (JSON)"
             @click="pickSessionFile"
@@ -376,9 +392,12 @@ onBeforeUnmount(() => {
                so this button leaves the row exactly when Send comes back.
                Blinking means the request is armed and the button is not
                clickable; typing a comment and sending it is the only way back
-               into inference. -->
+               into inference. Hidden during a batch: pausing one turn and
+               letting the loop carry on onto the next task would contradict
+               "Stop is the only control", and a comment is meaningless between
+               automated tasks. -->
           <button
-            v-if="streaming"
+            v-if="streaming && !batch.active"
             class="icon-btn chat-pause"
             type="button"
             :disabled="state.pausePending"
@@ -393,8 +412,11 @@ onBeforeUnmount(() => {
               <rect x="14" y="5" width="4" height="14" rx="1" />
             </svg>
           </button>
+          <!-- Send and Stop swap on `streaming`, except during a batch: the lot
+               keeps Stop live across the microsecond its own loop spends between
+               two task turns, and Send is inert for the whole lot anyway. -->
           <button
-            v-if="!streaming"
+            v-if="!streaming && !batch.active"
             class="icon-btn chat-send"
             type="button"
             :disabled="!canSend"
@@ -413,8 +435,8 @@ onBeforeUnmount(() => {
             class="icon-btn chat-send chat-stop"
             type="button"
             aria-label="Stop generating"
-            title="Stop"
-            @click="stop"
+            :title="batch.active ? 'Stop the batch' : 'Stop'"
+            @click="batch.active ? stopBatch() : stop()"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -428,8 +450,19 @@ onBeforeUnmount(() => {
         :value="state.draft.raw"
         class="chat-textarea"
         rows="3"
-        placeholder="Ask the model something… (Enter to send, Shift+Enter for a new line)"
-        :aria-label="streaming ? 'WorkBench input (reply streaming)' : 'WorkBench input'"
+        :disabled="batch.active"
+        :placeholder="
+          batch.active
+            ? 'A batch is running — only Stop and Restart are live.'
+            : 'Ask the model something… (Enter to send, Shift+Enter for a new line)'
+        "
+        :aria-label="
+          batch.active
+            ? 'WorkBench input (unavailable while a batch runs)'
+            : streaming
+              ? 'WorkBench input (reply streaming)'
+              : 'WorkBench input'
+        "
         @input="setDraft($event.target.value)"
         @keydown="onKeydown"
       ></textarea>

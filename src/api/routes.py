@@ -42,6 +42,7 @@ from src.config import (
 from src.core.mcphub import load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
 from src.core.bench import run_benchmark
+from src.core import batch as batch_core
 from src.core.chat import stream_chat
 from src.core.job import RunJob
 from src.core.llm import RunCancelled
@@ -277,6 +278,29 @@ class ChatIn(BaseModel):
     # Same conversation-scoped filter for the LSP language servers (the Chat
     # tab's per-conversation LSP toggles).
     lspEnabled: Optional[List[str]] = None
+
+    # Batch mode only: the task lot's big-picture text (the ``NN == 0`` file),
+    # which ``core.chat`` appends to the system message of *every* task turn.
+    # Size-capped with the very number the listing enforced when it handed the
+    # body over, so the two sides cannot drift. Not otherwise validated as
+    # trusted input: this is a single-user app and the same person already owns
+    # ``LLM_SYSPROMPT`` through the settings dialog, so a caller-chosen system
+    # block grants no new privilege.
+    batchContext: Optional[str] = None
+
+    @field_validator("batchContext")
+    @classmethod
+    def _cap_batch_context(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        # Read through the module so a patch of the cap (the tests) applies.
+        cap = batch_core.MAX_BATCH_LOT_BYTES
+        if len(value.encode("utf-8")) > cap:
+            raise ValueError(
+                f"batchContext is too large ({len(value.encode('utf-8'))} "
+                f"bytes, max {cap})"
+            )
+        return value
 
     @field_validator("messages")
     @classmethod
@@ -1164,6 +1188,22 @@ def build_router(state: RunState) -> APIRouter:
             ) from exc
         return {"models": _model_ids(payload)}
 
+    @router.get("/batch/tasks")
+    def get_batch_tasks(prefix: str = "", dir: str = "") -> Dict[str, Any]:
+        """List the numbered task lot of ``prefix`` in the workspace's ``dir``.
+
+        The whole backend surface batch mode has: names, sizes, the first
+        heading and the big-picture body — never a task body (the model opens
+        its task file with the connectors, which is why there is no file-read
+        route here). All the rules (prefix shape, the three folder locks,
+        numbering, caps) live in ``core/batch.py``; this route only turns a
+        :class:`core.batch.BatchListingError` into its HTTP status.
+        """
+        try:
+            return batch_core.task_lot(prefix, dir)
+        except batch_core.BatchListingError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
     @router.post("/chat")
     async def post_chat(body: ChatIn, request: Request) -> StreamingResponse:
         """Stream one chat reply from the benchmark-configured LLM as SSE.
@@ -1218,6 +1258,14 @@ def build_router(state: RunState) -> APIRouter:
                     # there so every conversation starts already knowing the
                     # project's conventions (see ``config.load_agent_instructions``).
                     agent_instructions=agent_instructions_block(),
+                    # The lot's big picture (batch mode only) rides alongside
+                    # the project instructions, never merged into ``sysprompt``:
+                    # that separation is what keeps the TOOL_NOTICE word check
+                    # judging only the prompt the user configured. It is passed
+                    # only when set, so a plain chat request keeps exactly the
+                    # call shape it always had.
+                    **({"batch_instructions": body.batchContext}
+                       if body.batchContext else {}),
                     **tool_kwargs,
                 )
             except Exception as exc:  # noqa: BLE001 — surface any failure to the UI
@@ -1280,6 +1328,17 @@ def build_router(state: RunState) -> APIRouter:
 
     @router.post("/run", status_code=202)
     async def start_run() -> Dict[str, Any]:
+        # Exclusion in the direction ``POST /chat`` already enforces the other
+        # way (409 while a run is in progress): a benchmark must not start
+        # under a streaming chat reply, or two generations fight over the
+        # single _CHAT_HANDLE and the endpoint's own sampling configuration.
+        # Enforced here rather than only by a disabled button, because batch
+        # mode keeps a chat turn streaming for minutes at a time.
+        if _CHAT_TASKS:
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot start a run while a chat reply is streaming",
+            )
         config = _load_config()
         questions = load_questions()
         models = config.model_list()

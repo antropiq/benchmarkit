@@ -13,8 +13,11 @@ LLM context is **reset after every task** — task *N+1* is sent a one-message
 conversation (its instruction), not the transcript of tasks 1…*N*. What carries
 over between tasks is what is on disk (the code, git, `todos/done/`) plus the
 fixed system prompt (configured prompt + `AGENTS.md` + the lot's big picture).
-The browser transcript, by contrast, is *not* wiped: it keeps accumulating so
-the user can still follow the whole lot (§2.4).
+The browser transcript is wiped between tasks too — a `useChat.reset()` that
+leaves the MCP/LSP allowlist alone — so every task is displayed on a clean
+conversation: bubbles, reasoning/tool panel, ctx badge and stopwatch all
+restart from zero, which is the only way the ctx meter can track task *N+1*
+honestly (§2.4). A stopped or failed lot keeps its residue, like Stop does.
 
 The lot is the one this very folder uses: `todos/ed-00-big-picture.md` (the
 big picture) followed by `ed-01…ed-NN` (the tasks). That convention is already
@@ -458,9 +461,13 @@ but building the request from the current turn alone:
 const history = [{ role: 'user', content: text }]
 ```
 
-while the **displayed** thread keeps accumulating (the user still watches the
-whole lot, and the session-save button can still export it). Two invariants to
-enforce in review: `state.messages` is never used to build a batch payload, and
+while the **displayed** thread is wiped between tasks: the loop calls
+`reset({ refetchHubs: false })` once the outcome of a turn has been recorded and
+a next turn really follows (not after the last task, and not after a stop or a
+failure — the lot's residue stays readable, B9). `refetchHubs: false` keeps the
+conversation-scoped MCP/LSP toggles locked, so the whole lot runs on one tool
+set (§2.2). Two invariants to enforce in review: `state.messages` is never used
+to build a batch payload, and
 `core/chat.py:188` stays the only place a system message is created — the client
 never sends one (`ChatMessage.role` is `Literal["user","assistant"]`,
 `routes.py:237`, and that must stay true).
@@ -744,9 +751,10 @@ which is a poor way to test a UI.
    the stopwatch reading `1/3 task` → `2/3 task` as turns complete; the chat
    and reasoning/tool streams scroll throughout.
 4. **Context reset**: with the llama.cpp log (or `LITELLM_DEBUG=1`) open, task 2
-   must arrive with one user message, not task 1's transcript — while the
-   browser thread still shows both. This is the single most important line of
-   this checklist: it is what the feature exists to do.
+   must arrive with one user message, not task 1's transcript — and the browser
+   thread must have been wiped for it, its ctx badge restarting from zero.
+   This is the single most important line of this checklist: it is what the
+   feature exists to do.
 5. The system prompt of *every* task carries the `bt-00` text after `AGENTS.md`
    (same log); unticking "include the big picture" makes it disappear while the
    thread looks otherwise identical.

@@ -1,12 +1,14 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import TabNav from './TabNav.vue'
 import ThemeToggle from './ThemeToggle.vue'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useChat } from '../composables/useChat'
+import { useBatch } from '../composables/useBatch'
 
 const { state, openSettings } = useBenchmark()
 const { state: chat } = useChat()
+const { state: batch, openDialog: openBatchDialog } = useBatch()
 
 const models = computed(() => (state.config?.models ?? []).join(' · '))
 const serverUrl = computed(() => state.config?.serverUrl || '')
@@ -22,13 +24,58 @@ const workspace = computed(() => state.pathLocationCurrent || '')
 const chatBusy = computed(() =>
   ['waiting', 'reasoning', 'answering'].includes(chat.phase),
 )
+
+// A running batch reads `Batch`, ahead of the chat branch. A benchmark run and
+// a batch are mutually exclusive anyway (POST /api/chat 409s while a run is in
+// progress, and POST /api/run now refuses while a reply streams), so the pill
+// can never disagree with the server. Once the lot is over its own outcome
+// keeps the pill for a couple of seconds — long enough to see which of
+// Stop / finish / fail happened — then the chat/run state takes over again.
+const BATCH_PILL_HOLD_MS = 2000
+const BATCH_OUTCOME_CLASS = {
+  stopped: 'status-cancelled',
+  failed: 'status-failed',
+  finished: 'status-finished',
+}
+
+// Transient, so it lives here rather than in useBatch: `batch.status` stays on
+// screen (the progress bar reads it), but the pill must not stay coloured.
+const batchOutcome = ref(null)
+let batchPillTimer = null
+
+function clearBatchPillTimer() {
+  if (batchPillTimer) clearTimeout(batchPillTimer)
+  batchPillTimer = null
+}
+
+watch(
+  () => [batch.active, batch.status],
+  ([active, status]) => {
+    clearBatchPillTimer()
+    batchOutcome.value = active || status === 'idle' ? null : status
+    if (batchOutcome.value) {
+      batchPillTimer = setTimeout(() => {
+        batchOutcome.value = null
+        batchPillTimer = null
+      }, BATCH_PILL_HOLD_MS)
+    }
+  },
+)
+onUnmounted(clearBatchPillTimer)
+
 const pillLabel = computed(() => {
+  if (!running.value && batch.active) return 'Batch'
+  if (!running.value && batchOutcome.value) return `batch ${batchOutcome.value}`
   if (!running.value && chatBusy.value) {
     return chat.phase === 'reasoning' ? 'reasoning...' : 'thinking'
   }
   return state.status
 })
 const pillClass = computed(() => {
+  if (!running.value && batch.active) return 'status-batch'
+  if (!running.value && batchOutcome.value) {
+    return BATCH_OUTCOME_CLASS[batchOutcome.value] ?? 'status-idle'
+  }
   if (!running.value && chatBusy.value) {
     return chat.phase === 'reasoning' ? 'status-reasoning' : 'status-thinking'
   }
@@ -66,12 +113,38 @@ const pillClass = computed(() => {
       <span class="status-pill" :class="pillClass" role="status">
         <span class="status-dot" aria-hidden="true"></span>{{ pillLabel }}
       </span>
+      <!-- Batch mode, immediately left of Settings: a running lot cannot be
+           reconfigured, and a second batch would fight the first one. -->
       <button
         class="icon-btn"
         type="button"
-        :disabled="running"
+        :disabled="running || batch.active"
+        aria-label="Batch mode"
+        :title="
+          batch.active
+            ? 'Unavailable while a batch runs'
+            : running
+              ? 'Available when the benchmark is idle'
+              : 'Batch mode'
+        "
+        @click="openBatchDialog"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 6h10" />
+          <path d="M4 12h16" />
+          <path d="M4 18h7" />
+          <path d="m17 15 3 3-3 3" />
+        </svg>
+      </button>
+      <button
+        class="icon-btn"
+        type="button"
+        :disabled="running || batch.active"
         :aria-label="running ? 'Settings (available when idle)' : 'Open settings'"
-        :title="running ? 'Available when idle' : 'Settings'"
+        :title="
+          running || batch.active ? 'Available when idle' : 'Settings'
+        "
         @click="openSettings"
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"

@@ -2,6 +2,15 @@ import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
 import { loadChatLsp, loadChatMcp } from './useChat'
 
+// Read handle on "a batch is running", registered by useBatch on import — the
+// same one-way hook useChat uses for its hub guards, so the two hubs' owners
+// never have to import the composable that owns the flag.
+let batchGuard = null
+
+export function registerBatchGuard(isRunning) {
+  batchGuard = typeof isRunning === 'function' ? isRunning : null
+}
+
 const state = reactive({
   config: null,
   configError: null,
@@ -405,8 +414,23 @@ export function useBenchmark() {
     return state.status === 'running'
   }
 
+  // A running batch pins the app to WorkBench: the tab buttons are disabled,
+  // but the refusal lives here too so a keyboard path cannot escape mid-lot
+  // (the same rule `status === 'running'` already enforces). Switching *to* the
+  // tab the batch is on stays allowed, which is what lets BatchModeDialog's
+  // Launch perform its own setTab('chat') — the flag is set only afterwards.
+  //
+  // The predicate is registered by useBatch rather than imported: useBenchmark
+  // already imports useChat, and useBatch imports both, so importing useBatch
+  // here would close a cycle. The flag itself stays single-owner
+  // (useBatch.state.active) — this only hands a read handle down.
+  function batchRunning() {
+    return !!batchGuard?.()
+  }
+
   function setTab(tab) {
     if (tab === 'chat' && state.status === 'running') return
+    if (batchRunning() && tab !== state.activeTab) return
     state.activeTab = tab
   }
 
@@ -415,7 +439,7 @@ export function useBenchmark() {
   }
 
   async function openSettings() {
-    if (state.status === 'running' || state.settingsLoading) return
+    if (state.status === 'running' || state.settingsLoading || batchRunning()) return
     state.settingsError = null
     state.settingsLoading = true
     state.settingsOpen = true
@@ -823,6 +847,7 @@ export function useBenchmark() {
     start,
     stop,
     running,
+    batchRunning,
     setTab,
     canStop,
     openSettings,

@@ -180,8 +180,24 @@ export async function loadChatMcp() {
   }
 }
 
+// A running batch is the one caller-owned reason a conversation-scoped hub
+// change must be refused while `phase` is momentarily 'idle' (the window
+// between two task turns). The flag itself belongs to useBatch — this hook is
+// how it reaches the guards below without useChat importing useBatch: the
+// dependency direction stays acyclic (useBatch -> useChat, never the reverse).
+let busyGuard = null
+
+export function registerChatBusyGuard(isBusy) {
+  busyGuard = typeof isBusy === 'function' ? isBusy : null
+}
+
+// True when a reply is streaming, or a batch owns the conversation.
+function chatBusy() {
+  return state.phase !== 'idle' || !!busyGuard?.()
+}
+
 function setChatMcp(id, on) {
-  if (state.mcp.locked || state.phase !== 'idle') return
+  if (state.mcp.locked || chatBusy()) return
   if (!(id in state.mcp.enabled)) return
   state.mcp.enabled[id] = !!on
 }
@@ -215,7 +231,7 @@ export async function loadChatLsp() {
 }
 
 function setChatLsp(id, on) {
-  if (state.lsp.locked || state.phase !== 'idle') return
+  if (state.lsp.locked || chatBusy()) return
   if (!(id in state.lsp.enabled)) return
   state.lsp.enabled[id] = !!on
 }
@@ -243,7 +259,7 @@ function applyHubStatuses(kind, body) {
 
 async function restartHub(kind) {
   const hub = state[kind]
-  if (hub.restarting || state.phase !== 'idle') return
+  if (hub.restarting || chatBusy()) return
   hub.restarting = true
   try {
     const res = await fetch(`/api/${kind}/restart`, { method: 'POST' })
@@ -867,133 +883,187 @@ async function readStream(response, assistant) {
   }
 }
 
+// One streamed turn, end to end: push the two bubbles, open the SSE request
+// and run finish() in its finally. Both entry points call it — `send()` for an
+// interactive message, `sendBatchTurn()` for one batch task — because the
+// pause/truncation/measurement logic below has already been the source of bugs
+// once and must never be forked.
+//
+// `history` is the message list posted to the server and is the ONLY thing
+// that varies between the two: an interactive send sends the whole accumulated
+// thread, a batch task sends its one instruction (B6 — the LLM context is reset
+// per task, while the displayed transcript keeps accumulating). The client
+// never sends a system message: `core/chat.py` stays the only place one is
+// created.
+async function startTurn({ userMessage, history, batchContext = null }) {
+  userStopped = false
+  // Fresh turn: a previous turn's pause must not survive into it (its
+  // fragment already carries its own `paused` flag, which is per message).
+  userPaused = false
+  state.error = null
+  state.messages.push(userMessage)
+  state.messages.push({
+    role: 'assistant',
+    raw: '',
+    html: '',
+    streaming: true,
+    tools: [], // MCP tool calls: { id, tool, server, preview, state, resultPreview }
+    blocks: [], // panel timeline: { kind: 'reasoning', text } | { kind: 'tool', tool }
+    // true between a tool_result and the next round's first answer token:
+    // the token case then opens a tool-icon line in WorkBenchView.
+    pendingStreamQuote: false,
+    tokens: 0,
+    took: 0,
+    ttft: 0,
+    tokensEstimated: false,
+    // Client-side generation timing (see noteGenerated/measuredSeconds):
+    // summed seconds of the closed windows, plus the open window's bounds.
+    generatedSeconds: 0,
+    windowStartAt: 0,
+    lastTokenAt: 0,
+    mcpIteration: 0, // server tool-loop position (gauge)
+    mcpMax: 0, // MAX_TOOL_ITERATION reported by the server
+    usageTokens: 0, // cumulative completion tokens per `usage` event
+    usageDecode: 0, // cumulative decode seconds per `usage` event
+    reasoningChars: 0, // chars of streamed thinking (live tok/s numerator)
+    usageGeneratedChars: 0, // generated chars at the last `usage` baseline
+    usageGeneratedSeconds: 0, // client-measured seconds at that same baseline
+    decode: 0, // cumulative decode seconds from the `done` event
+    contextTokens: 0, // LAST round's prompt + completion = context occupancy
+    contextEstimated: false, // occupancy figure involves a char estimate
+    // Set by a `truncated` error frame: the server ended the stream before
+    // the reply was finished, so this turn is a fragment (see applyEvent).
+    truncated: false,
+    // Set by the `pause_ack` frame: the user interrupted this turn, so its
+    // fragment is deliberately kept in the conversation and the payload says
+    // so (display state, like `truncated` — never written to session JSON).
+    paused: false,
+  })
+  // Keep the reactive proxy so token mutations re-render.
+  const assistant = state.messages[state.messages.length - 1]
+  activeMessage = assistant
+
+  state.phase = 'waiting'
+  state.session.startedAt = Date.now()
+  controller = new AbortController()
+  try {
+    const payload = { messages: history }
+    if (state.mcp.loaded) {
+      // Conversation-scoped allowlist: only the toggles currently on may
+      // contribute tools (intersected with the Settings-activated ids
+      // server-side). Omitted when the snapshot failed to load.
+      payload.mcpEnabled = Object.keys(state.mcp.enabled).filter(
+        (id) => state.mcp.enabled[id],
+      )
+    }
+    if (state.lsp.loaded) {
+      // Same conversation-scoped filter for the LSP language servers.
+      payload.lspEnabled = Object.keys(state.lsp.enabled).filter(
+        (id) => state.lsp.enabled[id],
+      )
+    }
+    if (batchContext) {
+      // The lot's big picture (batch mode): the server appends it to its own
+      // system message, so it rides on every task turn without ever becoming
+      // a visible bubble — which is what survives the per-task context reset.
+      payload.batchContext = batchContext
+    }
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    if (!res.ok || !res.body) {
+      const body = await res.json().catch(() => null)
+      state.error = describeError(body, `Chat request failed (${res.status}).`)
+      if (!assistant.raw) {
+        state.messages.splice(state.messages.indexOf(assistant), 1)
+      }
+      finish(assistant)
+      return
+    }
+    // Accepted send: the conversation has started, so the MCP and LSP
+    // toggles freeze until the restart button resets them (sticky by
+    // design — edit-and-resend of the last message does not unlock them
+    // again).
+    state.mcp.locked = true
+    state.lsp.locked = true
+    await readStream(res, assistant)
+  } catch (exc) {
+    if (exc?.name !== 'AbortError') {
+      state.error = `Could not reach the API: ${exc}`
+    }
+    // Connection drop: keep whatever partial answer arrived; an explicit
+    // Stop is handled in the finally block below.
+  } finally {
+    // A paused reply keeps its fragment (Pause's whole point), except when
+    // nothing was generated: the fallback abort has no `pause_ack` to drop
+    // the empty turn, so it goes here.
+    const discard = (userStopped && !userPaused) || (userPaused && !assistant.raw)
+    if (discard) {
+      // Stop discards the partial reply entirely (including the empty
+      // placeholder and its MCP tool badges). The user message stays so it
+      // can be edited and re-sent; the server-side stream is aborted.
+      const index = state.messages.indexOf(assistant)
+      if (index !== -1) state.messages.splice(index, 1)
+    }
+    finish(assistant)
+  }
+}
+
 export function useChat() {
   async function send() {
     const trimmed = state.draft.raw.trim()
     const pendingImage = state.pendingImage
-    if ((!trimmed && !pendingImage) || state.phase !== 'idle') return
+    // An interactive send is refused while a batch owns the conversation
+    // (chatBusy, not just the phase: the composer is also shut in the idle
+    // window between two task turns). sendBatchTurn below deliberately checks
+    // the phase only — that window is exactly when it must be able to fire.
+    if ((!trimmed && !pendingImage) || chatBusy()) return
 
-    userStopped = false
-    // Fresh send: a previous turn's pause must not survive into it (its
-    // fragment already carries its own `paused` flag, which is per message).
-    userPaused = false
-    state.error = null
     // Reuse the preview HTML rendered by setDraft; re-render only if Enter
     // beat the debounce (or nothing was ever rendered for this text).
     const html = flushDraftHtml(trimmed)
     clearDraft()
-    state.messages.push({
+    const userMessage = {
       role: 'user',
       raw: trimmed,
       html,
       streaming: false,
       images: pendingImage ? [{ ...pendingImage }] : [],
-    })
-    state.pendingImage = null
-    const history = state.messages.map(messagePayload)
-    state.messages.push({
-      role: 'assistant',
-      raw: '',
-      html: '',
-      streaming: true,
-      tools: [], // MCP tool calls: { id, tool, server, preview, state, resultPreview }
-      blocks: [], // panel timeline: { kind: 'reasoning', text } | { kind: 'tool', tool }
-      // true between a tool_result and the next round's first answer token:
-      // the token case then opens a tool-icon line in WorkBenchView.
-      pendingStreamQuote: false,
-      tokens: 0,
-      took: 0,
-      ttft: 0,
-      tokensEstimated: false,
-      // Client-side generation timing (see noteGenerated/measuredSeconds):
-      // summed seconds of the closed windows, plus the open window's bounds.
-      generatedSeconds: 0,
-      windowStartAt: 0,
-      lastTokenAt: 0,
-      mcpIteration: 0, // server tool-loop position (gauge)
-      mcpMax: 0, // MAX_TOOL_ITERATION reported by the server
-      usageTokens: 0, // cumulative completion tokens per `usage` event
-      usageDecode: 0, // cumulative decode seconds per `usage` event
-      reasoningChars: 0, // chars of streamed thinking (live tok/s numerator)
-      usageGeneratedChars: 0, // generated chars at the last `usage` baseline
-      usageGeneratedSeconds: 0, // client-measured seconds at that same baseline
-      decode: 0, // cumulative decode seconds from the `done` event
-      contextTokens: 0, // LAST round's prompt + completion = context occupancy
-      contextEstimated: false, // occupancy figure involves a char estimate
-      // Set by a `truncated` error frame: the server ended the stream before
-      // the reply was finished, so this turn is a fragment (see applyEvent).
-      truncated: false,
-      // Set by the `pause_ack` frame: the user interrupted this turn, so its
-      // fragment is deliberately kept in the conversation and the payload says
-      // so (display state, like `truncated` — never written to session JSON).
-      paused: false,
-    })
-    // Keep the reactive proxy so token mutations re-render.
-    const assistant = state.messages[state.messages.length - 1]
-    activeMessage = assistant
-
-    state.phase = 'waiting'
-    state.session.startedAt = Date.now()
-    controller = new AbortController()
-    try {
-      const payload = { messages: history }
-      if (state.mcp.loaded) {
-        // Conversation-scoped allowlist: only the toggles currently on may
-        // contribute tools (intersected with the Settings-activated ids
-        // server-side). Omitted when the snapshot failed to load.
-        payload.mcpEnabled = Object.keys(state.mcp.enabled).filter(
-          (id) => state.mcp.enabled[id],
-        )
-      }
-      if (state.lsp.loaded) {
-        // Same conversation-scoped filter for the LSP language servers.
-        payload.lspEnabled = Object.keys(state.lsp.enabled).filter(
-          (id) => state.lsp.enabled[id],
-        )
-      }
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      })
-      if (!res.ok || !res.body) {
-        const body = await res.json().catch(() => null)
-        state.error = describeError(body, `Chat request failed (${res.status}).`)
-        if (!assistant.raw) {
-          state.messages.splice(state.messages.indexOf(assistant), 1)
-        }
-        finish(assistant)
-        return
-      }
-      // Accepted send: the conversation has started, so the MCP and LSP
-      // toggles freeze until the restart button resets them (sticky by
-      // design — edit-and-resend of the last message does not unlock them
-      // again).
-      state.mcp.locked = true
-      state.lsp.locked = true
-      await readStream(res, assistant)
-    } catch (exc) {
-      if (exc?.name !== 'AbortError') {
-        state.error = `Could not reach the API: ${exc}`
-      }
-      // Connection drop: keep whatever partial answer arrived; an explicit
-      // Stop is handled in the finally block below.
-    } finally {
-      // A paused reply keeps its fragment (Pause's whole point), except when
-      // nothing was generated: the fallback abort has no `pause_ack` to drop
-      // the empty turn, so it goes here.
-      const discard =
-        (userStopped && !userPaused) || (userPaused && !assistant.raw)
-      if (discard) {
-        // Stop discards the partial reply entirely (including the empty
-        // placeholder and its MCP tool badges). The user message stays so it
-        // can be edited and re-sent; the server-side stream is aborted.
-        const index = state.messages.indexOf(assistant)
-        if (index !== -1) state.messages.splice(index, 1)
-      }
-      finish(assistant)
     }
+    state.pendingImage = null
+    // The whole accumulated thread, the new turn last — exactly what send()
+    // posted before startTurn was factored out.
+    const history = [
+      ...state.messages.map(messagePayload),
+      messagePayload(userMessage),
+    ]
+    await startTurn({ userMessage, history })
+  }
+
+  // Batch mode's entry point: one task instruction, one turn. Returns whether
+  // the turn was *started* (false on an empty instruction or a reply already
+  // streaming) — the batch loop needs that flag instead of awaiting a phase
+  // change that would never come. The payload deliberately carries this turn
+  // alone: `state.messages` is never used to build a batch request, so task N+1
+  // arrives with no trace of task N's transcript (B6).
+  function sendBatchTurn(text, { batchContext = null } = {}) {
+    const trimmed = typeof text === 'string' ? text.trim() : ''
+    if (!trimmed || state.phase !== 'idle') return false
+    startTurn({
+      userMessage: {
+        role: 'user',
+        raw: trimmed,
+        html: renderMarkdown(trimmed),
+        streaming: false,
+        images: [],
+      },
+      history: [{ role: 'user', content: trimmed }],
+      batchContext,
+    })
+    return true
   }
 
   function stop() {
@@ -1029,7 +1099,7 @@ export function useChat() {
   }
 
   function editLast() {
-    if (state.phase !== 'idle') return
+    if (chatBusy()) return
     let index = -1
     for (let i = state.messages.length - 1; i >= 0; i -= 1) {
       if (state.messages[i].role === 'user') {
@@ -1052,7 +1122,7 @@ export function useChat() {
   // reply is streaming — the "must not be running" rule lives here, not only
   // on the button, exactly as in editLast()/reset().
   function loadSession(parsed) {
-    if (state.phase !== 'idle') return null
+    if (chatBusy()) return null
     const items = Array.isArray(parsed?.messages) ? parsed.messages : []
     if (!items.length) return { restored: 0 }
 
@@ -1120,7 +1190,11 @@ export function useChat() {
     return { restored: state.messages.length }
   }
 
-  function reset() {
+  // `refetchHubs: false` is batch mode's between-task wipe: the conversation
+  // is wiped but the conversation-scoped MCP/LSP allowlist must NOT be re
+  // seeded, or a connector that appeared mid-lot would silently join the tool
+  // set of the remaining tasks. The toggles stay locked for the whole lot.
+  function reset({ refetchHubs = true } = {}) {
     if (controller) controller.abort()
     state.messages = []
     state.error = null
@@ -1131,6 +1205,7 @@ export function useChat() {
     // `assistant.streaming` is already false (the guard in applyEvent).
     state.pausePending = false
     userPaused = false
+    if (!refetchHubs) return
     // New conversation: MCP and LSP toggles unlock against freshly fetched
     // snapshots, keeping the previous on/off choices (the loaders seed the
     // new lists from them).
@@ -1143,6 +1218,7 @@ export function useChat() {
   return {
     state,
     send,
+    sendBatchTurn,
     stop,
     pause,
     reset,

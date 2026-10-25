@@ -2,6 +2,7 @@
 import { computed, onMounted } from 'vue'
 import AppBar from './components/AppBar.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
+import BatchModeDialog from './components/BatchModeDialog.vue'
 import MetricCard from './components/MetricCard.vue'
 import RunControls from './components/RunControls.vue'
 import Chronometer from './components/Chronometer.vue'
@@ -37,6 +38,10 @@ const scorePercent = computed(() =>
   <AppBar />
 
   <SettingsDialog />
+
+  <!-- Mounted here (not inside WorkBenchView) so the lot form survives a tab
+       switch, exactly like the settings dialog. -->
+  <BatchModeDialog />
 
   <main v-show="onBenchmarkTab" class="app-shell">
     <aside class="stats-col">

@@ -9,8 +9,10 @@ import { useMemory } from '../composables/useMemory.js'
 import { useAutoScroll } from '../composables/useAutoScroll.js'
 import { useBenchmark } from '../composables/useBenchmark.js'
 import { useSplitter } from '../composables/useSplitter.js'
+import { useBatch } from '../composables/useBatch.js'
 
 const { state, editLast, clearImage, loadChatLsp, loadChatMcp } = useChat()
+const { state: batch } = useBatch()
 const { state: benchmarkState, loadConfig } = useBenchmark()
 const { loadMemory } = useMemory()
 
@@ -81,7 +83,7 @@ const {
         <template v-for="(message, i) in state.messages" :key="i">
           <div v-if="message.role === 'user'" class="chat-user-row">
             <button
-              v-if="i === lastUserIndex && state.phase === 'idle'"
+              v-if="i === lastUserIndex && state.phase === 'idle' && !batch.active"
               class="icon-btn chat-edit-btn"
               type="button"
               aria-label="Edit and resend"

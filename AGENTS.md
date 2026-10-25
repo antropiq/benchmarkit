@@ -53,6 +53,7 @@ report progress through it.
 | `core/bench.py` | Benchmark loop: question → answer → verify → emit. |
 | `core/chat.py` | One streamed chat reply, including the shared tool-call loop. |
 | `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
+| `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
 | `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |
@@ -163,6 +164,10 @@ Four rules tie them together:
   `check_command_allowed` is the same parse), and each connector's reach is
   bounded by a deny-list — `lsp_connectors/restricted-paths.txt` for paths,
   `mcp_connectors/restricted-fqdn.txt` for hosts.
+- **Batch mode never touches file contents**: the `todos/` lot is *listed*
+  through the shared deny-list (`core/batch.py`, one read-only route) and
+  *read/written* only through the connectors; its loop is client-side
+  (`useBatch.js`), so a reload discards a running lot.
 - **AGENTS.md feeds the chat**: when the working location carries an
   `AGENTS.md`, it is appended to every chat system prompt, re-read per request.
   Keep it accurate and short — the model acts on it.
@@ -201,7 +206,7 @@ Four rules tie them together:
 ## Editing AGENTS.md
 
 - This file is injected into every WorkBench system prompt, so its size is paid
-  for on each message. Stay under ~200 lines.
+  for on each message. Stay under ~300 lines.
 - Describe the **big picture**: what the pieces are and which invariants hold.
   Route-level detail, exhaustive lists and per-feature essays belong in the
   code, the README, or a doc comment next to the thing they describe.

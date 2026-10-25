@@ -1,8 +1,10 @@
 <script setup>
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
+import { useBatch } from '../composables/useBatch'
 
 const { state, setChatMcp, restartMcp } = useChat()
+const { state: batch } = useBatch()
 
 // Status dot next to each switch: green when the connector serves its
 // tools, red on a startup/configuration error, gray otherwise (stopped,
@@ -17,9 +19,18 @@ const DOT_CLASS = {
 const visible = computed(
   () => state.mcp.loaded && state.mcp.connectors.length > 0,
 )
-const locked = computed(() => state.mcp.locked || state.phase !== 'idle')
+// The toggles freeze with the first accepted send anyway; the batch flag covers
+// the between-tasks window, so a lot really does run under one identical tool
+// set (useChat's own guard refuses the change too, so the rule lives in both
+// places it can be reached from).
+const locked = computed(
+  () => state.mcp.locked || state.phase !== 'idle' || batch.active,
+)
 
 function rowTitle(connector) {
+  if (batch.active) {
+    return 'Unavailable while a batch runs — stop it to change the tools'
+  }
   if (locked.value) {
     return 'Toggles apply to the next conversation — restart to change them'
   }
@@ -34,13 +45,13 @@ function rowTitle(connector) {
 // button is only usable on an idle conversation, and stays busy until the
 // awaited server-side restart comes back.
 const canRestart = computed(
-  () => state.phase === 'idle' && !state.mcp.restarting,
+  () => state.phase === 'idle' && !state.mcp.restarting && !batch.active,
 )
-const restartTitle = computed(() =>
-  state.mcp.restarting
-    ? 'Restarting MCP connectors…'
-    : 'Restart the MCP hub: reconnect every connector from externals.json',
-)
+const restartTitle = computed(() => {
+  if (batch.active) return 'Unavailable while a batch runs'
+  if (state.mcp.restarting) return 'Restarting MCP connectors…'
+  return 'Restart the MCP hub: reconnect every connector from externals.json'
+})
 </script>
 
 <template>

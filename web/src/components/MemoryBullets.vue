@@ -1,11 +1,13 @@
 <script setup>
 import { useChat } from '../composables/useChat'
+import { useBatch } from '../composables/useBatch'
 import { MEMORY_DEFAULT_COLOR, MEMORY_SLOT_COUNT, useMemory } from '../composables/useMemory'
 
 const emit = defineEmits(['configure'])
 
 const { state: memory } = useMemory()
 const { appendDraft } = useChat()
+const { state: batch } = useBatch()
 
 // Tooltip preview cap (the full text stays on disk).
 const TOOLTIP_MAX_CHARS = 150
@@ -46,6 +48,7 @@ function tooltip(data) {
 // Filled bullet: click appends its text to the draft, Ctrl/Cmd+click (or a
 // click on an empty slot) opens the registration dialog.
 function onClick(event, index) {
+  if (batch.active) return
   const data = slot(index)
   if (isFilled(data) && !event.ctrlKey && !event.metaKey) {
     appendDraft(data.content)
@@ -63,7 +66,8 @@ function onClick(event, index) {
       type="button"
       class="memory-bullet"
       :style="bulletStyle(slot(n - 1))"
-      :title="tooltip(slot(n - 1))"
+      :disabled="batch.active"
+      :title="batch.active ? 'Unavailable while a batch runs' : tooltip(slot(n - 1))"
       :aria-label="
         isFilled(slot(n - 1))
           ? `Memory bullet ${n} (edit with Ctrl+click)`

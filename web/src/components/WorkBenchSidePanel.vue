@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { liveTokenRate, useChat } from '../composables/useChat'
 import { useBenchmark } from '../composables/useBenchmark'
 import ChatStopwatch from './ChatStopwatch.vue'
+import BatchProgressBar from './BatchProgressBar.vue'
 
 const { state } = useChat()
 const { state: benchmarkState } = useBenchmark()
@@ -130,5 +131,6 @@ const contextClass = computed(() => {
       </span>
     </span>
     <ChatStopwatch />
+    <BatchProgressBar />
   </aside>
 </template>
