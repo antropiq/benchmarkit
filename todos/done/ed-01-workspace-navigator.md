@@ -150,3 +150,23 @@ restoring it), plus `editorfs.constants` where a cap is exercised:
 * `F5` on a deep expansion: state resets, first paint stays fast.
 * Keyboard-only navigation reaches every row; screen-reader labels read out the
   depth and the expanded state.
+
+## Delivered
+
+| File | Change |
+|---|---|
+| `src/core/editorfs/constants.py` | `MAX_TREE_ENTRIES_PER_DIR`, `MAX_EDITOR_BYTES`, `BINARY_SNIFF_BYTES`, `IGNORED_DIR_NAMES` — patchable module attributes |
+| `src/core/editorfs/policy.py` | `resolve_in_workspace` (the three locks + `path_policy.deny_reason`), `listable` / `writable`, `WorkspacePathError` carrying the HTTP status; the workspace root re-checked against `lsphub.restricted_lsp_roots()` |
+| `src/core/editorfs/tree.py` | `list_dir` — one level, dirs first, `mtime` on both kinds, `children` from one `any()`, denied siblings omitted, symlinked dirs never followed, exact `truncated` cap |
+| `src/core/editorfs/files.py` | `stat_paths` for ed-09 (denied paths refuse rather than answer `exists: false`) |
+| `src/api/routes.py` | `GET /api/fs/tree`, `GET /api/fs/stat` — status mapping only |
+| `web/src/composables/useWorkspaceTree.js` | singleton: `nodes` cache, `expanded`, `focused`, `selected`, `load/refresh/expand/collapse/toggle/select`, the keyboard model, `entryFor`, `rootLabel` |
+| `web/src/components/WorkspaceNavigator.vue` | header (workspace basename + refresh), root row, error line, policy footer |
+| `web/src/components/WorkspaceTreeItem.vue` | recursive row: chevron/file-folder SVGs, `role="treeitem"`, `aria-level/expanded/posinset/setsize`, roving tabindex |
+| `web/src/styles/theme.css` | `/* -- editor screen */` block: `.editor-nav`, `.tree-row` with `--tree-depth` indent, selection in `--pico-primary`, inline-SVG icon sizing |
+| `web/src/App.vue` | dev preview only: `?editor-preview=1` mounts the navigator over the Benchmark screen (removed by ed-02) |
+| `tests/test_editorfs.py` | 27 tests — listing shape, the three locks incl. the symlink and the LSP root guard, 404/400, the exact entry cap, the `stat` probe, and the read-only assertion (no non-`GET` route under `/api/fs`) |
+| `AGENTS.md` | one line for `core/editorfs/` in the module table |
+
+In practice the tree is rendered behind `?editor-preview=1`; the Editor tab
+itself (and the sidebar splitter) is ed-02's job.
