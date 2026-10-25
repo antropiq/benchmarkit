@@ -134,3 +134,48 @@ Extend `tests/test_editorfs.py`:
 * Click a 4 MB `results.json`-sized file: refusal names the size.
 * Reload with three tabs open: the tabs are not restored in this step (parked
   with persistence in ed-08) — noted so it is not mistaken for a bug.
+
+## Delivered
+
+| File | Change |
+|---|---|
+| `src/core/editorfs/files.py` | `read_file` (the payload above: cap → 413 naming the size, NUL-in-8 KiB / non-UTF-8 → `binary: true` with no `text` key, `truncated` + `truncatedAt`, byte-exact text) and `LANGUAGE_BY_EXTENSION` + `language_for`, patchable through `editorfs.constants` |
+| `src/api/routes.py` | `GET /api/fs/file` — status mapping only, like the tree and the probe |
+| `src/core/editorfs/__init__.py` | re-exports `read_file`; the package docstring's ed-03 note becomes the description of what is there |
+| `web/src/composables/useEditorFiles.js` | new singleton: `open/active/loading/message`, `openFile` (append-or-focus, never refetch), `closeFile` (focuses the neighbour), `focusFile`, `reloadFile` (ed-09's entry point, bumps `reloadedAt`), `humanSize`, `MAX_GUTTER_LINES`; records carry `mtime`, `language`, `stale`, no `dirty` (D4) |
+| `web/src/components/EditorArea.vue` | tab chips (`role="tablist"`, roving `←→`/`Home`/`End`, middle-click and `Ctrl+W` close), the `<pre class="editor-raw">` body with a sticky line-number gutter, the >2000-line note, and `.alert-error` / binary messages with the path echoed |
+| `web/src/composables/useWorkspaceTree.js` | the `select()` comment now names ed-03 as the consumer (no behaviour change) |
+| `web/src/styles/theme.css` | `.editor-tab` chips, `.editor-body-col`, `.editor-raw-scroll`, `.editor-gutter`, `.editor-raw` (`white-space: pre`, `tab-size: 4`, mono); `.editor-body` now `overflow: hidden` so the scroll is the text's |
+| `tests/test_editorfs.py` | 45 new tests (26 → 71) — payload shape, all 19 extension rows + dotfiles, the deny-list naming its rule, the three escape locks, the symlink, 413, NUL, invalid UTF-8, CRLF, the cap race's `truncated`/`truncatedAt`, a cap cut mid-character, 404/400, and the connector-source boundary below |
+| `AGENTS.md` | the `core/editorfs/` row now mentions the read half |
+
+### What differs from the plan, and why
+
+* **`mcp_connectors/…` is not a read refusal, and cannot be.** The plan listed
+  it among the 4xx names; `path_policy.deny_reason(…, for_write=False)` puts
+  that directory in `DENY_COMPONENTS` (write-only) rather than in
+  `DENY_COMPONENTS_SECRET`, so the tree already *lists* `console_mcp.py` — and
+  the read endpoint refusing what the tree offers is exactly the disagreement
+  D3 forbids. A test now states the boundary: the connector *sources* read fine
+  (they are this project's own code, and read-only anyway), while a secret
+  *name* inside that folder (`mcp_connectors/id_ed25519`) still answers 422.
+* **`binary` answers also cover non-UTF-8 text, and a cap cut is not binary.**
+  The plan's sniff (NUL, decode error) is implemented verbatim; what the plan
+  left open is the interaction with truncation. A slice that ends mid-character
+  would flag a perfectly ordinary UTF-8 file as binary, so the tail fragment is
+  dropped instead — `truncated: true` already says the rest is missing.
+* **`size` is re-stated when the read ran past the cap.** The stat and the read
+  are two calls, so a file growing between them leaves `size` below what was
+  read; in that branch only, the size is re-stat'ed (bounded below by
+  `cap + 1`, the number the read proved). No new code path runs on a normal
+  read.
+* **Language id keys on the asked-for name, not the realpath.** A symlink's
+  target basename is another name on disk; the id should describe the row that
+  was clicked. Dotfiles and dot-less names (`Makefile`, `Dockerfile`) fall to
+  `plaintext` — `str.rfind('.') <= 0`, one condition covering both.
+* **The pane's `error: null` is a `message` object.** One field answers both
+  the refusals and the non-errors (binary, truncation) that ed-03 has to
+  distinguish, and it carries the path the plan asks the pane to echo. A
+  message does not blank an already-open buffer: the tree's selection and the
+  active buffer are separate state, so a refused click leaves the previous
+  file on screen with the reason above it.
