@@ -2109,7 +2109,11 @@ body {
    The Editor tab (ed-02 …): a grid with the navigator spanning both rows on
    the left, the code pane in the right column's top row and the terminal strip
    under it. The two splitter bars are grid tracks of their own, so the panes
-   never shift when a track is resized. */
+   never shift when a track is resized.
+
+   The shell has no padding and the grid no gap: the three panels take the
+   whole area under the app bar and meet along the splitter bars, so the screen
+   is filled edge to edge and none of them has rounded corners. */
 
 .editor-shell {
   /* Tracks. `auto` is a resizer bar, so a dragged size only ever names a pane;
@@ -2120,11 +2124,11 @@ body {
   display: grid;
   grid-template-columns: var(--bi-editor-sidebar) auto minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto var(--bi-editor-terminal);
-  gap: var(--bi-space-2);
+  gap: 0;
   box-sizing: border-box;
   width: 100%;
   height: calc(100vh - var(--bi-appbar-height));
-  padding: var(--bi-space-2) clamp(1rem, 3vw, 2rem) var(--bi-space-3);
+  padding: 0;
 }
 
 /* Placement stated explicitly rather than left to auto-placement, so adding a
@@ -2200,9 +2204,8 @@ body {
   min-width: 0;
   padding: var(--bi-space-1) 0;
   border: 1px solid var(--bi-border);
-  border-radius: var(--bi-radius-lg);
+  border-radius: 0;
   background-color: var(--bi-surface);
-  box-shadow: var(--bi-shadow-sm);
 }
 
 .editor-nav-head {
@@ -2263,6 +2266,27 @@ body {
   padding-left: calc(var(--bi-space-2) + 0.85rem * var(--tree-depth, 0));
 }
 
+/* Pico's input-group rules match *any* [role="group"], and every opened folder
+   is wrapped in one (WorkspaceTreeItem.vue) for ARIA. Left alone they apply to
+   the wrapper — `display: inline-flex`, a `margin-bottom`, and the
+   `> :not(:first-child)` radius squashing — so the entries of a folder lay out
+   side by side instead of stacked under it. The reset mirrors the one above
+   .memory-bullets: `.tree-group` ties [role="group"] on specificity (0,1,0) and
+   wins on source order (theme.css loads after Pico), and the child rule
+   outranks [role="group"] > :not(:first-child) (0,2,0) to give a row back the
+   rounded corners the hover and focus highlight need. */
+.tree-group {
+  display: block;
+  width: auto;
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.tree-group > .tree-row {
+  border-radius: var(--pico-border-radius);
+}
+
 .tree-row:hover {
   background-color: var(--bi-surface-2);
 }
@@ -2289,6 +2313,20 @@ body {
 
 .tree-icon {
   display: inline-flex;
+  /* A Nerd Font glyph picked by file type (web/src/lib/file-icons.js), not an
+     SVG. The leading family is the icons-only face, whose unicode-range is
+     exactly the code points that module emits, so only the glyph can fall
+     through to it — the label next to it keeps the normal mono face. The fixed
+     box keeps the label column aligned whatever glyph a row draws, and the
+     centre keeps a wide glyph (a language logo) on the same axis as a narrow
+     one (a plain file). */
+  font-family: 'JetBrains Mono Nerd Icons', var(--pico-font-family-monospace);
+  font-size: 0.85rem;
+  font-weight: 400;
+  line-height: 1;
+  flex: 0 0 auto;
+  width: 1.05rem;
+  justify-content: center;
   color: var(--pico-muted-color);
 }
 
@@ -2318,76 +2356,124 @@ body {
 .editor-area {
   display: flex;
   flex-direction: column;
-  gap: var(--bi-space-1);
   min-height: 0;
-  padding: var(--bi-space-1) 0 var(--bi-space-2);
+  padding: 0;
   border: 1px solid var(--bi-border);
-  border-radius: var(--bi-radius-lg);
+  border-radius: 0;
   background-color: var(--bi-surface);
-  box-shadow: var(--bi-shadow-sm);
 }
 
 .editor-area-head {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: space-between;
   gap: var(--bi-space-2);
-  padding: 0 var(--bi-space-2);
+  padding: 0;
   border-bottom: 1px solid var(--bi-border);
-  min-height: 2rem;
+  min-height: 2.1rem;
 }
 
 /* The open-file tabs: one chip per buffer (ed-04 keeps this markup, and its
-   CodeMirror panes replace the body below). */
+   Monaco replaces the body below). They are square cells *of* the header strip:
+   they stretch to its full height, with no gap and no radius between them, so
+   the borders they share read as the dividers between tabs. */
 .editor-tabs {
   display: flex;
-  align-items: center;
-  gap: var(--bi-space-1);
+  align-items: stretch;
+  gap: 0;
   min-width: 0;
   overflow-x: auto;
 }
 
 /* A chip is a span wrapping two buttons (a button cannot contain one), so it
-   carries the path in `title` and the active state. */
+   carries the path in `title` and the active state: an inset bar along its top
+   edge marks the selected one, and the same bar (lighter) marks the one the
+   keyboard is on. Inset, because the strip clips horizontally. */
 .editor-tab {
   display: inline-flex;
   align-items: center;
-  gap: 0.15rem;
+  flex: 0 0 auto;
+  gap: 0;
   max-width: 22ch;
-  padding: 0.1rem 0.15rem 0.1rem 0.45rem;
+  padding: 0;
   border: 1px solid var(--bi-border);
-  border-radius: 999px;
+  border-bottom: 0;
+  border-radius: 0;
   background-color: var(--bi-surface);
   color: var(--pico-muted-color);
 }
 
+/* Whole-tab hover (the inner buttons stay transparent, so it shows through):
+   the tab is one clickable surface, so the feedback belongs to the cell. */
+.editor-tab:not(.active):hover {
+  background-color: var(--bi-surface-2);
+}
+
+/* Adjacent tabs share one line rather than drawing two. */
+.editor-tab + .editor-tab {
+  border-left: 0;
+}
+
 .editor-tab.active {
-  border-color: color-mix(in srgb, var(--pico-primary) 45%, var(--bi-border));
-  background-color: color-mix(in srgb, var(--pico-primary) 10%, var(--bi-surface));
+  box-shadow: inset 0 2px 0 var(--pico-primary);
   color: var(--pico-color);
 }
 
+/* The roving tabindex normally puts the keyboard on the selected chip; this is
+   the case where the two differ — ← → moved the caret, not the file. */
+.editor-tab:focus-within {
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--pico-primary) 45%, transparent);
+}
+
+.editor-tab.active:focus-within {
+  box-shadow: inset 0 2px 0 var(--pico-primary);
+}
+
+/* The name button fills the rest of the cell, so clicking anywhere on the tab
+   that is not the × selects the file. */
 .editor-tab-name {
-  padding: 0;
+  display: grid;
+  place-items: center start;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 0.25rem 0 0.6rem;
   border: 0;
+  border-radius: 0;
   background: none;
   font-family: var(--pico-font-family-monospace);
   font-size: 0.75rem;
-  line-height: 1.4;
   color: inherit;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
 
+/* Pico gives a focused button its own ring; the chip's inset bar already marks
+   the caret, so the inner buttons add none of their own. */
+.editor-tab-name:focus,
+.editor-tab-close:focus {
+  box-shadow: none;
+}
+
+/* The grid item that clips: ellipsis has to sit on the box the text is in, not
+   on the cell that sizes it. */
+.editor-tab-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .editor-tab-close {
+  display: grid;
+  place-items: center;
   flex: 0 0 auto;
-  padding: 0 0.3rem;
+  align-self: stretch;
+  width: 1.4rem;
+  padding: 0;
   border: 0;
+  border-radius: 0;
   background: none;
   font-size: 0.95rem;
-  line-height: 1;
   color: var(--pico-muted-color);
   cursor: pointer;
 }
@@ -2398,6 +2484,8 @@ body {
 
 .editor-badge {
   flex: 0 0 auto;
+  align-self: center;
+  padding-right: var(--bi-space-2);
   font-size: 0.68rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -2450,43 +2538,17 @@ body {
   flex: 0 0 auto;
 }
 
-/* One scroll container for gutter and text together, so a horizontal scroll
-   never separates a line from its number; the gutter sticks to the left edge
-   while the text slides under it. `white-space: pre` guarantees one row per
-   line, which is what keeps the two columns aligned. */
-.editor-raw-scroll {
+/* The Monaco host: the pane gives it the box, Monaco owns everything inside
+   it (its own scrollers, its own line-number gutter), so nothing here may
+   add padding or a border — Monaco measures this element.
+   `monaco-pico.css` (imported by MonacoEditor.vue) is what keeps Pico's
+   element rules off Monaco's own textarea/input/button DOM. */
+.editor-monaco {
   flex: 1 1 auto;
   min-height: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--bi-space-2);
-  overflow: auto;
-}
-
-.editor-gutter {
-  position: sticky;
-  left: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0;
-  padding-right: var(--bi-space-1);
-  border-right: 1px solid var(--bi-border);
-  font-family: var(--pico-font-family-monospace);
-  font-size: 0.8rem;
-  line-height: 1.5;
-  color: var(--pico-muted-color);
-  user-select: none;
-}
-
-.editor-raw {
-  margin: 0;
-  font-family: var(--pico-font-family-monospace);
-  font-size: 0.8rem;
-  line-height: 1.5;
-  white-space: pre;
-  tab-size: 4;
-  color: var(--pico-color);
+  border: 0;
+  border-radius: 0;
+  overflow: hidden;
 }
 
 /* -- terminal strip (ed-06 / ed-07 mount the real session here) --------------- */
@@ -2496,9 +2558,8 @@ body {
   flex-direction: column;
   min-height: 0;
   border: 1px solid var(--bi-border);
-  border-radius: var(--bi-radius-lg);
+  border-radius: 0;
   background-color: var(--bi-surface);
-  box-shadow: var(--bi-shadow-sm);
   overflow: hidden;
 }
 
@@ -2511,11 +2572,27 @@ body {
 }
 
 .editor-terminal-title {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--pico-muted-color);
+}
+
+/* pid + cwd from the `open` frame. Not uppercase (an absolute path must read
+   as typed) and clipped with an ellipsis so a long workspace path never pushes
+   the status/buttons off the header. */
+.editor-terminal-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.8;
 }
 
 .editor-terminal-state {
@@ -2525,24 +2602,80 @@ body {
   margin-right: auto;
 }
 
-/* Reconnect dot: muted while there is no session; ed-07 adds the live and
-   reconnecting tones from the status-pill palette already in use. */
+/* Reconnect dot: muted while there is no session; the live and connecting
+   tones reuse the status-pill palette already in use (bi-*). */
 .editor-terminal-dot {
   background-color: color-mix(in srgb, var(--pico-muted-color) 45%, transparent);
 }
 
+.editor-terminal-dot--open {
+  background-color: var(--bi-success);
+}
+
+.editor-terminal-dot--connecting {
+  background-color: var(--bi-info);
+  animation: bi-pulse 1.2s ease-in-out infinite;
+}
+
+.editor-terminal-dot--error {
+  background-color: var(--bi-danger);
+}
+
+.editor-terminal-new,
 .editor-terminal-kill {
   width: 28px;
   height: 28px;
+  flex: none;
 }
 
+/* Body fills the strip and is the sizing context for xterm. The host must take
+   the whole box (fit() reads its clientWidth/Height), so the not-running banner
+   is an overlay, not a sibling that would steal rows from the grid. */
 .editor-terminal-body {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--bi-space-1) var(--bi-space-2);
+}
+
+.editor-term-host {
+  position: absolute;
+  inset: 0;
+  padding: 2px 0 0 4px;
+  min-height: 0;
+}
+
+/* xterm paints into .xterm inside the host; match the app surface so no
+   stray white edge appears before the JS theme applies, and keep the body's
+   own surface behind it. */
+.editor-term-host .xterm {
+  height: 100%;
+}
+
+.editor-term-banner {
+  position: absolute;
+  top: var(--bi-space-1);
+  left: var(--bi-space-2);
+  right: var(--bi-space-2);
+  pointer-events: none;
+}
+
+/* web-links hover: the full URL, so a printed link is diagnosable before the
+   user opens it (the click uses the default window.open handler). */
+.term-link-tooltip {
+  position: absolute;
+  z-index: 10;
+  max-width: 60%;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--bi-border);
+  background-color: var(--bi-surface-2);
+  color: var(--pico-color);
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 /* -- narrow screens: one column, tree as a drawer ------------------------------

@@ -2,6 +2,12 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import WorkspaceTreeItem from './WorkspaceTreeItem.vue'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
+import { fileIcon } from '../lib/file-icons'
+// The rows render Nerd Font glyphs (lib/file-icons). This CSS declares the
+// "JetBrains Mono Nerd Icons" face those code points need; it is unicode-range-
+// gated to exactly them, so the woff2 is only fetched once a glyph actually
+// asks for it, and the file name beside it stays on the normal mono face.
+import '../fonts/nerd-fonts.css'
 
 // The Editor tab's file tree (ed-01): header with the workspace it browses,
 // the recursive tree, and the footer that explains the omissions the connector
@@ -32,6 +38,10 @@ const rootTitle = computed(
 )
 // aria-level of the root row (its children are one deeper each).
 const rootLevel = computed(() => depthOf(ROOT) + 1)
+// The root is a folder like any other, so it carries the same glyph (open, as
+// it always is at the top) — without it the first level of children would not
+// line up under their parent's icon.
+const rootIcon = computed(() => fileIcon('', { dir: true, open: !!state.expanded[ROOT] }))
 
 const tree = ref(null)
 
@@ -104,6 +114,7 @@ async function onKeydown(event) {
             <path d="m9 18 6-6-6-6" />
           </svg>
         </span>
+        <span class="tree-icon" aria-hidden="true">{{ rootIcon }}</span>
         <span class="tree-name">{{ rootLabel() }}</span>
       </div>
 

@@ -16,3 +16,9 @@ mcp_connectors/externals.json
 lsp_connectors/lsp_servers.json
 resources/memory_registration.json
 pyrightconfig.json
+# Upstream font drops (a full Nerd Fonts family is hundreds of MB). The build
+# consumes only the woff2 subsets generated from them into web/src/fonts/, and
+# those ARE committed as build inputs; the originals are re-downloadable, so
+# they stay out of git. The leading slash anchors this to the repo root so it
+# does not also catch web/src/fonts/ (which must stay tracked).
+/fonts/

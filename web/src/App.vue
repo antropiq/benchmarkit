@@ -11,7 +11,7 @@ import WorkBenchView from './components/WorkBenchView.vue'
 import { useBenchmark } from './composables/useBenchmark'
 import { useTabTitle } from './composables/useTabTitle'
 
-// Lazy on purpose: CodeMirror and xterm (ed-04 / ed-07) are heavy, and the
+// Lazy on purpose: Monaco and xterm (ed-04 / ed-07) are heavy, and the
 // Benchmark tab is the app's default screen — it must never download them.
 // The Editor tab's first open pays the chunk instead.
 const EditorView = defineAsyncComponent(() =>

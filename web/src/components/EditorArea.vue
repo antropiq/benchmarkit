@@ -1,16 +1,20 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import MonacoEditor from './MonacoEditor.vue'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useBenchmark } from '../composables/useBenchmark'
 
-// The centre pane as ed-03 leaves it: the open-file tab strip, and the file's
-// text as a raw `<pre>` with a line-number gutter. ed-04 replaces the body
-// with CodeMirror; the header chrome and the tab chips below are what it keeps.
+// The centre pane: the open-file tab strip and the Monaco surface that shows
+// the active buffer. The header chrome and the tab chips are the pane's own
+// markup; everything below them belongs to Monaco, which owns the DOM inside
+// its host and the line-number gutter that used to be a hand-rolled `<pre>`
+// column here.
 //
 // The badge is deliberate, not decoration: a tab labelled "Editor" promises an
 // editable surface, and nothing in this lot writes to disk — there is no write
-// endpoint at all. It disappears when the write layer lands.
+// endpoint at all, and MonacoEditor is mounted read-only to match. It
+// disappears when the write layer lands.
 const files = useEditorFiles()
 const tree = useWorkspaceTree()
 const bench = useBenchmark()
@@ -22,13 +26,11 @@ const state = files.state
 // previous buffer on screen, which is what the user is still looking at.
 const file = computed(() => state.open.find((f) => f.path === state.active) ?? null)
 
-// One gutter line per line of text is a v-for of the file's size; past a few
-// thousand rows that costs the tab its responsiveness, so the number column
-// stops and the pane says why. The text itself stays: it is one text node.
-const lineCount = computed(() => (file.value?.text ?? '').split('\n').length)
-const gutters = computed(
-  () => !!file.value && !file.value.binary && lineCount.value <= files.MAX_GUTTER_LINES,
-)
+// One Monaco surface for the whole pane, not one per tab: `content`/`language`
+// are the only props, and switching buffers goes through the editor's model —
+// so the scroll position of a file is not what changes when a chip is clicked,
+// and closing a tab costs nothing. The `v-if="file"` below unmounts (and so
+// disposes) the surface once the last buffer is closed.
 
 // Which chip is the selected one of the tablist (the roving tabindex and the
 // pane's aria-labelledby both key on it).
@@ -110,7 +112,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             :tabindex="item.path === state.active ? 0 : -1"
             @click="files.focusFile(item.path)"
           >
-            {{ item.name }}
+            <span class="editor-tab-label">{{ item.name }}</span>
           </button>
           <button
             class="editor-tab-close"
@@ -168,26 +170,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </p>
 
         <template v-if="file">
-          <p v-if="!gutters" class="caption editor-raw-note">
-            large file — {{ lineCount.toLocaleString() }} lines; no line numbers, syntax
-            view coming with the editor
+          <!-- A partial is never presented as a whole: the server only sets
+               `truncated` when the file grew past its cap mid-read, so this
+               says which prefix is on screen rather than implying the file
+               ends here. -->
+          <p v-if="file.truncated" class="caption editor-raw-note">
+            file grew while it was being read — showing its first
+            {{ files.humanSize(file.truncatedAt) }}
           </p>
-          <div class="editor-raw-scroll">
-            <div v-if="gutters" class="editor-gutter" aria-hidden="true">
-              <span v-for="line in lineCount" :key="line">{{ line }}</span>
-            </div>
-            <!-- The exact characters the server sent: CRLF stays CRLF, because
-                 CodeMirror (ed-04) keeps its own lineSeparator and re-writes
-                 what it received. `data-language` is what ed-04 keys its lazy
-                 grammar import on — the id the server chose, not a guess. -->
-            <pre
-              class="editor-raw"
-              id="editor-pane"
-              role="tabpanel"
-              :aria-labelledby="`editor-tab-${activeIndex}`"
-              :data-language="file.language"
-              tabindex="0"
-            >{{ file.text }}</pre>
+          <!-- The tabpanel wrapper is app-owned: `aria-controls` on the chips
+               points here, and Monaco's host inside it stays empty of app
+               markup (it is also the scope of the Pico overrides). -->
+          <div
+            class="editor-monaco"
+            id="editor-pane"
+            role="tabpanel"
+            :aria-labelledby="`editor-tab-${activeIndex}`"
+          >
+            <MonacoEditor
+              :content="file.text"
+              :language="file.language"
+              :aria-label="`Contents of ${file.path}`"
+            />
           </div>
         </template>
       </div>

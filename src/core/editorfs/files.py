@@ -20,11 +20,10 @@ from .policy import WorkspacePathError, resolve_in_workspace
 
 
 # Extension -> editor language id. Computed server-side so the tree, the read
-# endpoint and the browser cannot disagree about what a file *is*: ed-04 keys
-# its lazy CodeMirror grammar imports on exactly these ids, and an unknown
-# extension (or a dotfile such as ``.gitignore``) is ``plaintext`` — never a
-# guess. Ids outside the ed-04 loading set are honest labels the pane may load
-# later, or render as plain text.
+# endpoint and the browser cannot disagree about what a file *is*: the editor
+# keys its grammar on exactly these ids, and an unknown extension (or a dotfile
+# such as ``.gitignore``) is ``plaintext`` — never a guess. Ids the editor has
+# no grammar for are honest labels it renders as plain text.
 LANGUAGE_BY_EXTENSION: Dict[str, str] = {
     ".py": "python",
     ".pyi": "python",
@@ -76,8 +75,8 @@ def read_file(rel: str) -> Dict[str, Any]:
       grew between the stat and the read): a partial is never presented as a
       whole, the same honesty rule as the ``tokensEstimated`` flag;
     * the text is the file's exact characters, CRLF included. Line endings are
-      the editor's concern (CodeMirror keeps its own ``lineSeparator``), never
-      something the server silently rewrites.
+      the editor's concern (Monaco keeps its own model ``EOL``), never something
+      the server silently rewrites.
     """
     normalised, resolved = resolve_in_workspace(rel)
     try:

@@ -379,9 +379,13 @@ export function useBatch() {
     return !!listing && listing.taskCount > 0 && listing.tasks.length > 0
   })
 
-  // The dialog's count line, in the spec's own wording; '—' before any listing.
+  // The dialog's count line: how many task files are actually in the lot —
+  // `tasks.length`, not `taskCount`. `taskCount` is the *highest* task number
+  // (the bar's scale, so a numbering gap still fills it honestly), which would
+  // read as "N left to do" when earlier numbers already moved into done/.
+  // '—' before any listing.
   const countLabel = computed(() =>
-    state.listing ? `Found tasks ${state.listing.taskCount}` : '—',
+    state.listing ? `Found tasks ${state.listing.tasks.length}` : '—',
   )
 
   const skippedLabel = computed(() => {

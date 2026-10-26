@@ -19,6 +19,7 @@ from src.config import (
 )
 from src.core.mcphub import McpManager, load_externals
 from src.core.lsphub import LspManager, all_servers
+from src.core.termhub import TerminalHub
 from src.config import lsp_enabled_ids
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
@@ -77,9 +78,17 @@ def create_app() -> FastAPI:
         lsp = LspManager(servers)
         app.state.lsp = lsp
         await lsp.start_enabled(sorted(active_ids))
+        # The terminal registry is a plain dict (no hub thread): sessions are
+        # driven by their WebSocket coroutine, on this loop. Nothing spawns at
+        # boot — a session is only born on a WS upgrade — but it is created
+        # here so every route can find it, and torn down in the same block as
+        # the hubs, so a shell that outlived its socket cannot outlive the app.
+        terminal = TerminalHub()
+        app.state.terminal = terminal
         try:
             yield
         finally:
+            await terminal.stop_all()
             await lsp.stop_all()
             await manager.stop_all()
 

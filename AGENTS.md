@@ -15,8 +15,10 @@ The app has three tabs, sharing one LLM configuration and one streaming layer:
   answers, scores, timings and token/s as they arrive.
 - **WorkBench** — interactive streaming chat with that same model, optionally
   augmented with MCP connectors and language servers.
-- **Editor** — the working location as a file tree, a code pane and (later) a
-  terminal. Read-only: there is no write route for a hub — or a human — to hit.
+- **Editor** — the working location as a file tree and a code pane: the *file*
+  surface is read-only (no write route for a hub or a human). The app's one
+  shell is a separate human surface (`core/termhub/`, one WebSocket per
+  session), never an agent tool.
 
 ## Commands
 
@@ -60,6 +62,8 @@ report progress through it.
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
 | `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |
+| `core/termhub/` | Editor's terminal: one PTY shell per WebSocket, session registry on `app.state.terminal`. |
+| `core/proctree.py` | Shared process-tree teardown (SIGTERM→reap→SIGKILL) used by both hubs and the terminal. |
 
 `mcphub/` and `lsphub/` mirror each other — `constants` (paths, timeouts),
 `discovery` (read/validate/write the declaration file), `manager` (the live
@@ -171,6 +175,12 @@ Four rules tie them together:
   through the shared deny-list (`core/batch.py`, one read-only route) and
   *read/written* only through the connectors; its loop is client-side
   (`useBatch.js`), so a reload discards a running lot.
+- **Tree file icons are one generated unit**: the per-file-type glyph mapping
+  (`web/src/lib/file-icons.js`), the two `nerd-icons-*.woff2` subsets and the
+  `unicode-range` of the "JetBrains Mono Nerd Icons" faces in `nerd-fonts.css`
+  are all produced from the tables in `tools/nerd_icons.py` (`generate`), and a
+  test holds them in sync — a code point with no glyph renders a tofu box, so
+  edit the tables and regenerate, never the artifacts by hand.
 - **AGENTS.md feeds the chat**: when the working location carries an
   `AGENTS.md`, it is appended to every chat system prompt, re-read per request.
   Keep it accurate and short — the model acts on it.

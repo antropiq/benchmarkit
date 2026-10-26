@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
+import { fileIcon } from '../lib/file-icons'
 
 // One row of the workspace tree, recursive: a directory renders its own row
 // plus, when expanded, one item per entry of its cached listing. No tree
@@ -29,6 +30,11 @@ const chevron = computed(() => (isDir.value && props.entry.children ? true : fal
 const level = computed(() => depthOf(path.value) + 1)
 const rowTitle = computed(() =>
   isDir.value ? path.value || 'workspace root' : `${path.value} (${humanSize(props.entry.size)})`,
+)
+// One glyph per row, picked by file type (see lib/file-icons). An open branch
+// gets the open-folder glyph, so the icon and the chevron never disagree.
+const icon = computed(() =>
+  fileIcon(props.entry.name, { dir: isDir.value, open: expanded.value }),
 )
 
 function humanSize(bytes) {
@@ -70,19 +76,7 @@ function onFocus() {
         <path d="m9 18 6-6-6-6" />
       </svg>
     </span>
-    <span class="tree-icon" aria-hidden="true">
-      <svg v-if="isDir" width="14" height="14" viewBox="0 0 24 24" fill="none"
-        stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-        stroke-linejoin="round">
-        <path d="M4 20a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2z" />
-      </svg>
-      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none"
-        stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
-        stroke-linejoin="round">
-        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-        <path d="M14 2v6h6" />
-      </svg>
-    </span>
+    <span class="tree-icon" aria-hidden="true">{{ icon }}</span>
     <span class="tree-name">{{ entry.name }}</span>
     <span v-if="loading && isDir" class="tree-spinner caption" aria-hidden="true">…</span>
   </div>

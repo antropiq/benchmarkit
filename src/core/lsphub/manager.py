@@ -17,12 +17,12 @@ so discovery and the settings panel keep working without the ``[lsp]`` extra.
 import asyncio
 import logging
 import os
-import signal
 import threading
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from src.core import proctree
 from src.core.mcphub import connector_environment
 
 from . import actions, constants
@@ -33,10 +33,6 @@ from .tsserver import find_project_config
 from .tools import TOOL_SPECS, action_of_tool_name, tools_for_server
 
 logger = logging.getLogger("benchmarkit.lsp")
-
-# How often a process-group teardown probes for surviving members between its
-# SIGTERM and its SIGKILL (same idea as the MCP hub's own tree killer).
-_GROUP_POLL_INTERVAL_SECONDS = 0.01
 
 
 class LspManager:
@@ -274,7 +270,7 @@ class LspManager:
                 env=self._environment(info),
                 # pygls forwards these to create_subprocess_exec. Leading its
                 # own process group is what lets the teardown signal the whole
-                # tree rather than only the wrapper (see _kill_process_tree).
+                # tree rather than only the wrapper (see proctree.kill_process_tree).
                 start_new_session=True,
             )
         except OSError as exc:
@@ -656,7 +652,9 @@ class LspManager:
             # whether or not the leader is still running.
             pid = getattr(process, "pid", None)
             if os.name == "posix" and isinstance(pid, int):
-                await self._kill_process_tree(process, pid)
+                await proctree.kill_process_tree(
+                    pid, self._reap_leader(process), constants.STOP_GRACE_SECONDS
+                )
             elif process.returncode is None:
                 with suppress(ProcessLookupError):
                     process.terminate()
@@ -671,48 +669,21 @@ class LspManager:
                         await process.wait()
 
     @staticmethod
-    def _group_alive(pgid: int) -> bool:
-        """Probe the group with signal 0 — only ESRCH proves it is gone.
+    def _reap_leader(process: Any):
+        """The reap step ``proctree.kill_process_tree`` runs before it probes.
 
-        EPERM is ambiguous (a foreign-euid member), so it counts as alive and
-        keeps waiting rather than pretending the group drained.
+        Bounded by the deadline the teardown passes in, so an unresponsive
+        leader delays the SIGKILL escalation by nothing beyond the grace period.
         """
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            pass
-        return True
 
-    async def _kill_process_tree(self, process: Any, pgid: int) -> None:
-        """SIGTERM the group, reap the leader, SIGKILL whatever outlives it.
+        async def reap(deadline: float) -> None:
+            loop = asyncio.get_event_loop()
+            with suppress(Exception):
+                await asyncio.wait_for(
+                    process.wait(), timeout=max(deadline - loop.time(), 0.01)
+                )
 
-        The leader's pid *is* the pgid, which is why no ``getpgid()`` is used —
-        and none could work here: it fails once the leader has been reaped, even
-        while other members are still running. The leader is reaped *before* the
-        group is probed, because a group only disappears once every member is
-        dead **and** reaped, so an unreaped leader would keep the probe — and so
-        the whole grace period — alive.
-        """
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + constants.STOP_GRACE_SECONDS
-        try:
-            os.killpg(pgid, signal.SIGTERM)
-        except ProcessLookupError:
-            return  # the whole group is already gone
-        except PermissionError:
-            logger.warning("No permission to signal process group %d", pgid)
-        with suppress(Exception):
-            await asyncio.wait_for(
-                process.wait(), timeout=max(deadline - loop.time(), 0.01)
-            )
-        while loop.time() < deadline:
-            if not self._group_alive(pgid):
-                return
-            await asyncio.sleep(_GROUP_POLL_INTERVAL_SECONDS)
-        with suppress(ProcessLookupError, PermissionError):
-            os.killpg(pgid, signal.SIGKILL)
+        return reap
 
     # -- idle reaper ----------------------------------------------------------
 

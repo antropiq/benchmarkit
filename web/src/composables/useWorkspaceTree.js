@@ -69,6 +69,27 @@ function visiblePaths() {
   return out
 }
 
+// The paths whose *listing* is on screen — the ones refresh() has to re-fetch.
+// Two differences from `visiblePaths()` matter: a file row is a row too, and
+// the tree endpoint refuses a file with 400; a collapsed folder is on screen
+// but its children are not, so its listing is not displayed and its next
+// expand re-lists it anyway. What is left is the root plus every folder the
+// user has opened — which is exactly what the refresh button promises.
+function openDirPaths() {
+  const out = [ROOT]
+  const walk = (path) => {
+    if (!state.expanded[path]) return
+    for (const entry of state.nodes[path]?.entries ?? []) {
+      if (entry.dir && state.expanded[entry.path]) {
+        out.push(entry.path)
+        walk(entry.path)
+      }
+    }
+  }
+  walk(ROOT)
+  return out
+}
+
 export function useWorkspaceTree() {
   // A path is fetched at most once concurrently; a second call while one is in
   // flight is a no-op (double clicks never double-list).
@@ -104,11 +125,13 @@ export function useWorkspaceTree() {
   // hook every surface gets when the working location changes. The opened
   // branches stay open — a refresh is not a collapse.
   async function refresh() {
-    // Snapshot the on-screen paths *before* the cache is dropped — after that,
-    // the walk that answers "what is on screen" has nothing left to walk.
-    const onScreen = visiblePaths()
+    // Snapshot the on-screen folders *before* the cache is dropped — after
+    // that, the walk that answers "what is on screen" has nothing left to
+    // walk. Folders only: a file row has no listing of its own and the tree
+    // endpoint answers 400 for one.
+    const openDirs = openDirPaths()
     state.nodes = {}
-    await Promise.all(onScreen.map((path) => load(path, { force: true })))
+    await Promise.all(openDirs.map((path) => load(path, { force: true })))
   }
 
   function expand(path) {

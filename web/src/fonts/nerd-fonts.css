@@ -1,0 +1,81 @@
+/* Self-hosted PUA icon subsets of JetBrains Mono (Nerd Fonts).
+
+Two faces, one per surface that shows Nerd Font glyphs:
+  * "JetBrains Mono Nerd"      -- the terminal pane (EditorTerminal.vue): the
+    blocks a shell prompt emits, whatever the prompt is.
+  * "JetBrains Mono Nerd Icons" -- the Editor's workspace tree, the ~100 glyphs
+    src/lib/file-icons.js names. A file type is picked from that set, so the
+    subset is exactly the set the code can ask for.
+
+A job-controlling shell prompt (Starship, powerlevel10k, ...) emits private-use-
+area icon glyphs (U+F0xx etc.). The app bundles plain JetBrains Mono, which has
+no glyph for them, so xterm.js draws its missing-glyph box stamping the code-
+point inside it -- the squares in the terminal pane. These four faces are the
+Nerd-patched JetBrains Mono subsetted to just the code-point blocks prompts
+actually emit (Font Awesome, Powerline, Octicons, box-drawing arrows). The
+unicode-range below is what keeps them from touching ordinary text: Latin stays
+on the plain JetBrains Mono of theme.css, only these ranges fall through here.
+Rebuild a face after editing the ranges with, per weight/style:
+  fonttools subset --unicodes=<ranges> --flavor=woff2 --no-hinting
+    --desubroutinize fonts/JetBrainsMono/JetBrainsMonoNerdFont-<Weight>.ttf
+*/
+@font-face {
+  font-family: "JetBrains Mono Nerd";
+  font-style: normal; font-weight: 400; font-display: swap;
+  src: url("./jetbrains-nerd-400.woff2") format("woff2");
+  unicode-range: U+2B80-2B83, U+E0A0-E0FF, U+E700-E7C0, U+F000-F2FF;
+}
+@font-face {
+  font-family: "JetBrains Mono Nerd";
+  font-style: italic; font-weight: 400; font-display: swap;
+  src: url("./jetbrains-nerd-400-italic.woff2") format("woff2");
+  unicode-range: U+2B80-2B83, U+E0A0-E0FF, U+E700-E7C0, U+F000-F2FF;
+}
+@font-face {
+  font-family: "JetBrains Mono Nerd";
+  font-style: normal; font-weight: 700; font-display: swap;
+  src: url("./jetbrains-nerd-700.woff2") format("woff2");
+  unicode-range: U+2B80-2B83, U+E0A0-E0FF, U+E700-E7C0, U+F000-F2FF;
+}
+@font-face {
+  font-family: "JetBrains Mono Nerd";
+  font-style: italic; font-weight: 700; font-display: swap;
+  src: url("./jetbrains-nerd-700-italic.woff2") format("woff2");
+  unicode-range: U+2B80-2B83, U+E0A0-E0FF, U+E700-E7C0, U+F000-F2FF;
+}
+
+/* The tree's face, used by WorkspaceTreeItem through src/lib/file-icons.js: one
+   glyph per file type the mapping can name, and nothing else. Its code points
+   and the two nerd-icons-*.woff2 files are GENERATED from that mapping's tables
+   by `python tools/nerd_icons.py generate`; `check` (run by the test suite)
+   fails if they drift, because a code point with no glyph here renders a tofu
+   box. The E7xx entries overlap the terminal face above -- harmless, since a
+   tree row names *this* family and nothing falls through to the other. */
+@font-face {
+  font-family: "JetBrains Mono Nerd Icons";
+  font-style: normal; font-weight: 400; font-display: block;
+  src: url("./nerd-icons-400.woff2") format("woff2");
+  unicode-range: U+E5FE,U+E600,U+E603,U+E605-E606,U+E608-E60F,U+E613-E615,
+    U+E618-E619,U+E61F-E620,U+E624-E625,U+E627-E628,U+E62B,U+E62D,
+    U+E632,U+E634,U+E638-E639,U+E642,U+E646,U+E649-E64A,U+E64C,U+E64E,
+    U+E650,U+E652,U+E659,U+E65B-E65D,U+E662,U+E66D,U+E66F,U+E672-E673,
+    U+E678,U+E67A,U+E67D-E67E,U+E683,U+E686,U+E68B,U+E68E,U+E690-E691,
+    U+E697-E69A,U+E69D,U+E69F-E6A1,U+E6A5,U+E6AA,U+E6AE,U+E6B2-E6B4,
+    U+E6B9,U+E704,U+E71E,U+E76D-E76E,U+E776,U+E794,U+E7B1-E7B2,U+E7C0,
+    U+E7C4,U+E7D2,U+E7F2,U+E7F7,U+E80B,U+E82C,U+E881,U+E8BA,U+E8D6,
+    U+E8EB,U+EAE8,U+F016,U+F1C3-F1C4;
+}
+@font-face {
+  font-family: "JetBrains Mono Nerd Icons";
+  font-style: normal; font-weight: 700; font-display: block;
+  src: url("./nerd-icons-700.woff2") format("woff2");
+  unicode-range: U+E5FE,U+E600,U+E603,U+E605-E606,U+E608-E60F,U+E613-E615,
+    U+E618-E619,U+E61F-E620,U+E624-E625,U+E627-E628,U+E62B,U+E62D,
+    U+E632,U+E634,U+E638-E639,U+E642,U+E646,U+E649-E64A,U+E64C,U+E64E,
+    U+E650,U+E652,U+E659,U+E65B-E65D,U+E662,U+E66D,U+E66F,U+E672-E673,
+    U+E678,U+E67A,U+E67D-E67E,U+E683,U+E686,U+E68B,U+E68E,U+E690-E691,
+    U+E697-E69A,U+E69D,U+E69F-E6A1,U+E6A5,U+E6AA,U+E6AE,U+E6B2-E6B4,
+    U+E6B9,U+E704,U+E71E,U+E76D-E76E,U+E776,U+E794,U+E7B1-E7B2,U+E7C0,
+    U+E7C4,U+E7D2,U+E7F2,U+E7F7,U+E80B,U+E82C,U+E881,U+E8BA,U+E8D6,
+    U+E8EB,U+EAE8,U+F016,U+F1C3-F1C4;
+}

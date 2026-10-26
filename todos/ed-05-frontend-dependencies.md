@@ -8,6 +8,8 @@ Depends on: nothing. Blocks ed-04 and ed-07.
 
 ## Packages
 
+> packages have already been installed
+
 ```bash
 cd web
 npm install @xterm/xterm @xterm/addon-fit @xterm/addon-web-links

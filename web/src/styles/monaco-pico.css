@@ -1,0 +1,98 @@
+/* Pico CSS vs. Monaco internals.
+
+   Pico styles bare element selectors — `input`, `textarea`, `button`,
+   `[role=button]`, `ul`, `p`, `pre` — with no class to opt out of, so every
+   one of them also applies to the DOM Monaco builds for itself: the hidden
+   `.inputarea` that carries typing and IME, the `<input>`s of the find widget
+   and the suggest/details UI, the `<a role="button">` labels of its action
+   bars, the `<ul>`s of its lists.
+
+   That is not cosmetic. Pico gives the textarea `width: 100%`, a border, a
+   radius, padding and a background; Monaco positions and sizes that element
+   per keystroke to sit exactly over the text it is proxying, so a padding or
+   border shifts every character it measures and a `transition` makes the
+   cursor lag behind the caret. Pico's primary-button chrome on
+   `[role=button]` paints Monaco's toolbar labels as app buttons.
+
+   So: undo Pico's form/typography defaults inside the editor host, and let
+   Monaco's own CSS (which uses the same specificity but is authored against
+   its own layout) do the styling. Scoped to `.monaco-host`, which is the
+   element the editor is created on — nothing else on the page is affected.
+   `all: revert` is deliberately not used: it would reset Monaco's own
+   properties too, and these files' order in the bundle would decide who wins. */
+
+/* The two rules Pico applies to *every* element are the ones that bite a
+   measured layout: `background-repeat: no-repeat` on `*`, and the
+   inherited root font-family/size/line-height that Monaco's font measuring
+   assumes it owns. The font itself is set through Monaco's `fontFamily`
+   option instead, so the browser default here is not what is rendered. */
+.monaco-host * {
+  background-repeat: initial;
+  overflow-wrap: normal;
+}
+
+/* Text inputs: the `.inputarea`, the IME input, the find/replace and
+   goto-line `<input>`s, the suggest/details widgets. Reset the box, the
+   chrome and the transition — Monaco sizes these in device pixels and moves
+   them with inline styles. */
+.monaco-host textarea,
+.monaco-host input {
+  width: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  outline: none;
+  appearance: none;
+  transition: none;
+  font: inherit;
+  line-height: inherit;
+}
+
+/* Typing must stay invisible: Monaco keeps the proxy textarea transparent
+   (`.monaco-editor .inputarea`) and IME-visible, and Pico's `color` from the
+   form-element palette would print a copy of the text at the caret. */
+.monaco-host textarea.inputarea {
+  color: transparent;
+}
+
+/* Action-bar items and quick-input/list affordances carry `role="button"`;
+   Pico would give them the primary background, padding and a hover box.
+   Monaco colours them through `--vscode-*` variables on its own classes. */
+.monaco-host [role='button'] {
+  background-color: transparent;
+  background-image: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: inherit;
+  text-transform: none;
+  transition: none;
+  cursor: inherit;
+}
+
+/* Pico's typography leaks into Monaco's hover, suggestion and list DOM:
+   paragraph bottoms, square list markers, `pre` margins and its own code
+   font. Monaco's rendered-markdown rules already handle the one list case it
+   ships, so the reset is what keeps hover content aligned. */
+.monaco-host p,
+.monaco-host pre,
+.monaco-host ul,
+.monaco-host ol,
+.monaco-host li {
+  margin: 0;
+  color: inherit;
+}
+
+.monaco-host ul,
+.monaco-host ol {
+  list-style: none;
+  padding: 0;
+}

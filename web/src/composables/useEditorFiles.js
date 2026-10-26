@@ -5,7 +5,7 @@ import { reactive } from 'vue'
 //
 // One singleton like every other screen's: the open buffers, the active tab
 // and what the pane should say live *here*, so a tab switch (`v-show`) keeps
-// them and ed-04's CodeMirror component only renders and disposes a view.
+// them and the Monaco component only renders and disposes a view.
 //
 // Read-only by design (decision D4): there is no `dirty` field, nothing to
 // confirm on close and no `beforeunload` warning, because there is no write
@@ -17,11 +17,8 @@ import { reactive } from 'vue'
 // refused (binary, over the size cap) — which is when one shared value would
 // lie about what is on screen.
 
-// Above this many lines the raw `<pre>` preview of ed-03 stops rendering a gutter and
-// says so instead: a 100k-line v-for would hang the tab, and ed-04's
-// CodeMirror (virtualised) replaces this preview entirely.
-export const MAX_GUTTER_LINES = 2000
-
+// The pane renders every buffer through Monaco (virtualised), so line count
+// costs nothing here — the old hand-rolled gutter cap it needed is gone.
 const state = reactive({
   // Open buffers, in the order they were opened. Only *text* files get a
   // record: a binary or oversized file is a message in the pane, not a tab.
@@ -179,6 +176,5 @@ export function useEditorFiles() {
     recordFor,
     clearMessage,
     humanSize,
-    MAX_GUTTER_LINES,
   }
 }

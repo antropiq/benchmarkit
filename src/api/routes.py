@@ -7,12 +7,13 @@ import json
 import re
 import threading
 import uuid
+from contextlib import suppress
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional, Union
 
 import os
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -42,6 +43,8 @@ from src.config import (
 from src.core.mcphub import load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
 from src.core import editorfs
+from src.core import termhub
+from src.core.termhub import policy as term_policy
 from src.core.bench import run_benchmark
 from src.core import batch as batch_core
 from src.core.chat import stream_chat
@@ -1207,6 +1210,105 @@ def build_router(state: RunState) -> APIRouter:
             return {"paths": editorfs.stat_paths(path)}
         except editorfs.WorkspacePathError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    # -- terminal (ed-06): one PTY per WebSocket --------------------------------
+
+    @router.get("/terminal")
+    def get_terminal(request: Request) -> Dict[str, Any]:
+        """The live terminal sessions (pid, cwd, started, bytes) — for the
+        settings panel. Mirrors ``GET /api/mcp``: an orphan must be nameable, so
+        whatever the WebSocket registry holds is reported here. Read-only; the
+        shells themselves are driven by the WS, never by this route."""
+        hub = getattr(request.app.state, "terminal", None)
+        return {"sessions": hub.list_sessions() if hub is not None else []}
+
+    @router.websocket("/terminal")
+    async def terminal_ws(websocket: WebSocket) -> None:
+        """One shell on one PTY, bridged to the browser (ed-07's xterm pane).
+
+        Guards, in order, each refusing *before* any process is spawned:
+        the Origin check (the app has no CORS/CSRF layer, so this is the one
+        cheap defence against a random page reaching a shell), the platform
+        check (``pty`` is POSIX; the app is self-hosted on Linux), and the
+        concurrent-session cap. A real shell can change anything the app's user
+        can — which is why it is *never* an MCP or LSP tool, only this route,
+        used by the SPA (decision D4's read-only boundary).
+
+        ``cwd`` is always ``path_location()``; the server takes no path from the
+        client. Frames are JSON text (``input``/``resize``/``kill`` in,
+        ``open``/``output``/``exit``/``error`` out); the session owns the
+        framing and teardown, this route only adapts the socket to it.
+        """
+        hub = getattr(websocket.app.state, "terminal", None)
+        if hub is None:  # pragma: no cover - lifespan always sets it
+            await websocket.close(termhub.CLOSE_CODE_UNSUPPORTED, "Terminal unavailable")
+            return
+
+        headers = {k.lower(): v for k, v in websocket.headers.raw}
+        allowed, reason = term_policy.origin_allowed(headers)
+        if not allowed:
+            await websocket.close(
+                termhub.CLOSE_CODE_POLICY, f"Origin refused: {reason}"
+            )
+            return
+
+        if os.name != "posix":
+            await websocket.accept()
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "message": "The terminal is POSIX-only; this app is self-hosted on Linux",
+                }
+            )
+            await websocket.close(termhub.CLOSE_CODE_UNSUPPORTED, "Terminal unsupported")
+            return
+
+        if hub.is_full():
+            await websocket.close(
+                termhub.CLOSE_CODE_CAPACITY,
+                f"Too many terminal sessions (cap {hub.capacity()})",
+            )
+            return
+
+        # Publish a frame straight to the socket. Raises when the client is
+        # gone, which the session's reader treats as "stop pumping".
+        async def emit(event: Dict[str, Any]) -> None:
+            await websocket.send_json(event)
+
+        async def receive_frame():
+            try:
+                text = await websocket.receive_text()
+            except (WebSocketDisconnect, RuntimeError):
+                return None
+            try:
+                frame = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                # Malformed frame: ignored by the session, not fatal.
+                return {"type": ""}
+            return frame if isinstance(frame, dict) else {"type": ""}
+
+        try:
+            session = hub.create(emit)
+        except termhub.SessionCapacity as exc:
+            await websocket.close(termhub.CLOSE_CODE_CAPACITY, str(exc))
+            return
+
+        await websocket.accept()
+        try:
+            # One session per connection: no attach, no reuse (ed-06 guard).
+            session.spawn(cols=termhub.DEFAULT_COLS, rows=termhub.DEFAULT_ROWS)
+        except (termhub.TerminalUnsupported, OSError) as exc:
+            hub.drop(session.id)
+            await websocket.send_json({"type": "error", "message": str(exc)})
+            await websocket.close(termhub.CLOSE_CODE_UNSUPPORTED, "Could not spawn shell")
+            return
+
+        try:
+            await session.run(receive_frame)
+        finally:
+            hub.drop(session.id)
+            with suppress(Exception):
+                await websocket.close()
 
     @router.get("/lsp/log")
     def get_lsp_log(request: Request, server: str = "") -> Dict[str, Any]:
