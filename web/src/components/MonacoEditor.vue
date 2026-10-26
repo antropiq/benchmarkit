@@ -96,18 +96,29 @@ function picoTheme() {
 const props = defineProps({
   content: { type: String, default: '' },
   language: { type: String, default: 'plaintext' },
-  // Read-only by design for now: the file surface has no write route (AGENTS.md),
-  // so the editor is a viewer, not an input. Kept as a prop so the write layer
-  // turns it off rather than restructuring this component.
+  // Read-only by default: the file surface has no write route to disk yet
+  // (AGENTS.md), so the safe default is a viewer. The pane turns this off in
+  // read_write mode (the chat is idle) — `readOnly`+`domReadOnly` gate the
+  // editing, and the watcher below flips both hot when the mode changes.
   readonly: { type: Boolean, default: true },
   ariaLabel: { type: String, default: 'File contents' },
 })
+
+// Emits the new text whenever the user edits the buffer. Only fires for real
+// edits (the model listener is guarded against the programmatic `setValue`
+// below), and only matters while not `readonly` — a read-only surface cannot
+// type. The pane routes this into the buffer record and the dirty flag.
+const emit = defineEmits(['content-change'])
 
 const host = ref(null)
 
 let editor = null
 let model = null
 let themeObserver = null
+// Set while this component drives the model itself (`setValue` on a buffer
+// swap or a reload) so the content listener stays silent for those, and only
+// real user edits reach `content-change`.
+let applyingExternal = false
 
 // The app's mono stack comes from the theme token rather than a literal here,
 // so the editor cannot drift from the rest of the UI's monospace text.
@@ -123,6 +134,16 @@ onMounted(() => {
     props.content,
     monacoLanguageId(props.language),
   )
+  // One listener for the whole component: the model outlives nothing here, but
+  // the guard keeps the programmatic `setValue` (a reload, a buffer swap) from
+  // echoing back as an edit. Real edits are exactly the `content`-prop changes
+  // we did *not* cause — so each one is surfaced to the pane once, with the
+  // model's text. (The loop still closes: the pane stores what we emit, the
+  // watcher below sees it already equals `model.getValue()` and skips.)
+  model.onDidChangeContent(() => {
+    if (applyingExternal) return
+    emit('content-change', model.getValue())
+  })
   editor = monaco.editor.create(host.value, {
     model,
     automaticLayout: true,
@@ -174,7 +195,12 @@ watch(
   () => props.content,
   (next) => {
     if (!model || next === model.getValue()) return
-    model.setValue(next)
+    applyingExternal = true
+    try {
+      model.setValue(next)
+    } finally {
+      applyingExternal = false
+    }
   },
 )
 

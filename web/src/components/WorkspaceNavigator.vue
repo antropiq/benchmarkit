@@ -1,7 +1,8 @@
 <script setup>
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import WorkspaceTreeItem from './WorkspaceTreeItem.vue'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
+import { useEditorFiles } from '../composables/useEditorFiles'
 import { fileIcon } from '../lib/file-icons'
 // The rows render Nerd Font glyphs (lib/file-icons). This CSS declares the
 // "JetBrains Mono Nerd Icons" face those code points need; it is unicode-range-
@@ -60,6 +61,101 @@ async function onKeydown(event) {
     }
   }
 }
+
+// -- context menu -----------------------------------------------------------
+//
+// One menu for the whole tree, owned here (not by each recursive row): a
+// right-click on any row bubbles its native `contextmenu` to the tree
+// container, which reads the row's `data-path` + `data-dir` off the event
+// target. Files get the menu; the root and folder rows do not (for now).
+//
+// The items:
+//   * Close — only shown when a tab already holds this file; the same action
+//     as the chip's × (useEditorFiles.closeFile). A dirty buffer closes and
+//     discards: there is no save yet, so there is nothing to confirm.
+//   * Copy relative path — the tree's paths are already workspace-relative, so
+//     the value goes straight to the clipboard.
+const files = useEditorFiles()
+const menu = reactive({ open: false, x: 0, y: 0, path: null })
+const menuCanClose = computed(() => !!menu.path && !!files.recordFor(menu.path))
+const menuEl = ref(null)
+
+function openMenu(event) {
+  const row = event.target.closest?.('.tree-row')
+  if (!row || row.dataset.dir === 'true') return
+  const path = row.dataset.path
+  if (!path) return
+  event.preventDefault()
+  closeMenu()
+  // Place at the cursor, then clamp to the viewport once the menu's own size
+  // is known (nextTick, after it renders).
+  menu.x = event.clientX
+  menu.y = event.clientY
+  menu.path = path
+  menu.open = true
+  nextTick(() => {
+    const el = menuEl.value
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const pad = 6
+    let x = menu.x
+    let y = menu.y
+    if (x + rect.width > window.innerWidth - pad) x = window.innerWidth - pad - rect.width
+    if (y + rect.height > window.innerHeight - pad) y = window.innerHeight - pad - rect.height
+    menu.x = Math.max(pad, x)
+    menu.y = Math.max(pad, y)
+  })
+}
+
+function closeMenu() {
+  if (!menu.open) return
+  menu.open = false
+  menu.path = null
+}
+
+function menuClose() {
+  if (menu.path) files.closeFile(menu.path)
+  closeMenu()
+}
+
+async function menuCopyPath() {
+  if (menu.path) {
+    try {
+      await navigator.clipboard.writeText(menu.path)
+    } catch {
+      // A non-secure context or a denied permission: nothing else to do here,
+      // and this pane has no toast system. Fail silently.
+    }
+  }
+  closeMenu()
+}
+
+// Any click outside the menu, or Escape, dismisses it. Registered only while
+// the menu is open so it never runs on the idle tree.
+function onDocPointerDown(event) {
+  if (menuEl.value && menuEl.value.contains(event.target)) return
+  closeMenu()
+}
+function onDocKeydown(event) {
+  if (event.key === 'Escape') closeMenu()
+}
+
+watch(
+  () => menu.open,
+  (open) => {
+    if (open) {
+      document.addEventListener('pointerdown', onDocPointerDown, true)
+      document.addEventListener('keydown', onDocKeydown, true)
+    } else {
+      document.removeEventListener('pointerdown', onDocPointerDown, true)
+      document.removeEventListener('keydown', onDocKeydown, true)
+    }
+  },
+)
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocPointerDown, true)
+  document.removeEventListener('keydown', onDocKeydown, true)
+})
 </script>
 
 <template>
@@ -94,6 +190,7 @@ async function onKeydown(event) {
       role="tree"
       aria-label="Workspace files"
       @keydown="onKeydown"
+      @contextmenu="openMenu"
     >
       <div
         class="tree-row tree-row--root"
@@ -135,5 +232,39 @@ async function onKeydown(event) {
     <p class="caption editor-nav-footer">
       Some files are hidden by the connector policy.
     </p>
+
+    <!-- The file context menu, teleported to <body> so the tree's scroll
+         container (`.editor-nav-tree`, which is `overflow: auto`) cannot clip
+         it and the pane's stacking cannot bury it. Positioned fixed at the
+         cursor (clamped in openMenu). `@contextmenu.prevent` here stops a
+         right-click *inside* the menu from re-opening it. -->
+    <Teleport to="body">
+      <div
+        v-if="menu.open"
+        ref="menuEl"
+        class="tree-context-menu"
+        role="menu"
+        :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
+        @contextmenu.prevent
+      >
+        <button
+          v-if="menuCanClose"
+          class="tree-context-item"
+          type="button"
+          role="menuitem"
+          @click="menuClose"
+        >
+          Close
+        </button>
+        <button
+          class="tree-context-item"
+          type="button"
+          role="menuitem"
+          @click="menuCopyPath"
+        >
+          Copy relative path
+        </button>
+      </div>
+    </Teleport>
   </aside>
 </template>

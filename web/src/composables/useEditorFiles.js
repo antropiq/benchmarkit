@@ -7,9 +7,18 @@ import { reactive } from 'vue'
 // and what the pane should say live *here*, so a tab switch (`v-show`) keeps
 // them and the Monaco component only renders and disposes a view.
 //
-// Read-only by design (decision D4): there is no `dirty` field, nothing to
-// confirm on close and no `beforeunload` warning, because there is no write
-// endpoint to be stale about. Those belong to the write layer of ed-10.
+// The pane's edit mode follows the WorkBench: it is read_write only while the
+// chat is idle, read-only whenever a reply is streaming (EditorArea owns that
+// rule and passes `readonly` down to Monaco). In read_write an edit updates the
+// in-memory buffer and its `dirty` flag, but nothing reaches disk — there is no
+// save route yet — so there is still nothing to confirm on close and no
+// `beforeunload` warning. Save, and new file/folder, are a later session.
+//
+// `dirty` lives on the record, not on Monaco: the pane reuses one editor model
+// across every buffer (EditorArea's `v-if`/model swap), so Monaco's own dirty
+// flag would be lost the moment a tab is switched. Comparing the buffer's
+// current `text` against the `baseline` it was read with is both per-file and
+// survives the switch — and a reload resets the baseline, clearing the dot.
 //
 // The tree's `selected` (useWorkspaceTree) and this `active` are deliberately
 // separate: selecting a row highlights it, opening a file puts it in the tab
@@ -98,6 +107,11 @@ export function useEditorFiles() {
         path: body.path ?? path,
         name: nameOf(body.path ?? path),
         text: body.text ?? '',
+        // The text as it was when this buffer was read (or last reloaded). A
+        // buffer is dirty while `text` differs from it; an edit never moves the
+        // baseline, a reload does.
+        baseline: body.text ?? '',
+        dirty: false,
         mtime: body.mtime ?? null, // ed-09 compares this against /api/fs/stat
         language: body.language ?? 'plaintext',
         size: body.size ?? (body.text ?? '').length,
@@ -141,6 +155,19 @@ export function useEditorFiles() {
     state.message = null
   }
 
+  // Apply an edit from Monaco to the active buffer. Only reached while the pane
+  // is in read_write mode (the chat is idle); a read-only surface cannot type.
+  // The baseline is untouched, so `dirty` is exactly "differs from what was
+  // read" — and an edit that types its way back to the original clears the dot
+  // on its own.
+  function updateText(path, text) {
+    const record = recordFor(path)
+    if (!record || record.text === text) return
+    record.text = text
+    record.size = text.length
+    record.dirty = text !== record.baseline
+  }
+
   // Re-GET and swap the text. Driven by ed-09's probe (the model wrote the
   // file), never by a Save — there is nothing to save in this lot.
   async function reloadFile(path) {
@@ -150,7 +177,12 @@ export function useEditorFiles() {
       const res = await fetch(`/api/fs/file?path=${encodeURIComponent(path)}`)
       const body = await res.json().catch(() => null)
       if (!res.ok || body?.binary) return null
-      record.text = body.text ?? ''
+      const fresh = body.text ?? ''
+      record.text = fresh
+      // A reload is a fresh read from disk, so the disk text becomes the new
+      // baseline: the buffer is clean against it again.
+      record.baseline = fresh
+      record.dirty = false
       record.size = body.size ?? record.size
       record.mtime = body.mtime ?? record.mtime
       record.truncated = !!body.truncated
@@ -172,6 +204,7 @@ export function useEditorFiles() {
     openFile,
     closeFile,
     focusFile,
+    updateText,
     reloadFile,
     recordFor,
     clearMessage,

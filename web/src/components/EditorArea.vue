@@ -4,6 +4,7 @@ import MonacoEditor from './MonacoEditor.vue'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useBenchmark } from '../composables/useBenchmark'
+import { useChat } from '../composables/useChat'
 
 // The centre pane: the open-file tab strip and the Monaco surface that shows
 // the active buffer. The header chrome and the tab chips are the pane's own
@@ -11,15 +12,30 @@ import { useBenchmark } from '../composables/useBenchmark'
 // its host and the line-number gutter that used to be a hand-rolled `<pre>`
 // column here.
 //
-// The badge is deliberate, not decoration: a tab labelled "Editor" promises an
-// editable surface, and nothing in this lot writes to disk — there is no write
-// endpoint at all, and MonacoEditor is mounted read-only to match. It
-// disappears when the write layer lands.
+// The badge is the editor's mode, live: "read-write" while the WorkBench is
+// idle (the pane accepts edits, kept in the buffer only — nothing reaches disk
+// until a save route lands), "read-only" while a reply is running. A tab
+// labelled "Editor" promises an editable surface, and the badge says when that
+// promise is currently in force.
 const files = useEditorFiles()
 const tree = useWorkspaceTree()
 const bench = useBenchmark()
+const chat = useChat()
 
 const state = files.state
+
+// The pane's editor state: read_write while the WorkBench is idle, read-only
+// whenever a reply is in flight (`phase` is 'waiting' / 'reasoning' /
+// 'answering'). A stopped conversation sits back at 'idle', so its files are
+// editable again — which is the point: the model is the only thing that can
+// write these files, and it must not race a human typing in the same buffer.
+//
+// Known edge, deliberate: batch mode owns the conversation between two task
+// turns with `useBatch.state.active` while `phase` drops back to 'idle' (see
+// useBatch.js), so on that gap this rule makes files briefly editable. Kept as
+// specified.
+const editorMode = computed(() => (chat.state.phase === 'idle' ? 'read_write' : 'read_only'))
+const paneReadonly = computed(() => editorMode.value === 'read_only')
 
 // The buffer the pane shows. The tree's selection and this are separate state:
 // a click that is refused (binary, over the cap) selects a row and leaves the
@@ -112,21 +128,41 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             :tabindex="item.path === state.active ? 0 : -1"
             @click="files.focusFile(item.path)"
           >
+            <!-- The unsaved-changes marker: a dot before the name, so it stays
+                 visible when a long name is ellipsised at the end. A filled dot
+                 is the conventional dirty state; it carries no text, so it gets
+                 a label for screen readers instead of an asterisk. -->
+            <span
+              v-if="item.dirty"
+              class="editor-tab-dirty"
+              aria-hidden="true"
+            ></span>
             <span class="editor-tab-label">{{ item.name }}</span>
+            <span v-if="item.dirty" class="editor-tab-dirty-sr">
+              (unsaved changes)
+            </span>
           </button>
           <button
             class="editor-tab-close"
             type="button"
             :aria-label="`Close ${item.name}`"
-            title="Close (nothing to save)"
+            title="Close"
             @click="files.closeFile(item.path)"
           >
             ×
           </button>
         </span>
       </div>
-      <span class="editor-badge badge gray" title="Files are opened read-only in this version">
-        read-only
+      <span
+        class="editor-badge"
+        :class="editorMode === 'read_write' ? 'badge green' : 'badge gray'"
+        :title="
+          editorMode === 'read_write'
+            ? 'Editable — the WorkBench is idle. Unsaved edits are kept in the tab, not written to disk yet.'
+            : 'Read-only — a WorkBench reply is running and may be editing these files.'
+        "
+      >
+        {{ editorMode === 'read_write' ? 'read-write' : 'read-only' }}
       </span>
     </header>
 
@@ -190,7 +226,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             <MonacoEditor
               :content="file.text"
               :language="file.language"
+              :readonly="paneReadonly"
               :aria-label="`Contents of ${file.path}`"
+              @content-change="(text) => files.updateText(file.path, text)"
             />
           </div>
         </template>

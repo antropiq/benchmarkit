@@ -65,6 +65,7 @@ function onFocus() {
     :title="rowTitle"
     :tabindex="focused ? 0 : -1"
     :data-path="path"
+    :data-dir="isDir ? 'true' : 'false'"
     :style="{ '--tree-depth': level - 1 }"
     @click="select(entry)"
     @focus="onFocus"

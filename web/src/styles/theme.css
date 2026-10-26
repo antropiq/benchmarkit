@@ -1053,7 +1053,10 @@ body {
 }
 
 .password-toggle:hover {
-  color: var(--pico-color);
+  /* Same Pico trap as .tree-context-item: on a <button> Pico redefines
+     --pico-color to its inverse, which is white in both themes — invisible
+     on the light --bi-surface-2 hover. */
+  color: var(--bi-icon);
   background-color: var(--bi-surface-2);
 }
 
@@ -2344,6 +2347,45 @@ body {
   padding-left: calc(var(--bi-space-2) + 1.2rem);
 }
 
+/* -- file context menu (WorkspaceNavigator) ----------------------------------
+   Teleported to <body> and fixed-positioned at the cursor, so the tree's
+   scrolling container cannot clip it. One surface for both items; the "Close"
+   item is simply absent (not disabled) when no tab holds the file. */
+.tree-context-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 12rem;
+  padding: var(--bi-space-1) 0;
+  background-color: var(--bi-surface);
+  border: 1px solid var(--bi-border);
+  border-radius: var(--pico-border-radius);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-context-item {
+  display: block;
+  width: 100%;
+  padding: 0.3rem 0.9rem;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  /* Pico's button rules redefine --pico-color on the button itself (see the
+     .icon-btn note), so on this element it resolves to white — invisible on
+     the light surface. Use the token Pico never touches. */
+  color: var(--bi-icon);
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-context-item:hover {
+  background-color: var(--bi-surface-2);
+  color: var(--bi-icon);
+}
+
 /* The slot bounds the height; the navigator takes it, so its tree column is
    what scrolls instead of the whole panel overflowing the screen. */
 .editor-nav-slot .editor-nav {
@@ -2432,8 +2474,9 @@ body {
 /* The name button fills the rest of the cell, so clicking anywhere on the tab
    that is not the × selects the file. */
 .editor-tab-name {
-  display: grid;
-  place-items: center start;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
   flex: 1 1 auto;
   min-width: 0;
   height: 100%;
@@ -2445,6 +2488,32 @@ body {
   font-size: 0.75rem;
   color: inherit;
   cursor: pointer;
+}
+
+/* The unsaved-changes marker: a small filled circle before the file name. It
+   sits first so a long, ellipsised name cannot push it off the visible edge.
+   The colour is the app's danger tone so it reads as "this buffer differs from
+   disk" in both themes; it is `flex: 0 0 auto` so it never shrinks away. */
+.editor-tab-dirty {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--bi-danger);
+}
+
+/* Screen-reader text for the dot, kept out of sight (and out of the truncating
+   label box) rather than shown as a `*` the sighted user never sees. */
+.editor-tab-dirty-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Pico gives a focused button its own ring; the chip's inset bar already marks
