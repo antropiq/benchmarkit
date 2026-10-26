@@ -34,10 +34,17 @@ cd web && npm run dev                    # Vite dev server :5173, proxies /api
 
 benchmarkit                              # app on http://127.0.0.1:8000
 pytest                                   # test suite (tests/)
+cd web && npm test                       # JS unit/component tests (Vitest, web/tests)
+cd web && npm run test:e2e               # Playwright e2e (web/e2e), own server on :8123
 ```
 
 No lint step; the only frontend build is `vite build`. `web/dist` must exist
 for FastAPI to serve the UI — the API works without it.
+
+The frontend has two test layers: Vitest+jsdom for composables and `lib/`, and
+Playwright e2e against the real FastAPI app (it builds `web/dist` itself). e2e
+starts its own server on a separate port and takes its LLM endpoint from
+`.env.test`, never from the developer's `.env`.
 
 ## Code structure
 
@@ -118,15 +125,16 @@ Two measurement rules hold across both:
 | File | Role |
 |---|---|
 | `.env` | Run configuration: endpoint, key, prompt, sampling, set, verifier. |
+| `.env.test` | e2e-only endpoint, same key set as `.env.example`. |
 | `resources/<set>.json` | Question sets — `{uuid, question, expected}`. |
 | `resources/memory_registration.json` | WorkBench memory-bullet slots (fixed, self-healing). |
 | `results.json` | Run output, written once when a run ends. |
 | `mcp_connectors/externals.json` | MCP connectors: `remote` (HTTP) or `local` (stdio). |
 | `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
 
-Any new file in `resources/` becomes a selectable set. The `.env` and the two
-hub files are gitignored, may hold secrets, and each has a committed template.
-Four rules tie them together:
+Any new file in `resources/` becomes a selectable set. The `.env`, `.env.test`
+and the two hub files are gitignored, may hold secrets, and each has a committed
+template. Four rules tie them together:
 
 - **`.env` is regenerated from a fixed template on every save** (`SETTING_KEYS`
   and `_render_env()` in `src/config.py`): fixed key set and order, empty

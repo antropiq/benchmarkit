@@ -12,6 +12,15 @@ dist
 dist-ssr
 *.local
 
+# Test output: Playwright traces/videos/HTML report, Vitest coverage
+test-results/
+playwright-report/
+coverage/
+
+# Vitest's cache (the `vite` cache directory is already ignored by vite's own
+# template entries above when it lands inside dist)
+.vitest/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
