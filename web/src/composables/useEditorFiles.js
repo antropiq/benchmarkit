@@ -31,8 +31,10 @@ import { reactive } from 'vue'
 const state = reactive({
   // Open buffers, in the order they were opened. Only *text* files get a
   // record: a binary or oversized file is a message in the pane, not a tab.
+  // A diff (ed: "View diff…") is a record too — same strip, same rules — with
+  // `kind: 'diff'` and two texts instead of one.
   open: [],
-  active: null, // path of the visible buffer (the tab strip's selection)
+  active: null, // key of the visible buffer (the tab strip's selection)
   loading: false,
   // What the last click answered when it did not produce a buffer:
   // { path, text, tone }, tone 'error' being a refusal (policy, size cap,
@@ -59,9 +61,31 @@ function detailOf(body, fallback) {
   return detail || fallback
 }
 
-// The record for a path, or null when it is not open.
+// The tab strip is keyed by `key`, not by `path`: a file buffer and a diff of
+// that same file are two tabs about one path, and they must not overwrite each
+// other. For a file record `key === path`; for a diff it is `diff:<path>`, a
+// prefix no workspace path can have (the server normalises them and they never
+// start with a scheme-like token).
+const DIFF_PREFIX = 'diff:'
+
+function diffKeyFor(path) {
+  return `${DIFF_PREFIX}${path}`
+}
+
+// The record for a tab key, or null when nothing is open under it.
+function recordForKey(key) {
+  return state.open.find((item) => item.key === key) ?? null
+}
+
+// The *file* buffer for a path, or null. Diff tabs are deliberately not found
+// here: the tree's "Close" item means "close that file's buffer", and a diff
+// tab of the same file must not make that promise true.
 function recordFor(path) {
-  return state.open.find((item) => item.path === path) ?? null
+  return recordForKey(path)
+}
+
+function diffRecordFor(path) {
+  return recordForKey(diffKeyFor(path))
 }
 
 export function useEditorFiles() {
@@ -104,6 +128,8 @@ export function useEditorFiles() {
         return null
       }
       const record = {
+        kind: 'file',
+        key: body.path ?? path,
         path: body.path ?? path,
         name: nameOf(body.path ?? path),
         text: body.text ?? '',
@@ -123,7 +149,7 @@ export function useEditorFiles() {
         reloadedAt: 0, // bumped by reloadFile so ed-04 can swap the document
       }
       state.open.push(record)
-      state.active = record.path
+      state.active = record.key
       return record
     } catch (exc) {
       state.message = { path, tone: 'error', text: `Could not reach the API: ${exc}` }
@@ -133,26 +159,102 @@ export function useEditorFiles() {
     }
   }
 
-  function closeFile(path) {
-    const index = state.open.findIndex((item) => item.path === path)
+  // Fetch and append-or-focus the *diff* of a path: the same append-or-focus
+  // rule as a file, on the tab keyed `diff:<path>`. The pane offers this only
+  // for a file git reports as comparable, so there is always a committed side;
+  // the server's own answer is what the tab renders, never a local guess.
+  async function openDiff(path) {
+    if (!path) return null
+    const key = diffKeyFor(path)
+    const existing = recordForKey(key)
+    if (existing) {
+      state.active = key
+      state.message = null
+      return existing
+    }
+    state.loading = true
+    state.message = null
+    try {
+      const res = await fetch(`/api/fs/diff?path=${encodeURIComponent(path)}`)
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.message = {
+          path,
+          tone: 'error',
+          text: detailOf(body, `Could not read the diff (${res.status})`),
+        }
+        return null
+      }
+      if (body.binary) {
+        // The same honest answer as a file click: a diff of two opaque blobs
+        // is not something to render, and the message says why.
+        state.message = { path, tone: 'info', text: 'binary file — no diff to show' }
+        return null
+      }
+      const record = {
+        kind: 'diff',
+        key,
+        path: body.path ?? path,
+        // The chip says which file *and* that it is a diff, so two chips for
+        // one path are never confusable when a long name is ellipsised.
+        name: `${nameOf(body.path ?? path)} (diff)`,
+        original: body.original ?? '',
+        modified: body.modified ?? '',
+        language: body.language ?? 'plaintext',
+        // 'modified' | 'added' | 'untracked' | 'deleted' | 'renamed' | 'clean'
+        status: body.status ?? 'modified',
+        baseline: body.baseline ?? 'head',
+        renamedFrom: body.renamedFrom ?? null,
+        truncated: !!body.truncated,
+        truncatedAt: body.truncatedAt ?? null,
+      }
+      state.open.push(record)
+      state.active = key
+      return record
+    } catch (exc) {
+      state.message = { path, tone: 'error', text: `Could not reach the API: ${exc}` }
+      return null
+    } finally {
+      state.loading = false
+    }
+  }
+
+  // Close one tab by its key — the shared half of close/focus, so the
+  // neighbour rule is written once for files and diffs alike.
+  function closeTab(key) {
+    const index = state.open.findIndex((item) => item.key === key)
     if (index === -1) return
     state.open.splice(index, 1)
     // The message belongs to the click that produced it, not to whatever
     // buffer is on screen now.
     state.message = null
-    if (state.active !== path) return
+    if (state.active !== key) return
     // Focus the neighbour, the way a browser closes a tab: the one to the
     // left when there was one, otherwise the new first tab, otherwise empty.
     const next = state.open[index - 1] ?? state.open[0] ?? null
-    state.active = next ? next.path : null
+    state.active = next ? next.key : null
   }
 
-  function focusFile(path) {
-    if (!recordFor(path)) return
-    state.active = path
+  // Close the *file* buffer for a path (a diff tab of the same path is a
+  // different tab and stays open).
+  function closeFile(path) {
+    closeTab(path)
+  }
+
+  function closeDiff(path) {
+    closeTab(diffKeyFor(path))
+  }
+
+  function focusTab(key) {
+    if (!recordForKey(key)) return
+    state.active = key
     // Switching to an open buffer is a new intent: a refusal or a binary note
     // from an earlier click stops being relevant to what is on screen.
     state.message = null
+  }
+
+  function focusFile(path) {
+    focusTab(path)
   }
 
   // Apply an edit from Monaco to the active buffer. Only reached while the pane
@@ -202,11 +304,18 @@ export function useEditorFiles() {
   return {
     state,
     openFile,
+    openDiff,
     closeFile,
+    closeDiff,
+    closeTab,
     focusFile,
+    focusTab,
     updateText,
     reloadFile,
     recordFor,
+    recordForKey,
+    diffRecordFor,
+    diffKeyFor,
     clearMessage,
     humanSize,
   }

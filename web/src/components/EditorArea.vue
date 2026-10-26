@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MonacoEditor from './MonacoEditor.vue'
+import MonacoDiffViewer from './MonacoDiffViewer.vue'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useBenchmark } from '../composables/useBenchmark'
@@ -34,23 +35,56 @@ const state = files.state
 // turns with `useBatch.state.active` while `phase` drops back to 'idle' (see
 // useBatch.js), so on that gap this rule makes files briefly editable. Kept as
 // specified.
-const editorMode = computed(() => (chat.state.phase === 'idle' ? 'read_write' : 'read_only'))
+// The buffer the pane shows — a file or a diff, whichever tab is active. The
+// tree's selection and this are separate state: a click that is refused (binary,
+// over the cap) selects a row and leaves the previous buffer on screen, which is
+// what the user is still looking at.
+//
+// Matched on `key`, not `path`: a file buffer and a diff of that same file are
+// two tabs about one path (useEditorFiles), and the pane has to tell them apart.
+const tab = computed(() => state.open.find((item) => item.key === state.active) ?? null)
+const isDiff = computed(() => tab.value?.kind === 'diff')
+
+// A diff tab is a reader whatever the chat is doing: its two sides come from git
+// and the disk and there is no buffer to type into, so the editable promise the
+// badge makes belongs to a file buffer only.
+const editorMode = computed(() => {
+  if (isDiff.value) return 'read_only'
+  return chat.state.phase === 'idle' ? 'read_write' : 'read_only'
+})
 const paneReadonly = computed(() => editorMode.value === 'read_only')
 
-// The buffer the pane shows. The tree's selection and this are separate state:
-// a click that is refused (binary, over the cap) selects a row and leaves the
-// previous buffer on screen, which is what the user is still looking at.
-const file = computed(() => state.open.find((f) => f.path === state.active) ?? null)
+const badgeTitle = computed(() => {
+  if (isDiff.value) {
+    return 'Read-only — this tab is a diff: the committed side and the one on disk.'
+  }
+  return editorMode.value === 'read_write'
+    ? 'Editable — the WorkBench is idle. Unsaved edits are kept in the tab, not written to disk yet.'
+    : 'Read-only — a WorkBench reply is running and may be editing these files.'
+})
 
-// One Monaco surface for the whole pane, not one per tab: `content`/`language`
-// are the only props, and switching buffers goes through the editor's model —
-// so the scroll position of a file is not what changes when a chip is clicked,
-// and closing a tab costs nothing. The `v-if="file"` below unmounts (and so
-// disposes) the surface once the last buffer is closed.
+// The one line that says what the two columns mean, so a reader never has to
+// guess which side is which — and never reads the left side as the truth.
+const diffNote = computed(() => {
+  if (!isDiff.value) return ''
+  if (tab.value.status === 'deleted') {
+    return 'deleted since the last commit — the left side is what the file was'
+  }
+  if (tab.value.renamedFrom) {
+    return `left: ${tab.value.renamedFrom} as of the last commit — right: ${tab.value.path} as it is on disk`
+  }
+  return 'left: as of the last commit — right: as it is on disk'
+})
+
+// Two Monaco surfaces share this pane, never at once: the code editor (one
+// surface, one model, swapped between file buffers) and the diff editor (two
+// models, and it cannot use the code pane's single model). Each is mounted only
+// for the tab kind that needs it, so the last tab closing disposes the surface
+// it belongs to and neither pays for the other.
 
 // Which chip is the selected one of the tablist (the roving tabindex and the
 // pane's aria-labelledby both key on it).
-const activeIndex = computed(() => state.open.findIndex((f) => f.path === state.active))
+const activeIndex = computed(() => state.open.findIndex((item) => item.key === state.active))
 
 // A tree click opens the file it selected (append-or-focus, never refetch).
 //
@@ -72,10 +106,14 @@ watch(
 // the tree selects that file, opening the collapsed branches its row hides
 // under (`reveal` fetches the listings on the way down, since the tree is lazy).
 // No DOM focus moves here: the chip the user just clicked keeps it.
+//
+// `state.active` is a tab *key*, so it is translated to the file path first: a
+// diff tab belongs to the same row in the tree as the file it diffs.
 watch(
   () => state.active,
-  (path) => {
-    if (path) tree.reveal(path)
+  (key) => {
+    const record = key ? files.recordForKey(key) : null
+    if (record) tree.reveal(record.path)
   },
 )
 
@@ -83,9 +121,10 @@ watch(
 // so the watcher above cannot carry it to the tree. Reveal here as well: the
 // tree's selection follows the tab the user pointed at, even when that buffer
 // was already on screen.
-function selectTab(path) {
-  files.focusFile(path)
-  tree.reveal(path)
+function selectTab(key) {
+  files.focusTab(key)
+  const record = files.recordForKey(key)
+  if (record) tree.reveal(record.path)
 }
 
 // The strip's keyboard model — a roving tabindex (only the selected chip is in
@@ -103,7 +142,7 @@ async function onTabsKeydown(event) {
   if (!total) return
   target = (target + total) % total
   event.preventDefault()
-  files.focusFile(state.open[target].path)
+  files.focusTab(state.open[target].key)
   await nextTick()
   tabs.value?.querySelector(`#editor-tab-${target}`)?.focus()
 }
@@ -111,13 +150,14 @@ async function onTabsKeydown(event) {
 // Ctrl+W closes the active tab — but only while the Editor tab is the visible
 // one, so the chord is never stolen from another screen. (A browser that
 // consumes Ctrl+W itself cannot be overridden from the page; the chip's × is
-// the path that always works.)
+// the path that always works.) A diff tab closes the same way: `state.active`
+// is the tab key, and closeTab works for either kind.
 function onKeydown(event) {
   if (bench.state.activeTab !== 'editor') return
   if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'w') return
   if (!state.active) return
   event.preventDefault()
-  files.closeFile(state.active)
+  files.closeTab(state.active)
 }
 
 onMounted(() => window.addEventListener('keydown', onKeydown))
@@ -137,23 +177,25 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <!-- A chip is a span, not a button: the × is a button of its own, and
              nesting one button in another is invalid markup. Middle-click
              closes too — nothing is editable, so there is nothing to confirm. -->
+        <!-- Keyed by `item.key`: a file buffer and a diff of it share a path, so
+             keying on the path would make Vue treat the two chips as one. -->
         <span
           v-for="(item, index) in state.open"
-          :key="item.path"
+          :key="item.key"
           class="editor-tab"
-          :class="{ active: item.path === state.active }"
+          :class="{ active: item.key === state.active }"
           :title="item.path"
-          @mouseup.middle.prevent="files.closeFile(item.path)"
+          @mouseup.middle.prevent="files.closeTab(item.key)"
         >
           <button
             class="editor-tab-name"
             type="button"
             role="tab"
             :id="`editor-tab-${index}`"
-            :aria-selected="item.path === state.active"
+            :aria-selected="item.key === state.active"
             aria-controls="editor-pane"
-            :tabindex="item.path === state.active ? 0 : -1"
-            @click="selectTab(item.path)"
+            :tabindex="item.key === state.active ? 0 : -1"
+            @click="selectTab(item.key)"
           >
             <!-- The unsaved-changes marker: a dot before the name, so it stays
                  visible when a long name is ellipsised at the end. A filled dot
@@ -174,7 +216,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             type="button"
             :aria-label="`Close ${item.name}`"
             title="Close"
-            @click="files.closeFile(item.path)"
+            @click="files.closeTab(item.key)"
           >
             ×
           </button>
@@ -183,18 +225,14 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       <span
         class="editor-badge"
         :class="editorMode === 'read_write' ? 'badge green' : 'badge gray'"
-        :title="
-          editorMode === 'read_write'
-            ? 'Editable — the WorkBench is idle. Unsaved edits are kept in the tab, not written to disk yet.'
-            : 'Read-only — a WorkBench reply is running and may be editing these files.'
-        "
+        :title="badgeTitle"
       >
         {{ editorMode === 'read_write' ? 'read-write' : 'read-only' }}
       </span>
     </header>
 
     <div class="editor-body">
-      <div v-if="!file && !state.message" class="stream-empty">
+      <div v-if="!tab && !state.message" class="stream-empty">
         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -232,14 +270,37 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </button>
         </p>
 
-        <template v-if="file">
+        <template v-if="tab && isDiff">
+          <!-- What the two columns are, in the pane's own words rather than
+               left to be guessed: left is the file as of the last commit, right
+               is the file on disk. A rename names the old path, because the
+               left side is the blob under that name. -->
+          <p class="caption editor-raw-note">
+            {{ diffNote }}
+          </p>
+          <div
+            class="editor-monaco"
+            id="editor-pane"
+            role="tabpanel"
+            :aria-labelledby="`editor-tab-${activeIndex}`"
+          >
+            <MonacoDiffViewer
+              :original="tab.original"
+              :modified="tab.modified"
+              :language="tab.language"
+              :aria-label="`Diff of ${tab.path}`"
+            />
+          </div>
+        </template>
+
+        <template v-else-if="tab">
           <!-- A partial is never presented as a whole: the server only sets
                `truncated` when the file grew past its cap mid-read, so this
                says which prefix is on screen rather than implying the file
                ends here. -->
-          <p v-if="file.truncated" class="caption editor-raw-note">
+          <p v-if="tab.truncated" class="caption editor-raw-note">
             file grew while it was being read — showing its first
-            {{ files.humanSize(file.truncatedAt) }}
+            {{ files.humanSize(tab.truncatedAt) }}
           </p>
           <!-- The tabpanel wrapper is app-owned: `aria-controls` on the chips
                points here, and Monaco's host inside it stays empty of app
@@ -251,11 +312,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             :aria-labelledby="`editor-tab-${activeIndex}`"
           >
             <MonacoEditor
-              :content="file.text"
-              :language="file.language"
+              :content="tab.text"
+              :language="tab.language"
               :readonly="paneReadonly"
-              :aria-label="`Contents of ${file.path}`"
-              @content-change="(text) => files.updateText(file.path, text)"
+              :aria-label="`Contents of ${tab.path}`"
+              @content-change="(text) => files.updateText(tab.path, text)"
             />
           </div>
         </template>

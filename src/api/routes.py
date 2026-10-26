@@ -1211,6 +1211,41 @@ def build_router(state: RunState) -> APIRouter:
         except editorfs.WorkspacePathError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
+    @router.get("/fs/status")
+    def get_fs_status() -> Dict[str, Any]:
+        """Which files of the working location git considers unstaged.
+
+        One call for the whole tree (not one per row), so the navigator can mark
+        the modified and untracked files of every branch it has on screen. The
+        answer is workspace-relative, and a working location that is not a git
+        repository answers ``repo: false`` with an empty list — the silent,
+        non-error case the UI is expected to ignore.
+
+        Read-only like the rest of ``/api/fs``: the query is ``git status``, and
+        ``GIT_OPTIONAL_LOCKS=0`` keeps even it from touching the index on disk.
+        """
+        try:
+            return editorfs.git_status()
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    @router.get("/fs/diff")
+    def get_fs_diff(path: str) -> Dict[str, Any]:
+        """The two sides of one file: ``original`` as of ``HEAD``, ``modified``
+        as it sits on disk.
+
+        Returned as two texts rather than a patch so the editor renders the diff
+        itself. The path goes through the same gate as the tree and the file
+        read, and the disk side is read by that same reader — so the size cap,
+        the binary answer and the policy refusal are identical here. A file with
+        no committed side (added, untracked) gets an empty ``original``; the UI
+        does not offer the item for one.
+        """
+        try:
+            return editorfs.file_diff(path)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
     # -- terminal (ed-06): one PTY per WebSocket --------------------------------
 
     @router.get("/terminal")

@@ -10,6 +10,11 @@ Core-only (no FastAPI, no browser concerns), a sibling of ``mcphub/`` and
 * :mod:`editorfs.files` ``read_file`` (``GET /api/fs/file``) and ``stat_paths``
   (the live-reload probe); ed-10, a future version, adds the guarded write —
   see decision D4)
+* :mod:`editorfs.gitstatus` the read-only git queries: ``git_status``
+  (``GET /api/fs/status``, which rows to mark) and ``file_diff``
+  (``GET /api/fs/diff``, the two sides of one file). They answer *about* the
+  working location and never change it — no stage, no commit, no checkout —
+  and every path they report goes through the same policy as the tree.
 
 Two invariants the whole Editor lot rests on:
 
@@ -25,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import constants
 from .files import read_file, stat_paths
+from .gitstatus import file_diff, git_status
 from .policy import (
     WorkspacePathError,
     listable,
@@ -54,8 +60,10 @@ def __getattr__(name: str) -> Any:  # PEP 562
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .constants import (
         BINARY_SNIFF_BYTES,
+        GIT_COMMAND_TIMEOUT,
         IGNORED_DIR_NAMES,
         MAX_EDITOR_BYTES,
+        MAX_STATUS_ENTRIES,
         MAX_TREE_ENTRIES_PER_DIR,
         PROJECT_ROOT,
     )

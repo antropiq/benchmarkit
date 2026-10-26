@@ -2356,6 +2356,56 @@ body {
   padding-left: calc(var(--bi-space-2) + 1.2rem);
 }
 
+/* -- the unstaged marker (WorkspaceTreeItem) ---------------------------------
+   A dot after the file name, coloured by what git says about it. It is a
+   decoration on the row, not a control: it takes no click, and its meaning is
+   carried by the `title` of the dot plus a visually-hidden label — colour alone
+   is never the only signal. `flex: 0 0 auto` keeps it on screen when a long
+   name is ellipsised.
+
+   The colours are the app's own status tokens, chosen to read like git's:
+   amber for a modification, green for something git does not track yet. A
+   folder's mark ("something inside changed") uses the muted token, because it
+   is a hint about a subtree rather than a claim about this file. */
+.tree-mark {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--bi-warning);
+}
+
+.tree-mark--untracked,
+.tree-mark--added {
+  background-color: var(--bi-success);
+}
+
+.tree-mark--deleted {
+  background-color: var(--bi-danger);
+}
+
+.tree-mark--conflict {
+  background-color: var(--bi-violet);
+}
+
+.tree-mark--below {
+  background-color: color-mix(in srgb, var(--pico-muted-color) 70%, transparent);
+}
+
+/* Same visually-hidden pattern as .editor-tab-dirty-sr: the marker's words go
+   to a screen reader without becoming text a sighted user sees twice. */
+.tree-mark-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* -- file context menu (WorkspaceNavigator) ----------------------------------
    Teleported to <body> and fixed-positioned at the cursor, so the tree's
    scrolling container cannot clip it. One surface for both items; the "Close"

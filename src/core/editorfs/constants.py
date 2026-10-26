@@ -23,6 +23,16 @@ MAX_EDITOR_BYTES = 1_000_000
 # Leading bytes scanned for a NUL when deciding whether a file is binary.
 BINARY_SNIFF_BYTES = 8192
 
+# How long one read-only git query may take (``editorfs.gitstatus``). The
+# status of a huge checkout is still a directory scan, and a stale
+# ``.git/index.lock`` must not be able to hang an Editor request.
+GIT_COMMAND_TIMEOUT = 10.0
+
+# Changed paths one ``/api/fs/status`` payload may carry — the sibling rule of
+# ``MAX_TREE_ENTRIES_PER_DIR``: a work tree with 200k loose files answers a
+# bounded list plus ``truncated: true`` instead of a huge response.
+MAX_STATUS_ENTRIES = 5000
+
 # Directory names never offered by the tree. A productivity default, not a
 # security rule — the deny-list in ``mcp_connectors/path_policy.py`` is the
 # security rule (``.git`` is denied there too, so it could never appear).

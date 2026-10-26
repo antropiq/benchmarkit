@@ -11,7 +11,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test --pass-with-no-tests",
-    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:headed": "playwright test --headed --pass-with-no-tests",
     "test:e2e:report": "playwright show-report"
   },
   "dependencies": {

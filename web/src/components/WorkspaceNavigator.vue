@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import WorkspaceTreeItem from './WorkspaceTreeItem.vue'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useEditorFiles } from '../composables/useEditorFiles'
+import { useGitStatus } from '../composables/useGitStatus'
+import { useBenchmark } from '../composables/useBenchmark'
 import { fileIcon } from '../lib/file-icons'
 // The rows render Nerd Font glyphs (lib/file-icons). This CSS declares the
 // "JetBrains Mono Nerd Icons" face those code points need; it is unicode-range-
@@ -26,10 +28,36 @@ const {
   handleKey,
 } = useWorkspaceTree()
 
+const git = useGitStatus()
+
 onMounted(() => {
   // First paint: exactly one listing, whatever the size of the checkout.
   if (!state.nodes[ROOT]?.loaded) load(ROOT)
+  // One status query for the whole work tree, alongside that single listing —
+  // never one per row. A location that is not a repository answers `repo:
+  // false` with nothing to mark, so the tree simply looks the same.
+  git.load()
 })
+
+// Re-reading git is part of what the refresh button promises: the point of it
+// is that the working location moved on disk (the WorkBench, the terminal, or
+// an editor outside the app), and a file that changed there is exactly what
+// the user wants to see marked.
+async function refreshAll() {
+  await refresh()
+  git.load({ force: true })
+}
+
+// A marker is worth something only if it is current, and the moment it goes
+// stale is the moment the user was elsewhere. Coming back to the Editor tab
+// re-reads it — cheap (one `git status`) and invisible.
+const bench = useBenchmark()
+watch(
+  () => bench.state.activeTab,
+  (tab) => {
+    if (tab === 'editor') git.load({ force: true })
+  },
+)
 
 const refreshing = computed(() => !!state.nodes[ROOT]?.loading)
 // The collapse button has nothing to do while only the root is open, so it
@@ -49,6 +77,8 @@ const rootLevel = computed(() => depthOf(ROOT) + 1)
 // it always is at the top) — without it the first level of children would not
 // line up under their parent's icon.
 const rootIcon = computed(() => fileIcon('', { dir: true, open: !!state.expanded[ROOT] }))
+// The root row's hint: any unstaged file anywhere in the browsed subtree.
+const rootMarked = computed(() => git.state.entries.length > 0)
 
 const tree = ref(null)
 
@@ -95,6 +125,11 @@ watch(() => state.focused, scrollFocusedIntoView)
 // target. Files get the menu; the root and folder rows do not (for now).
 //
 // The items:
+//   * View diff… — only for an unstaged file git says it can compare, i.e. one
+//     with a committed side (`comparable`). An untracked or newly added file is
+//     marked in the tree but has nothing to diff *against*, so the item is
+//     absent rather than disabled-and-lying. The tab it opens lives in the same
+//     strip as the file tabs (useEditorFiles.openDiff).
 //   * Close — only shown when a tab already holds this file; the same action
 //     as the chip's × (useEditorFiles.closeFile). A dirty buffer closes and
 //     discards: there is no save yet, so there is nothing to confirm.
@@ -103,6 +138,8 @@ watch(() => state.focused, scrollFocusedIntoView)
 const files = useEditorFiles()
 const menu = reactive({ open: false, x: 0, y: 0, path: null })
 const menuCanClose = computed(() => !!menu.path && !!files.recordFor(menu.path))
+// A folder row never opens this menu at all, so `menu.path` is always a file.
+const menuCanDiff = computed(() => !!menu.path && git.isDiffable(menu.path))
 const menuEl = ref(null)
 
 function openMenu(event) {
@@ -136,6 +173,11 @@ function closeMenu() {
   if (!menu.open) return
   menu.open = false
   menu.path = null
+}
+
+function menuViewDiff() {
+  if (menu.path) files.openDiff(menu.path)
+  closeMenu()
 }
 
 function menuClose() {
@@ -195,8 +237,8 @@ onBeforeUnmount(() => {
           type="button"
           :disabled="refreshing"
           aria-label="Refresh the file tree"
-          title="Re-list every open folder (the working location may have moved)"
-          @click="refresh"
+          title="Re-list every open folder and re-read which files are unstaged"
+          @click="refreshAll"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -256,6 +298,15 @@ onBeforeUnmount(() => {
         </span>
         <span class="tree-icon" aria-hidden="true">{{ rootIcon }}</span>
         <span class="tree-name">{{ rootLabel() }}</span>
+        <!-- The root is a folder like any other, so it carries the same hint:
+             something in the work tree is unstaged, even in a branch that is
+             closed right now. -->
+        <span
+          v-if="rootMarked"
+          class="tree-mark tree-mark--below"
+          title="contains modified or untracked files"
+          aria-hidden="true"
+        ></span>
       </div>
 
       <template v-if="state.expanded[ROOT]">
@@ -290,6 +341,15 @@ onBeforeUnmount(() => {
         :style="{ left: menu.x + 'px', top: menu.y + 'px' }"
         @contextmenu.prevent
       >
+        <button
+          v-if="menuCanDiff"
+          class="tree-context-item"
+          type="button"
+          role="menuitem"
+          @click="menuViewDiff"
+        >
+          View diff…
+        </button>
         <button
           v-if="menuCanClose"
           class="tree-context-item"

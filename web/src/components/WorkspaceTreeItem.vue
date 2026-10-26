@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
+import { useGitStatus } from '../composables/useGitStatus'
 import { fileIcon } from '../lib/file-icons'
 
 // One row of the workspace tree, recursive: a directory renders its own row
@@ -15,6 +16,7 @@ const props = defineProps({
 })
 
 const { state, select, depthOf } = useWorkspaceTree()
+const git = useGitStatus()
 
 const path = computed(() => props.entry.path)
 const isDir = computed(() => !!props.entry.dir)
@@ -36,6 +38,33 @@ const rowTitle = computed(() =>
 const icon = computed(() =>
   fileIcon(props.entry.name, { dir: isDir.value, open: expanded.value }),
 )
+
+// The unstaged marker: a dot after the name, in git's own colours — amber for
+// a modification, green for a file that is not tracked yet. A folder carries
+// one when *anything below* it is unstaged, so a collapsed branch still hints
+// at what it hides; that mark has no kind of its own.
+//
+// The row's `title` already says the path, so the marker's meaning goes in the
+// `title` of its own span (which wins on hover), and a screen reader gets the
+// same words from a visually-hidden label rather than from the colour.
+const gitEntry = computed(() => git.statusFor(path.value))
+const markKind = computed(() => {
+  if (gitEntry.value) return gitEntry.value.kind
+  return isDir.value && git.hasUnstagedBelow(path.value) ? 'below' : null
+})
+const MARK_LABEL = {
+  modified: 'modified since the last commit',
+  added: 'new since the last commit',
+  untracked: 'not tracked by git',
+  deleted: 'deleted since the last commit',
+  renamed: 'renamed since the last commit',
+  conflict: 'in conflict',
+  below: 'contains modified or untracked files',
+}
+const markTitle = computed(() => MARK_LABEL[markKind.value] || '')
+// The class carries the colour by kind, so CSS decides what git's colours are
+// in each theme rather than a literal here.
+const markClass = computed(() => (markKind.value ? `tree-mark--${markKind.value}` : ''))
 
 function humanSize(bytes) {
   if (bytes === null || bytes === undefined) return ''
@@ -79,6 +108,18 @@ function onFocus() {
     </span>
     <span class="tree-icon" aria-hidden="true">{{ icon }}</span>
     <span class="tree-name">{{ entry.name }}</span>
+    <!-- The unstaged marker: a dot whose colour carries the kind. It follows
+         the name (the name is what needs qualifying) and never shrinks, so a
+         long ellipsised label cannot hide it — unlike the chip's dirty dot,
+         which sits first for the same reason. -->
+    <span
+      v-if="markKind"
+      class="tree-mark"
+      :class="markClass"
+      :title="markTitle"
+      aria-hidden="true"
+    ></span>
+    <span v-if="markKind" class="tree-mark-sr">{{ markTitle }}</span>
     <span v-if="loading && isDir" class="tree-spinner caption" aria-hidden="true">…</span>
   </div>
 
