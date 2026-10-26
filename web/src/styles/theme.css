@@ -17,17 +17,15 @@
   --bi-space-3: 1.25rem;
   --bi-space-4: 2rem;
   --bi-appbar-height: 60px;
-  /* Width of ONE chat toggle panel (MCP or LSP). In the input row the MCP
-     and LSP panels sit side by side inside `.chat-toggle-col`, and the
-     tool/reasoning timeline of the row above spans that whole column, so
-     both rows line up edge to edge through --bi-chat-toggle-col-width.
-     Sized so connector names fit next to their switch (also wide enough
-     that the vertical scrollbar never squeezes a row sideways). The input
-     row's stats panel no longer participates (it moved to the right of the
-     textarea and hugs its content). Keep the calc's gap in sync with
-     `.chat-toggle-col`'s gap. */
+  /* Width of ONE chat tool panel (MCP or LSP). The two sit side by side in
+     the tools dock at the bottom of the Chat left column, and the reasoning
+     timeline above them fills that same width, so the column is
+     --bi-chat-tools-col-width wide. Sized so connector names fit next to
+     their switch (also wide enough that the vertical scrollbar never
+     squeezes a row sideways). Keep the calc's gap in sync with
+     `.chat-tools-dock-body`'s gap. */
   --bi-chat-panel-width: 15.5rem;
-  --bi-chat-toggle-col-width: calc(2 * var(--bi-chat-panel-width) + 0.5rem);
+  --bi-chat-tools-col-width: calc(2 * var(--bi-chat-panel-width) + 0.5rem);
 
   /* Gradient gauge ramp: green → yellow → orange → red (theme-independent). */
   --bi-gauge-low: #22c55e;
@@ -1166,9 +1164,13 @@ body {
 
 /* -- chat screen ----------------------------------------------------------------- */
 
+/* Two columns side by side under the app bar, each a flex *column* with its
+   own splitter: the left is the reasoning timeline above the tools dock, the
+   right is the conversation above the composer. Every splitter therefore
+   sizes only its own column — the composer bar never reaches the left one. */
 .chat-shell {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: var(--bi-space-2);
   box-sizing: border-box;
   width: 100%;
@@ -1176,17 +1178,32 @@ body {
   padding: var(--bi-space-2) clamp(1rem, 3vw, 2rem) var(--bi-space-3);
 }
 
-/* Output row ~4/5, input row ~1/5 of the space below the app bar. The
-   output row is the tool-call panel plus the conversation, side by side. */
-.chat-stream-row {
-  flex: 4 1 0;
-  min-height: 0;
+.chat-col {
   display: flex;
+  flex-direction: column;
   gap: var(--bi-space-2);
+  min-height: 0;
+  min-width: 0;
+}
+
+/* The left column is as wide as the two tool panels it stacks under the
+   timeline (see --bi-chat-tools-col-width); the conversation takes the rest.
+   `--single` (only one of the two panels has something to show) narrows it to
+   one panel's width — the timeline and the dock both just fill the column. */
+.chat-col--left {
+  flex: 0 0 var(--bi-chat-tools-col-width);
+}
+
+.chat-col--left.chat-col--single {
+  flex-basis: var(--bi-chat-panel-width);
+}
+
+.chat-col--right {
+  flex: 1 1 auto;
 }
 
 .chat-output {
-  flex: 1 1 auto;
+  flex: 4 1 0;
   min-width: 0;
   height: auto;
   min-height: 0;
@@ -1194,7 +1211,11 @@ body {
 
 .chat-input {
   flex: 1 1 0;
-  min-height: 0;
+  /* The composer splitter's own minimum (useSplitter's CHAT_MIN_RESIZED): the
+     button row plus a usable textarea. Stated here too so the flex floor and
+     the drag clamp agree, and a very short window cannot crush the composer
+     under its own content before anything has been dragged. */
+  min-height: 124px;
   display: flex;
   align-items: stretch;
   gap: 0.75rem;
@@ -1259,7 +1280,9 @@ body {
   height: 96px;
 }
 
-/* Chat: the lying bar between the output row and the input row. */
+/* Chat: the two thin bars, one per column — conversation over composer, and
+   reasoning timeline over the tools dock. Both overlap the column gap a
+   little so the hit area is bigger than the pill looks. */
 .chat-resizer {
   height: 10px;
   margin: -3px 0;
@@ -1284,8 +1307,8 @@ body {
 }
 
 /* Stats/actions panel right of the chat textarea, same height (stretch);
-   hugs its content (no fixed basis - the left column is the toggle column
-   and the tool panel now aligns with that instead). */
+   hugs its content (no fixed basis — the composer row owns the full width of
+   the right column now that the tool panels moved out of it). */
 .chat-side-panel {
   flex: 0 0 auto;
   min-width: 0;
@@ -1501,31 +1524,88 @@ body {
   padding: 0.15rem;
 }
 
-/* Left column of the input row: the conversation-scoped MCP panel next to
-   the LSP panel, sitting directly under the tool/reasoning timeline of the
-   row above. Width comes from --bi-chat-toggle-col-width (two panels plus
-   the gap), the same basis as `.chat-tool-panel`, so the two rows line up
-   edge to edge. The panels split the column's width equally and stretch to
-   its full height; each scrolls vertically when its list outgrows that
-   height (the input row itself is splitter-bounded).
-   `--single` (only one of the two panels has something to show) narrows the
-   column to one panel — `.chat-tool-panel` gets the matching modifier so
-   the alignment holds either way.
-   `.chat-lsp-panel` (ChatLspPanel.vue) reuses every rule of this column —
-   rows, dots, labels. */
-.chat-toggle-col {
-  flex: 0 0 var(--bi-chat-toggle-col-width);
+/* The dock at the bottom of the Chat left column: its head strip (title plus
+   the fold button, and the enabled-hub summary while folded) over the MCP
+   panel beside the LSP panel. It fills the column's width, so the reasoning
+   timeline above it is the same width by construction. Each panel scrolls
+   vertically when its list outgrows the dock's height, which the column's
+   own splitter bounds — and the dock shrinks down to its head strip when a
+   short window would otherwise push the timeline under its floor.
+   `.chat-lsp-panel` (WorkBenchLspPanel.vue) reuses every rule of this
+   column — rows, dots, labels. */
+.chat-tools-dock {
+  /* Height when nothing has been dragged yet: a list's worth of switches,
+     clamped so the timeline above stays readable whatever the hub files
+     declare. Once the bar is dragged, the view writes the whole shorthand
+     inline (`flex: 0 0 <px>`), which replaces this. In px on purpose — the
+     splitter clamps its drag in px too (104 min), and the root font size is
+     not 16px here. */
+  flex: 0 1 clamp(104px, 26%, 256px);
   min-width: 0;
   min-height: 0;
-  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Folded (or with nothing to switch): the head strip only, sized by its own
+   content — so `flex` has to be reset, or the basis above would keep the
+   empty body's height. */
+.chat-tools-dock--collapsed {
+  flex: 0 0 auto;
+  gap: 0;
+}
+
+/* Pinned, so squeezing the dock ever further takes the switch list rather
+   than the strip that carries the unfold button. */
+.chat-tools-dock-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.2rem 0.45rem;
+  background-color: var(--bi-surface);
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.chat-tools-dock-title {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+/* Folded, the strip is the only thing left, so it has to carry the state the
+   two switch lists used to show. */
+.chat-tools-dock-summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--pico-muted-color);
+}
+
+/* Half the size of the chat action buttons: this strip is a single line, so a
+   36px circle would be the one thing deciding its height. `margin: 0 0 0 auto`
+   also undoes the 1rem bottom margin Pico puts on every <button>, which would
+   otherwise add that 1rem to the strip. */
+.chat-tools-dock-toggle {
+  flex: 0 0 auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: 0 0 0 auto;
+}
+
+.chat-tools-dock-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: row;
   align-items: stretch;
   gap: 0.5rem;
-}
-
-.chat-toggle-col--single {
-  flex-basis: var(--bi-chat-panel-width);
 }
 
 .chat-mcp-panel,
@@ -1894,28 +1974,23 @@ body {
    scrolls inside `.chat-tool-scroll` so the iteration gauge stays
    bottom-pinned and always visible.
 
-   Width: the input row's MCP + LSP toggle column below it
-   (`--bi-chat-toggle-col-width` — the two panels side by side plus their
-   gap), so the two rows line up edge to edge as one left column. When only
-   one of the two toggle panels is rendered, `.chat-toggle-col--single`
-   narrows that column to a single panel and this panel follows with the
-   matching `--single` modifier. */
+   Size: it fills its column's width (`.chat-col--left`), and takes every
+   pixel of that column's height the tools dock and their bar leave free —
+   which is all of it while the dock is folded. `min-height` is the floor
+   flex still honours when a short window lets the dock's own content claim
+   the column (the dock shrinks and scrolls instead). */
 .chat-tool-panel {
-  flex: 0 0 var(--bi-chat-toggle-col-width);
+  flex: 1 1 0;
   min-width: 0;
-  min-height: 0;
+  /* The dock splitter's `minOther` in px: the flex floor and the drag clamp
+     must agree about how small the timeline may get. */
+  min-height: 160px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background-color: var(--bi-surface);
   border: 1px solid var(--bi-border);
   border-radius: var(--bi-radius-lg);
-}
-
-/* Mirrors `.chat-toggle-col--single` below (only one of the two tool
-   panels is rendered): one panel's width instead of two. */
-.chat-tool-panel--single {
-  flex-basis: var(--bi-chat-panel-width);
 }
 
 .chat-tool-scroll {
@@ -2079,9 +2154,9 @@ body {
   color: var(--bi-danger);
 }
 
-/* Narrow screens: the Chat left column (tool panel + toggle column) shrinks.
-   The toggle column's width is derived from the per-panel token, so one
-   override keeps both rows aligned. */
+/* Narrow screens: the Chat left column (timeline over the tools dock) shrinks.
+   The column's width is derived from the per-panel token, so one override
+   keeps the timeline and the dock aligned at every breakpoint. */
 @media (max-width: 1100px) {
   .chat-shell {
     --bi-chat-panel-width: 11rem;

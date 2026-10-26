@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
 import { useBatch } from '../composables/useBatch'
+import { mcpVisible } from '../lib/chat-hubs'
 
 const { state, setChatMcp, restartMcp } = useChat()
 const { state: batch } = useBatch()
@@ -16,9 +17,7 @@ const DOT_CLASS = {
 
 // Hidden while the snapshot is unavailable or nothing is activated in
 // Settings: only Settings-launched connectors may ever appear here.
-const visible = computed(
-  () => state.mcp.loaded && state.mcp.connectors.length > 0,
-)
+const visible = computed(() => mcpVisible(state))
 // The toggles freeze with the first accepted send anyway; the batch flag covers
 // the between-tasks window, so a lot really does run under one identical tool
 // set (useChat's own guard refuses the change too, so the rule lives in both

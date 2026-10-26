@@ -203,6 +203,7 @@ export function useSplitter(shellRef, resizedRef, options = {}) {
 
   return {
     dragging,
+    size,
     shellStyle,
     topStyle,
     bottomStyle,

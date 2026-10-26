@@ -36,20 +36,6 @@ const lastAssistant = computed(() => {
 const gaugeValue = computed(() => lastAssistant.value?.mcpIteration ?? 0)
 const gaugeMax = computed(() => lastAssistant.value?.mcpMax ?? 0)
 
-// Width follows the input row's toggle column below (same `visible`
-// conditions as WorkBenchInput.vue): two panels wide only when both the MCP and
-// the LSP panel are rendered, one panel wide when just one of them is, and
-// one panel wide when neither is (no column to align with).
-const singlePanel = computed(
-  () =>
-    !(
-      state.mcp.loaded &&
-      state.mcp.connectors.length > 0 &&
-      state.lsp.loaded &&
-      state.lsp.servers.length > 0
-    ),
-)
-
 const list = ref(null)
 const signature = computed(() => {
   const last = blocks.value[blocks.value.length - 1]
@@ -153,7 +139,6 @@ function toolLabel(tool) {
 <template>
   <aside
     class="chat-tool-panel"
-    :class="{ 'chat-tool-panel--single': singlePanel }"
     aria-label="Model reasoning and MCP tool calls"
   >
     <div

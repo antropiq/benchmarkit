@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
 import { useBatch } from '../composables/useBatch'
+import { lspVisible } from '../lib/chat-hubs'
 
 const { state, setChatLsp, restartLsp } = useChat()
 const { state: batch } = useBatch()
@@ -19,9 +20,7 @@ const DOT_CLASS = {
 // Settings: only Settings-launched language servers may appear here (the
 // restart button lives inside this panel, so with no declared server there is
 // nothing to restart and the column stays hidden, as before).
-const visible = computed(
-  () => state.lsp.loaded && state.lsp.servers.length > 0,
-)
+const visible = computed(() => lspVisible(state))
 // Same pair as the MCP panel: the batch flag covers the between-tasks window.
 const locked = computed(
   () => state.lsp.locked || state.phase !== 'idle' || batch.active,

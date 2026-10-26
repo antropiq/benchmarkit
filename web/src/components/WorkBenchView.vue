@@ -8,8 +8,10 @@ import { humanFileSize, useChat } from '../composables/useChat.js'
 import { useMemory } from '../composables/useMemory.js'
 import { useAutoScroll } from '../composables/useAutoScroll.js'
 import { useBenchmark } from '../composables/useBenchmark.js'
-import { useSplitter } from '../composables/useSplitter.js'
+import { useChatLayout } from '../composables/useChatLayout.js'
 import { useBatch } from '../composables/useBatch.js'
+import { anyHub, bothHubs } from '../lib/chat-hubs.js'
+import WorkBenchToolsDock from './WorkBenchToolsDock.vue'
 
 const { state, editLast, clearImage, loadChatLsp, loadChatMcp } = useChat()
 const { state: batch } = useBatch()
@@ -41,7 +43,6 @@ const lastUserIndex = computed(() => {
   return -1
 })
 
-const shell = ref(null)
 const input = ref(null)
 const panel = ref(null)
 
@@ -58,22 +59,53 @@ const contentVersion = computed(() =>
     .join(','),
 )
 const { onScroll } = useAutoScroll(panel, contentVersion)
+const leftCol = ref(null)
+const rightCol = ref(null)
+const dock = ref(null)
+
+// Two splitters, one per column: the right one sizes the composer row (it used
+// to span the whole shell and so sized the left column too), the left one
+// sizes the tools dock under the reasoning timeline. See useChatLayout.
 const {
-  dragging,
-  topStyle,
-  bottomStyle,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
-  onKeyDown,
-  onDoubleClick,
-} = useSplitter(shell, input)
+  column: dockSplit,
+  composer: composerSplit,
+  dockCollapsed,
+} = useChatLayout(leftCol, rightCol, input, dock)
 </script>
 
 <template>
-  <div ref="shell" class="chat-shell">
-    <div class="chat-stream-row" :style="topStyle">
+  <div class="chat-shell">
+    <div
+      ref="leftCol"
+      class="chat-col chat-col--left"
+      :class="{ 'chat-col--single': !bothHubs(state) }"
+    >
       <WorkBenchToolPanel />
+      <div
+        v-if="anyHub(state) && !dockCollapsed"
+        class="pane-resizer chat-resizer chat-col-resizer"
+        :class="{ dragging: dockSplit.dragging.value }"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize the tool panels (drag, arrow keys, double-click to reset)"
+        tabindex="0"
+        @pointerdown="dockSplit.onPointerDown"
+        @pointermove="dockSplit.onPointerMove"
+        @pointerup="dockSplit.onPointerUp"
+        @pointercancel="dockSplit.onPointerUp"
+        @keydown="dockSplit.onKeyDown"
+        @dblclick="dockSplit.onDoubleClick"
+      ></div>
+      <WorkBenchToolsDock
+        ref="dock"
+        v-model:collapsed="dockCollapsed"
+        :style="
+          dockCollapsed || !anyHub(state) ? null : dockSplit.bottomStyle.value
+        "
+      />
+    </div>
+
+    <div ref="rightCol" class="chat-col chat-col--right">
       <div
         ref="panel"
         class="chat-output stream-panel"
@@ -198,24 +230,24 @@ const {
           </p>
         </div>
       </div>
+
+      <div
+        class="pane-resizer chat-resizer"
+        :class="{ dragging: composerSplit.dragging.value }"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize the message input (drag, arrow keys, double-click to reset)"
+        tabindex="0"
+        @pointerdown="composerSplit.onPointerDown"
+        @pointermove="composerSplit.onPointerMove"
+        @pointerup="composerSplit.onPointerUp"
+        @pointercancel="composerSplit.onPointerUp"
+        @keydown="composerSplit.onKeyDown"
+        @dblclick="composerSplit.onDoubleClick"
+      ></div>
+
+      <WorkBenchInput ref="input" :style="composerSplit.bottomStyle.value" />
     </div>
-
-    <div
-      class="pane-resizer chat-resizer"
-      :class="{ dragging }"
-      role="separator"
-      aria-orientation="horizontal"
-      aria-label="Resize the message input (drag, arrow keys, double-click to reset)"
-      tabindex="0"
-      @pointerdown="onPointerDown"
-      @pointermove="onPointerMove"
-      @pointerup="onPointerUp"
-      @pointercancel="onPointerUp"
-      @keydown="onKeyDown"
-      @dblclick="onDoubleClick"
-    ></div>
-
-    <WorkBenchInput ref="input" :style="bottomStyle" />
 
     <ImageLightbox :image="preview" @close="preview = null" />
   </div>
