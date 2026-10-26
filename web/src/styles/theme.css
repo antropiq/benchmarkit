@@ -2219,6 +2219,15 @@ body {
   padding: 0 var(--bi-space-2);
 }
 
+/* The head's two buttons (refresh, collapse-all) sit as one unit at the right
+   of the workspace name, so `space-between` above still pins title-left. */
+.editor-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--bi-space-1);
+  flex: 0 0 auto;
+}
+
 /* The browsed workspace by name; the absolute path stays in the title, so the
    label never has to be truncated to say *which* checkout this is. */
 .editor-nav-title {

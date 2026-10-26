@@ -19,6 +19,7 @@ const {
   load,
   refresh,
   toggle,
+  collapseAll,
   rootLabel,
   depthOf,
   ROOT,
@@ -31,6 +32,11 @@ onMounted(() => {
 })
 
 const refreshing = computed(() => !!state.nodes[ROOT]?.loading)
+// The collapse button has nothing to do while only the root is open, so it
+// says so instead of looking clickable.
+const canCollapse = computed(
+  () => Object.keys(state.expanded).some((path) => path !== ROOT),
+)
 const rootTitle = computed(
   () =>
     `${state.workspace || 'workspace root'} — click to ${
@@ -164,20 +170,38 @@ onBeforeUnmount(() => {
       <p class="caption editor-nav-title" :title="state.workspace">
         {{ rootLabel() }}
       </p>
-      <button
-        class="icon-btn editor-nav-refresh"
-        type="button"
-        :disabled="refreshing"
-        aria-label="Refresh the file tree"
-        title="Re-list every open folder (the working location may have moved)"
-        @click="refresh"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
-          <path d="M3 3v5h5" />
-        </svg>
-      </button>
+      <div class="editor-nav-actions">
+        <button
+          class="icon-btn editor-nav-refresh"
+          type="button"
+          :disabled="refreshing"
+          aria-label="Refresh the file tree"
+          title="Re-list every open folder (the working location may have moved)"
+          @click="refresh"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+            <path d="M3 3v5h5" />
+          </svg>
+        </button>
+        <!-- Close every opened branch at once. Distinct from the root row's own
+             chevron: this one leaves the root open and its listing cached, so
+             nothing is re-fetched on the way back down. -->
+        <button
+          class="icon-btn editor-nav-collapse"
+          type="button"
+          :disabled="!canCollapse"
+          aria-label="Close all opened folders in the file tree"
+          title="Collapse every opened folder"
+          @click="collapseAll"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+      </div>
     </div>
 
     <p v-if="state.error" class="alert-error editor-nav-error" role="alert">

@@ -143,6 +143,17 @@ export function useWorkspaceTree() {
     delete state.expanded[path]
   }
 
+  // Close every branch the user opened, in one click. The root itself stays
+  // open — a collapsed root would leave a tree with no row left to re-open.
+  // Listings keep their cache, so re-expanding a folder costs no request.
+  // Focus lands on the root: it is the only row guaranteed to still be on
+  // screen, and a focused path that vanished would leave the roving tabindex
+  // with nothing in the tab order.
+  function collapseAll() {
+    state.expanded = { [ROOT]: true }
+    state.focused = ROOT
+  }
+
   function toggle(path) {
     if (state.expanded[path]) collapse(path)
     else expand(path)
@@ -237,6 +248,7 @@ export function useWorkspaceTree() {
     refresh,
     expand,
     collapse,
+    collapseAll,
     toggle,
     select,
     entryFor,
