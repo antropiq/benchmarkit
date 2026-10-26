@@ -2396,6 +2396,11 @@ body {
 /* -- code pane (ed-03 / ed-04 fill this body) ---------------------------------- */
 
 .editor-area {
+  /* Pico gives every bare `section` a bottom block margin. In a grid whose rows
+     are sized to the panes that margin shrinks the item inside its own track, so
+     it reads as a gap *between* the pane and its resizer bar — the one thing
+     this edge-to-edge shell must not have (the tree, an `<aside>`, has none). */
+  margin: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -2623,6 +2628,7 @@ body {
 /* -- terminal strip (ed-06 / ed-07 mount the real session here) --------------- */
 
 .editor-terminal {
+  margin: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
