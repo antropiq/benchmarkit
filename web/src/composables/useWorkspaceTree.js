@@ -90,35 +90,52 @@ function openDirPaths() {
   return out
 }
 
+// The fetch in flight per path, kept outside the reactive state so nobody
+// observes a Promise. A second `load()` for the same path *joins* it rather
+// than returning early: an awaiting caller then learns the listing instead of
+// "someone else is busy", which is what reveal() below depends on.
+const inflight = new Map()
+
 export function useWorkspaceTree() {
-  // A path is fetched at most once concurrently; a second call while one is in
-  // flight is a no-op (double clicks never double-list).
+  // A path is fetched at most once concurrently (double clicks never
+  // double-list).
   async function load(path = ROOT, { force = false } = {}) {
     const entry = node(path)
-    if (entry.loading) return
+    if (entry.loaded && !force) return
+    const running = inflight.get(path)
+    // A joining caller waits for the running fetch instead of returning
+    // "someone else is busy" — that is what reveal() below depends on. A
+    // forced call still re-lists afterwards: after refresh() dropped the
+    // cache, the fetch it joins writes into an orphaned entry.
+    if (running) await running
     if (entry.loaded && !force) return
     entry.loading = true
     state.error = null
-    try {
-      const res = await fetch(`/api/fs/tree?path=${encodeURIComponent(path)}`)
-      const body = await res.json().catch(() => null)
-      if (!res.ok) {
-        const detail = typeof body?.detail === 'string' ? body.detail : ''
-        entry.error = detail || `Could not list the folder (${res.status})`
+    const run = (async () => {
+      try {
+        const res = await fetch(`/api/fs/tree?path=${encodeURIComponent(path)}`)
+        const body = await res.json().catch(() => null)
+        if (!res.ok) {
+          const detail = typeof body?.detail === 'string' ? body.detail : ''
+          entry.error = detail || `Could not list the folder (${res.status})`
+          state.error = entry.error
+          return
+        }
+        state.workspace = body.workspace || state.workspace
+        entry.entries = body.entries || []
+        entry.truncated = !!body.truncated
+        entry.loaded = true
+        entry.error = null
+      } catch (exc) {
+        entry.error = `Could not reach the API: ${exc}`
         state.error = entry.error
-        return
+      } finally {
+        entry.loading = false
+        inflight.delete(path)
       }
-      state.workspace = body.workspace || state.workspace
-      entry.entries = body.entries || []
-      entry.truncated = !!body.truncated
-      entry.loaded = true
-      entry.error = null
-    } catch (exc) {
-      entry.error = `Could not reach the API: ${exc}`
-      state.error = entry.error
-    } finally {
-      entry.loading = false
-    }
+    })()
+    inflight.set(path, run)
+    await run
   }
 
   // Drop the cache and re-list what is on screen: the refresh button, and the
@@ -132,6 +149,10 @@ export function useWorkspaceTree() {
     const openDirs = openDirPaths()
     state.nodes = {}
     await Promise.all(openDirs.map((path) => load(path, { force: true })))
+    // A re-list can drop the focused file (deleted, or now hidden by policy),
+    // which would leave the roving tabindex pointing at a row that is not
+    // rendered any more.
+    revalidateFocus()
   }
 
   function expand(path) {
@@ -141,6 +162,32 @@ export function useWorkspaceTree() {
 
   function collapse(path) {
     delete state.expanded[path]
+    revalidateFocus()
+  }
+
+  // Is the row for this path actually on screen: its listing loaded, its entry
+  // there, and every folder above it expanded?
+  function isDisplayed(path) {
+    if (path === ROOT) return true
+    let current = path
+    while (current !== ROOT) {
+      if (!state.expanded[parentOf(current)] || !entryFor(current)) return false
+      current = parentOf(current)
+    }
+    return true
+  }
+
+  // The roving tabindex has to be carried by a rendered row, or the tree cannot
+  // be tabbed into and its arrow keys go nowhere (`moveFocus` cannot locate a
+  // path that is not on screen). A focused path can stop being displayed under
+  // the user: a refresh re-lists a folder and the file is gone, a reveal of a
+  // tab's file fails, a collapse hides a branch. Then focus walks up to the
+  // nearest row still on screen — the same rule `collapseAll` states.
+  function revalidateFocus() {
+    if (isDisplayed(state.focused)) return
+    let current = state.focused
+    while (current !== ROOT && !isDisplayed(current)) current = parentOf(current)
+    state.focused = current
   }
 
   // Close every branch the user opened, in one click. The root itself stays
@@ -181,6 +228,63 @@ export function useWorkspaceTree() {
       size: entry.size ?? null,
       mtime: entry.mtime ?? null,
     }
+  }
+
+  // The reverse direction of the tree <-> tab-strip link (ed-01 <-> ed-03):
+  // focusing a tab in EditorArea selects the row of its file here.
+  //
+  // The tree is lazy, so that row usually does not exist yet: each listing on
+  // the way down has to be fetched and each branch on the way opened. When a
+  // listing *is* cached but does not carry the path, it may simply predate the
+  // file (the WorkBench writes files), so that folder is re-listed once before
+  // giving up.
+  //
+  // Failure — a denied path, a folder that refuses its listing, a file that
+  // disappeared — leaves the selection exactly as it was: a tab the tree cannot
+  // show must not highlight some other row. A reveal that finishes after a
+  // newer one started is dropped for the same reason.
+  //
+  // `source: 'tab'` marks where the selection came from, so EditorArea's
+  // watcher can skip it: replaying it as a click would be a redundant
+  // open/focus round-trip back into the buffer that caused it.
+  let revealSeq = 0
+
+  async function reveal(path) {
+    if (!path) return false
+    const seq = ++revealSeq
+    let current = ROOT
+    for (const name of path.split('/')) {
+      if (!state.nodes[current]?.loaded) await load(current)
+      const child = current ? `${current}/${name}` : name
+      let entry = entryFor(child)
+      if (!entry) {
+        await load(current, { force: true })
+        entry = entryFor(child)
+        if (!entry) return false
+      }
+      if (child === path) break // the last segment is the file's own row
+      // A segment that is not a folder means the listings and the open buffers
+      // disagree; there is no branch to open below it.
+      if (!entry.dir) return false
+      expand(child)
+      current = child
+    }
+    if (seq !== revealSeq) return false
+    const entry = entryFor(path)
+    if (!entry) return false
+    // The row exists now, so it also takes the tree's focus: the roving tabindex
+    // lands where the eye is sent, and the row is inside the scroll container —
+    // the navigator scrolls it into view.
+    state.focused = path
+    state.selected = {
+      path,
+      name: entry.name,
+      dir: false,
+      size: entry.size ?? null,
+      mtime: entry.mtime ?? null,
+      source: 'tab',
+    }
+    return true
   }
 
   function moveFocus(delta) {
@@ -251,6 +355,7 @@ export function useWorkspaceTree() {
     collapseAll,
     toggle,
     select,
+    reveal,
     entryFor,
     handleKey,
     rootLabel,

@@ -53,13 +53,40 @@ const file = computed(() => state.open.find((f) => f.path === state.active) ?? n
 const activeIndex = computed(() => state.open.findIndex((f) => f.path === state.active))
 
 // A tree click opens the file it selected (append-or-focus, never refetch).
+//
+// Selections published *by* this pane (`source: 'tab'`, see useWorkspaceTree
+// .reveal) are skipped: they are the echo of the active-buffer watcher below,
+// and replaying one would be a redundant open/focus of the buffer that caused
+// it.
 watch(
   () => tree.state.selected,
   (selected) => {
+    if (selected?.source === 'tab') return
     if (selected?.path) files.openFile(selected.path)
   },
   { immediate: true },
 )
+
+// The other direction of the same link: whichever way the active buffer changes
+// — a chip click, an arrow key on the strip, the neighbour a closed tab leaves —
+// the tree selects that file, opening the collapsed branches its row hides
+// under (`reveal` fetches the listings on the way down, since the tree is lazy).
+// No DOM focus moves here: the chip the user just clicked keeps it.
+watch(
+  () => state.active,
+  (path) => {
+    if (path) tree.reveal(path)
+  },
+)
+
+// A click on the chip that is *already* active changes nothing in `state.active`,
+// so the watcher above cannot carry it to the tree. Reveal here as well: the
+// tree's selection follows the tab the user pointed at, even when that buffer
+// was already on screen.
+function selectTab(path) {
+  files.focusFile(path)
+  tree.reveal(path)
+}
 
 // The strip's keyboard model — a roving tabindex (only the selected chip is in
 // the tab order) plus ← → / Home / End, the same contract the tree and
@@ -126,7 +153,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
             :aria-selected="item.path === state.active"
             aria-controls="editor-pane"
             :tabindex="item.path === state.active ? 0 : -1"
-            @click="files.focusFile(item.path)"
+            @click="selectTab(item.path)"
           >
             <!-- The unsaved-changes marker: a dot before the name, so it stays
                  visible when a long name is ellipsised at the end. A filled dot

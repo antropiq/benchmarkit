@@ -68,6 +68,25 @@ async function onKeydown(event) {
   }
 }
 
+// The tree's focus can also move *without* the user being in the tree: focusing
+// a tab in the strip reveals that file's row (useWorkspaceTree.reveal), which
+// opens collapsed branches and may leave the row outside the scroll viewport.
+// Scrolling it into view is all this does — calling `focus()` here would take
+// the caret away from the chip the user just clicked. `block: nearest` is a
+// no-op when the row is already on screen, so a click inside the tree never
+// shifts it.
+async function scrollFocusedIntoView() {
+  await nextTick()
+  for (const candidate of tree.value?.querySelectorAll('.tree-row') ?? []) {
+    if (candidate.dataset.path === state.focused) {
+      candidate.scrollIntoView({ block: 'nearest' })
+      return
+    }
+  }
+}
+
+watch(() => state.focused, scrollFocusedIntoView)
+
 // -- context menu -----------------------------------------------------------
 //
 // One menu for the whole tree, owned here (not by each recursive row): a
