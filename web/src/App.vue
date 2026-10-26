@@ -10,6 +10,7 @@ import StreamPanel from './components/StreamPanel.vue'
 import WorkBenchView from './components/WorkBenchView.vue'
 import { useBenchmark } from './composables/useBenchmark'
 import { useTabTitle } from './composables/useTabTitle'
+import { useSessionSound } from './composables/useSessionSound'
 
 // Lazy on purpose: Monaco and xterm (ed-04 / ed-07) are heavy, and the
 // Benchmark tab is the app's default screen — it must never download them.
@@ -22,6 +23,9 @@ const EditorView = defineAsyncComponent(() =>
 // backgrounded tab still answers "is it generating?". Started here because App
 // is where every composable's state gets mounted.
 useTabTitle()
+// ...and rings `session_ended.mp3` on the same edge (busy -> idle), which is
+// how the end of a conversation reaches a user looking at another window.
+useSessionSound()
 
 const { state, loadConfig, start, stop, loadPathLocation } = useBenchmark()
 

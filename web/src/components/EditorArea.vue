@@ -5,7 +5,8 @@ import MonacoDiffViewer from './MonacoDiffViewer.vue'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useBenchmark } from '../composables/useBenchmark'
-import { useChat } from '../composables/useChat'
+import { useEditorMode } from '../composables/useEditorMode'
+import { scrollStripWithWheel } from '../lib/tab-strip-wheel'
 
 // The centre pane: the open-file tab strip and the Monaco surface that shows
 // the active buffer. The header chrome and the tab chips are the pane's own
@@ -13,28 +14,16 @@ import { useChat } from '../composables/useChat'
 // its host and the line-number gutter that used to be a hand-rolled `<pre>`
 // column here.
 //
-// The badge is the editor's mode, live: "read-write" while the WorkBench is
-// idle (the pane accepts edits, kept in the buffer only — nothing reaches disk
-// until a save route lands), "read-only" while a reply is running. A tab
-// labelled "Editor" promises an editable surface, and the badge says when that
-// promise is currently in force.
+// The pane's mode — editable while the WorkBench is idle, read-only while a
+// reply streams — is decided once in useEditorMode and *displayed* in the file
+// tree's header, where it always fits; this component only applies it to the
+// surface below.
 const files = useEditorFiles()
 const tree = useWorkspaceTree()
 const bench = useBenchmark()
-const chat = useChat()
+const { paneReadonly } = useEditorMode()
 
 const state = files.state
-
-// The pane's editor state: read_write while the WorkBench is idle, read-only
-// whenever a reply is in flight (`phase` is 'waiting' / 'reasoning' /
-// 'answering'). A stopped conversation sits back at 'idle', so its files are
-// editable again — which is the point: the model is the only thing that can
-// write these files, and it must not race a human typing in the same buffer.
-//
-// Known edge, deliberate: batch mode owns the conversation between two task
-// turns with `useBatch.state.active` while `phase` drops back to 'idle' (see
-// useBatch.js), so on that gap this rule makes files briefly editable. Kept as
-// specified.
 // The buffer the pane shows — a file or a diff, whichever tab is active. The
 // tree's selection and this are separate state: a click that is refused (binary,
 // over the cap) selects a row and leaves the previous buffer on screen, which is
@@ -44,24 +33,6 @@ const state = files.state
 // two tabs about one path (useEditorFiles), and the pane has to tell them apart.
 const tab = computed(() => state.open.find((item) => item.key === state.active) ?? null)
 const isDiff = computed(() => tab.value?.kind === 'diff')
-
-// A diff tab is a reader whatever the chat is doing: its two sides come from git
-// and the disk and there is no buffer to type into, so the editable promise the
-// badge makes belongs to a file buffer only.
-const editorMode = computed(() => {
-  if (isDiff.value) return 'read_only'
-  return chat.state.phase === 'idle' ? 'read_write' : 'read_only'
-})
-const paneReadonly = computed(() => editorMode.value === 'read_only')
-
-const badgeTitle = computed(() => {
-  if (isDiff.value) {
-    return 'Read-only — this tab is a diff: the committed side and the one on disk.'
-  }
-  return editorMode.value === 'read_write'
-    ? 'Editable — the WorkBench is idle. Unsaved edits are kept in the tab, not written to disk yet.'
-    : 'Read-only — a WorkBench reply is running and may be editing these files.'
-})
 
 // The one line that says what the two columns mean, so a reader never has to
 // guess which side is which — and never reads the left side as the truth.
@@ -131,6 +102,15 @@ function selectTab(key) {
 // the tab order) plus ← → / Home / End, the same contract the tree and
 // TabNav.vue keep. Focus follows the selection here, as in the navigator.
 const tabs = ref(null)
+
+// The wheel scrolls the strip sideways once its tabs overflow it (VS Code's
+// behaviour); the rule itself lives in lib/tab-strip-wheel.js so it can be
+// tested without a browser. It is bound by hand rather than `@wheel`, because
+// the handler needs `passive: false` to cancel the event.
+function onTabsWheel(event) {
+  scrollStripWithWheel(tabs.value, event)
+}
+
 async function onTabsKeydown(event) {
   const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key]
   let target = null
@@ -160,8 +140,17 @@ function onKeydown(event) {
   files.closeTab(state.active)
 }
 
-onMounted(() => window.addEventListener('keydown', onKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  // `passive: false` so the handler above can call preventDefault (a passive
+  // listener cannot) — the tablist element exists from the first render, so
+  // this attaches once.
+  tabs.value?.addEventListener('wheel', onTabsWheel, { passive: false })
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  tabs.value?.removeEventListener('wheel', onTabsWheel)
+})
 </script>
 
 <template>
@@ -222,13 +211,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </button>
         </span>
       </div>
-      <span
-        class="editor-badge"
-        :class="editorMode === 'read_write' ? 'badge green' : 'badge gray'"
-        :title="badgeTitle"
-      >
-        {{ editorMode === 'read_write' ? 'read-write' : 'read-only' }}
-      </span>
     </header>
 
     <div class="editor-body">

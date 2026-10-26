@@ -2,6 +2,7 @@ import { watchEffect } from 'vue'
 import { useBenchmark } from './useBenchmark'
 import { useChat } from './useChat'
 import { useBatch } from './useBatch'
+import { inferenceRunning } from '../lib/inference-state'
 
 // The browser tab is the only thing visible while the app's tab is in the
 // background, so it carries the one bit that matters there: is an inference
@@ -12,19 +13,6 @@ import { useBatch } from './useBatch'
 // leading-glyph strip only guards a hot reload, where document.title may
 // already hold a prefix written by the previous instance of this module.
 const BASE_TITLE = document.title.replace(/^(?:[⚡✨]\s*)*/, '')
-
-// The three ways this app spends time on an inference. Each owns its own
-// composable, and all three are one-way reads from here, so the dependency
-// graph stays acyclic (useBatch already imports useChat and useBenchmark).
-//   * benchmark run — 'running' covers warm-up through the last verifier call;
-//   * WorkBench reply — waiting, reasoning or answering (a batch turn too);
-//   * batch lot — stays busy across the gap between two task turns, which is
-//     when the chat phase is back to 'idle' but a task is still owed.
-function inferenceRunning({ benchmark, chat, batch }) {
-  if (benchmark.status === 'running') return true
-  if (batch.active) return true
-  return ['waiting', 'reasoning', 'answering'].includes(chat.phase)
-}
 
 export function useTabTitle() {
   const { state: benchmark } = useBenchmark()

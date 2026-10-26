@@ -2228,15 +2228,22 @@ body {
   flex: 0 0 auto;
 }
 
-/* The browsed workspace by name; the absolute path stays in the title, so the
-   label never has to be truncated to say *which* checkout this is. */
-.editor-nav-title {
-  margin: 0;
-  font-weight: 600;
-  font-family: var(--pico-font-family-monospace);
+/* The code pane's mode, live ("read-write" while the WorkBench is idle,
+   "read-only" while a reply streams or a diff is the active tab). It lives in
+   this header rather than in the code pane's tab strip because it states a fact
+   about the pane, not about one tab — and the strip is a row that shrinks as
+   buffers pile up, while this corner is always free. The root folder's own name
+   is no longer shown here: the tree's root row already names it and carries the
+   absolute path in its `title`.
+   Below 1024 px the tree becomes a drawer, so a closed drawer hides the badge
+   with its pane — an accepted consequence of the documented desktop-only scope. */
+.editor-mode-badge {
+  min-width: 0;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .editor-nav-error,
@@ -2268,6 +2275,12 @@ body {
   border-radius: var(--pico-border-radius);
   cursor: pointer;
   user-select: none;
+  /* Anchor for `.tree-mark-sr`: an absolutely-positioned span with no positioned
+     ancestor resolves against the *document*, so the tree's `overflow-y: auto`
+     cannot clip it and the hidden label of the last marked row extends the page
+     — a second, page-wide vertical scrollbar appears beside the tree's own once
+     enough folders are open. */
+  position: relative;
 }
 
 /* Indent by depth. Each row carries its own depth in --tree-depth (the tree is
@@ -2489,6 +2502,30 @@ body {
   gap: 0;
   min-width: 0;
   overflow-x: auto;
+  /* The strip's own scrollbar, when the tabs overflow it: the browser default
+     is a full-height track that steals a third of the chip, so it is reduced to
+     a thin line in the existing border tone — it should read as an overflow
+     hint, not as chrome. `scrollbar-width` is Firefox; the pseudo-element is
+     Chromium/Safari. The wheel scrolls it too (see EditorArea's onTabsWheel). */
+  scrollbar-width: thin;
+  scrollbar-color: var(--bi-border) transparent;
+}
+
+.editor-tabs::-webkit-scrollbar {
+  height: 4px;
+}
+
+.editor-tabs::-webkit-scrollbar-track {
+  background: none;
+}
+
+.editor-tabs::-webkit-scrollbar-thumb {
+  border-radius: 2px;
+  background-color: var(--bi-border);
+}
+
+.editor-tabs::-webkit-scrollbar-thumb:hover {
+  background-color: var(--pico-primary);
 }
 
 /* A chip is a span wrapping two buttons (a button cannot contain one), so it
@@ -2546,6 +2583,9 @@ body {
   height: 100%;
   padding: 0 0.25rem 0 0.6rem;
   border: 0;
+  /* Anchor for `.editor-tab-dirty-sr` (see the .tree-row note): without it the
+     hidden label is positioned against the document and extends the page. */
+  position: relative;
   border-radius: 0;
   background: none;
   font-family: var(--pico-font-family-monospace);
@@ -2613,15 +2653,6 @@ body {
 
 .editor-tab-close:hover {
   color: var(--bi-danger);
-}
-
-.editor-badge {
-  flex: 0 0 auto;
-  align-self: center;
-  padding-right: var(--bi-space-2);
-  font-size: 0.68rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .editor-body {

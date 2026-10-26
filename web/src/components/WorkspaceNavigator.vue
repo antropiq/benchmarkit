@@ -5,6 +5,7 @@ import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useGitStatus } from '../composables/useGitStatus'
 import { useBenchmark } from '../composables/useBenchmark'
+import { useEditorMode } from '../composables/useEditorMode'
 import { fileIcon } from '../lib/file-icons'
 // The rows render Nerd Font glyphs (lib/file-icons). This CSS declares the
 // "JetBrains Mono Nerd Icons" face those code points need; it is unicode-range-
@@ -12,10 +13,16 @@ import { fileIcon } from '../lib/file-icons'
 // asks for it, and the file name beside it stays on the normal mono face.
 import '../fonts/nerd-fonts.css'
 
-// The Editor tab's file tree (ed-01): header with the workspace it browses,
-// the recursive tree, and the footer that explains the omissions the connector
-// policy causes. Self-contained on purpose — ed-02 drops it into the layout
-// unchanged, and ed-03 only reads `state.selected` from the composable.
+// The Editor tab's file tree (ed-01): header, the recursive tree, and the
+// footer that explains the omissions the connector policy causes. Self-contained
+// on purpose — ed-02 drops it into the layout unchanged, and ed-03 only reads
+// `state.selected` from the composable.
+//
+// The header names no workspace: the tree's own root row already carries the
+// folder's name (and its absolute path in its `title`). What sits there instead
+// is the code pane's mode badge — the tab strip to the right is a row that
+// shrinks as buffers pile up, and this status belongs to the pane, not to one
+// tab, so it is shown where there is always room for it.
 const {
   state,
   load,
@@ -29,6 +36,8 @@ const {
 } = useWorkspaceTree()
 
 const git = useGitStatus()
+// Template bindings are destructured, so they auto-unwrap like any other ref.
+const { isEditable, badgeLabel, badgeTitle } = useEditorMode()
 
 onMounted(() => {
   // First paint: exactly one listing, whatever the size of the checkout.
@@ -228,9 +237,13 @@ onBeforeUnmount(() => {
 <template>
   <aside class="editor-nav" aria-label="Workspace files">
     <div class="editor-nav-head">
-      <p class="caption editor-nav-title" :title="state.workspace">
-        {{ rootLabel() }}
-      </p>
+      <span
+        class="editor-mode-badge"
+        :class="isEditable ? 'badge green' : 'badge gray'"
+        :title="badgeTitle"
+      >
+        {{ badgeLabel }}
+      </span>
       <div class="editor-nav-actions">
         <button
           class="icon-btn editor-nav-refresh"
