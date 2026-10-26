@@ -1979,10 +1979,11 @@ body {
 }
 
 .chat-tool-list {
+  --bi-chat-tool-gap: 0.35rem;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 0.35rem;
+  gap: var(--bi-chat-tool-gap);
   margin: 0;
   padding: 0.5rem;
   list-style: none;
@@ -2003,14 +2004,59 @@ body {
 
 /* Reasoning (thinking) text block of the timeline: plain text — thinking is
    not markdown, and it stays XSS-safe as a Vue text interpolation. Same
-   small mono muted look as the brand subtitle and the tool badges. */
+   small mono muted look as the brand subtitle and the tool badges.
+   Wrapping is NOT left to the browser here: each row arrives already cut to
+   the panel's column budget (see lib/reasoning-lines), which is what keeps a
+   line the reader is looking at from jumping when the row above it grows.
+   `tab-size` must match TAB_WIDTH in that module — it is the tab advance the
+   column budget counts with. */
 .chat-reasoning {
   font-family: var(--pico-font-family-monospace);
   font-size: 0.7rem;
   line-height: 1.45;
   color: var(--pico-muted-color);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+/* One display row of reasoning text. Its height is known before it is
+   painted (font-size × line-height), so growing the flow never resizes a row
+   that has finished streaming, and the panel's scroll position can be derived
+   by arithmetic. `pre` keeps the characters exactly as received — cutting
+   already happened, and a re-wrap here would defeat it.
+   The `1lh` form is the row's own line box; the em form above it is the
+   fallback for engines without the `lh` unit. */
+.chat-reasoning-line {
+  display: block;
+  height: 1.45em;
+  height: 1lh;
+  white-space: pre;
+  overflow: hidden;
+}
+
+/* Zero-height measuring row (see WorkBenchToolPanel.vue): a normal list item,
+   so it is as wide as a reasoning row, holding one unbreakable probe whose
+   width gives the font's advance width. Hidden but still laid out — its boxes
+   are the whole point — and it adds no height of its own. */
+.chat-reasoning-measure {
+  height: 0;
+  /* It is the list's last item, so the list's gap would still put a blank
+     line under it: the offset takes that gap back. */
+  margin-top: calc(-1 * var(--bi-chat-tool-gap));
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.7rem;
+  line-height: 0;
+  tab-size: 4;
+}
+
+/* `nowrap` is load-bearing: without it the probe would wrap to the host's
+   width and report that width instead of its own, making the measured column
+   count meaningless. */
+.chat-reasoning-probe {
+  display: inline-block;
+  white-space: nowrap;
 }
 
 .chat-tool-name {

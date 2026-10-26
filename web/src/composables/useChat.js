@@ -1,5 +1,6 @@
 import { nextTick, reactive } from 'vue'
 import { renderMarkdown, TOOL_LINE_MARKER } from '../lib/markdown'
+import { createReasoningBuffer } from '../lib/reasoning-buffer'
 
 const state = reactive({
   messages: [], // { role, raw, html, streaming, images } in conversation order
@@ -45,6 +46,9 @@ let controller = null
 let renderScheduled = false
 let activeMessage = null
 let draftTimer = null
+// Streamed thinking, coalesced into the panel timeline once per frame (see
+// lib/reasoning-buffer). Module-level: one reply streams at a time.
+const reasoningBuffer = createReasoningBuffer()
 // Explicit Stop discards the partial reply; connection drops keep it.
 let userStopped = false
 // Pause's local fallback (when POST /api/chat/pause itself is unreachable)
@@ -734,6 +738,10 @@ function applyEvent(name, data, assistant) {
       // tool execution (which can take tens of seconds) never enters the
       // live tok/s denominator.
       closeGenerationWindow(assistant)
+      // Draw buffered thinking before the badge: a delta still in the buffer
+      // arrived before this call, so it must keep its earlier slot in the
+      // timeline. One flush per tool round, not per chunk.
+      reasoningBuffer.flush()
       assistant.blocks.push({
         kind: 'tool',
         tool: assistant.tools[assistant.tools.length - 1],
@@ -783,19 +791,19 @@ function applyEvent(name, data, assistant) {
       }
       break
     case 'reasoning_delta': {
-      // Thinking text, streamed live: appended to the panel timeline. A
-      // tool_call frame in between breaks the flow, so consecutive deltas
-      // extend one block and the next round's thinking starts a new one —
-      // matching the model's actual reasoning-then-act chronology.
+      // Thinking text, streamed live. The text is buffered and lands in the
+      // panel timeline once per animation frame (see lib/reasoning-buffer):
+      // chunks arrive at a network-set rate, and each write into the reactive
+      // block re-cuts the panel's rows and re-runs its autoscroll.
       const text = data.text ?? ''
       if (!text) break
-      const blocks = assistant.blocks
-      const last = blocks[blocks.length - 1]
-      if (last && last.kind === 'reasoning') last.text += text
-      else blocks.push({ kind: 'reasoning', text })
+      reasoningBuffer.append(assistant.blocks, text)
       // Thinking is generated text the client DOES see: it feeds the live
       // tok/s numerator and keeps the measurement window open, so a long
       // reasoning phase ticks the speed badge instead of freezing it.
+      // This counter stays synchronous on purpose — a `usage` frame snapshots
+      // an exact baseline out of it, so deferring it would count the buffered
+      // tail twice.
       assistant.reasoningChars += text.length
       noteGenerated(assistant)
       break
@@ -830,6 +838,9 @@ function processFrame(frame, assistant) {
 }
 
 function finish(assistant) {
+  // Nothing may read a timeline that is still missing its last chunks: session
+  // saving serializes these blocks, and it does not wait for a frame.
+  reasoningBuffer.flush()
   if (activeMessage)
     activeMessage.html = renderMarkdown(activeMessage.raw, { mermaid: true })
   activeMessage = null
