@@ -11,8 +11,9 @@ const state = reactive({
   draft: { raw: '', html: '', renderedRaw: '' },
   // Image picked for the next message: { dataUrl, name, size } | null.
   pendingImage: null,
-  // Chat session stopwatch (rendered by ChatStopwatch): ms timestamp of when
-  // the running session started (0 = idle, so the clock reads 00:00:00).
+  // Chat session clock (consumed by useSessionStats, rendered by the app bar's
+  // SessionClock): ms timestamp of when the running session started
+  // (0 = idle, so the clock reads 00:00:00).
   // Covers the whole request — waiting, thinking and every MCP/LSP tool
   // round — and is cleared when the reply ends, is stopped or errors out.
   session: { startedAt: 0 },

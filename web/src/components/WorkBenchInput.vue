@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import WorkBenchSidePanel from './WorkBenchSidePanel.vue'
+import BatchProgressBar from './BatchProgressBar.vue'
 import MemoryBullets from './MemoryBullets.vue'
 import RegistrationMemoryDlg from './RegistrationMemoryDlg.vue'
 import {
@@ -255,6 +255,10 @@ onBeforeUnmount(() => {
       @change="onSessionFilePicked"
     />
     <div class="chat-textarea-col">
+      <!-- The batch meter, above the composer row: it owns the column's full
+           width now that no side panel stands next to the textarea, and it
+           only renders while a lot runs (or just after it ended). -->
+      <BatchProgressBar />
       <!-- One row above the textarea: the session icon buttons flanking the
            memory bullets, which stay centered between the two button groups. -->
       <div class="chat-bullet-row">
@@ -448,6 +452,5 @@ onBeforeUnmount(() => {
       :index="dialogIndex"
       @close="dialogOpen = false"
     />
-    <WorkBenchSidePanel />
   </div>
 </template>

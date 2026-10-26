@@ -5,7 +5,6 @@ import SettingsDialog from './components/SettingsDialog.vue'
 import BatchModeDialog from './components/BatchModeDialog.vue'
 import MetricCard from './components/MetricCard.vue'
 import RunControls from './components/RunControls.vue'
-import Chronometer from './components/Chronometer.vue'
 import StreamPanel from './components/StreamPanel.vue'
 import WorkBenchView from './components/WorkBenchView.vue'
 import { useBenchmark } from './composables/useBenchmark'
@@ -75,9 +74,11 @@ const scorePercent = computed(() =>
 
   <main v-show="onBenchmarkTab" class="app-shell">
     <aside class="stats-col">
-      <section class="panel run-summary" aria-label="Elapsed time">
-        <p class="caption">⏱ Elapsed</p>
-        <Chronometer :clock="state.clock" />
+      <!-- The elapsed clock and the generation speed are the AppBar's session
+           meters (SessionClock / SessionStatBadges): only one session can run
+           app-wide, so the Benchmark tab reads the same figures rather than
+           keeping a second stopwatch of its own. -->
+      <section class="panel run-summary" aria-label="Run controls">
         <p v-if="config" class="caption run-meta">
           {{ config.questionCount }} questions · {{ config.samplingSummary }}
         </p>
@@ -91,10 +92,6 @@ const scorePercent = computed(() =>
         />
       </section>
 
-      <MetricCard
-        label="⚡ Generation token/s"
-        :value="state.tokenRate.toFixed(1)"
-      />
       <MetricCard
         label="Question in progress"
         :value="state.current ? String(state.current).padStart(2, '0') : '--'"

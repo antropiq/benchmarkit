@@ -3,6 +3,8 @@ import { computed, onUnmounted, ref, watch } from 'vue'
 import TabNav from './TabNav.vue'
 import ThemeToggle from './ThemeToggle.vue'
 import SoundToggle from './SoundToggle.vue'
+import SessionClock from './SessionClock.vue'
+import SessionStatBadges from './SessionStatBadges.vue'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useChat } from '../composables/useChat'
 import { useBatch } from '../composables/useBatch'
@@ -101,6 +103,10 @@ const pillClass = computed(() => {
     </div>
 
     <div class="appbar-center">
+      <!-- The two session counters, left of the tab strip: they read whichever
+           session is live (a run or a WorkBench reply) and blank out when
+           nothing is generating. -->
+      <SessionStatBadges />
       <TabNav />
       <span
         v-if="workspace"
@@ -111,6 +117,10 @@ const pillClass = computed(() => {
     </div>
 
     <div class="appbar-actions">
+      <!-- One clock for the whole app: a Benchmark run and a WorkBench reply
+           are mutually exclusive, so the same readout serves both, and it
+           keeps ticking while the Editor tab is open. -->
+      <SessionClock />
       <span class="status-pill" :class="pillClass" role="status">
         <span class="status-dot" aria-hidden="true"></span>{{ pillLabel }}
       </span>

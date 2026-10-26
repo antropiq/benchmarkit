@@ -72,7 +72,10 @@ test.describe('App boot: displayed configuration, tabs, empty state', () => {
   test('stats column shows a run that has not happened yet', async ({ page }) => {
     const { config } = await bootIdle(page)
 
-    await expect(page.locator('.chronometer')).toHaveText('00:00:00')
+    // No stopwatch here any more: the elapsed readout is the app bar's shared
+    // session clock, which keeps running whichever tab is open.
+    await expect(page.locator('.stats-col .chronometer')).toHaveCount(0)
+    await expect(page.locator('.session-clock')).toHaveText('00:00:00')
 
     const scoreCard = page
       .locator('.metric-card')
@@ -108,6 +111,84 @@ test.describe('App boot: displayed configuration, tabs, empty state', () => {
     const { pathLocation } = await bootIdle(page)
 
     await expect(page.locator('.appbar-workspace-path')).toHaveText(pathLocation)
+  })
+
+  // The clock and the two counters are shared by the Benchmark and the
+  // WorkBench, because the two can never run at the same time (POST /api/chat
+  // 409s during a run, POST /api/run refuses during a reply). Idle, they read
+  // blank — the app bar never shows a finished session's figures as current.
+  test('app bar carries the shared session meters', async ({ page }) => {
+    await bootIdle(page)
+
+    await expect(page.locator('.session-clock')).toHaveText('00:00:00')
+    await expect(page.locator('.session-stat-badges .badge')).toHaveText([
+      '— t/s',
+      '— ctx',
+    ])
+
+    // The meters left the composer, so its column now owns the whole composer
+    // row: the textarea and its action buttons get the full width.
+    await page.getByRole('tab', { name: 'WorkBench' }).click()
+    const col = await page.locator('.chat-textarea-col').boundingBox()
+    const input = await page.locator('.chat-input').boundingBox()
+    expect(
+      Math.abs(col.width - input.width),
+      'the composer column should fill the input row',
+    ).toBeLessThan(1)
+  })
+
+  // The counters used to hug their (short) idle text, so a running session
+  // widened them and shoved the centred tab strip around. Each now reserves
+  // the width of its longest active figure.
+  test('idle session counters already fit their active figures', async ({ page }) => {
+    await bootIdle(page)
+
+    const measured = await page
+      .locator('.session-stat-badges .badge')
+      .evaluateAll((badges) =>
+        badges.map((badge) => {
+          // The widest reading each counter can ever show (estimate marker
+          // included), rendered as a clone of the badge itself so font,
+          // padding and border are identical.
+          const probe = badge.cloneNode(false)
+          probe.textContent = badge.classList.contains('badge--rate')
+            ? '≈ 123.4 t/s'
+            : '≈ ctx 123.4k / 128k'
+          badge.parentElement.appendChild(probe)
+          const active = probe.getBoundingClientRect().width
+          probe.remove()
+          return {
+            text: badge.textContent.trim(),
+            idle: badge.getBoundingClientRect().width,
+            active,
+          }
+        }),
+      )
+
+    expect(measured.map((m) => m.text)).toEqual(['— t/s', '— ctx'])
+    for (const m of measured) {
+      expect(
+        m.idle,
+        `the idle badge (${m.text}) must already be as wide as "${m.active}px" of active text`,
+      ).toBeGreaterThanOrEqual(m.active)
+    }
+  })
+
+  // The play/reset buttons are the composer's buttons: same icon-button shape,
+  // only the accent color differs.
+  test('run buttons share the WorkBench composer button shape', async ({ page }) => {
+    await bootIdle(page)
+
+    const shape = (selector) =>
+      page.locator(selector).evaluate((el) => {
+        const s = getComputedStyle(el)
+        return [s.width, s.height, s.borderRadius, s.padding, s.display]
+      })
+
+    await page.getByRole('tab', { name: 'WorkBench' }).click()
+    const composer = await shape('.chat-send')
+    expect(await shape('.run-btn-play')).toEqual(composer)
+    expect(await shape('.run-btn-stop')).toEqual(composer)
   })
 
   // The /api/config route is stubbed here on purpose: this test is about the

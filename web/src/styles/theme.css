@@ -201,6 +201,71 @@ body {
   justify-self: end;
 }
 
+/* -- session meters in the app bar ----------------------------------------- */
+
+/* The shared elapsed clock (SessionClock.vue): one readout for the whole app,
+   because a Benchmark run and a WorkBench reply cannot run at the same time —
+   so it sits immediately left of the status pill and reads whichever is live.
+   Compact on purpose: the app bar is `--bi-appbar-height` tall, so the digits
+   stay at the pill's own size instead of the Benchmark panel's 1.75rem.
+   `min-width` is fixed to the width of `00:00:00` (tabular digits) so the
+   actions row never shifts sideways as the clock ticks past a minute or an
+   hour. */
+.session-clock {
+  flex: 0 0 auto;
+  margin: 0;
+  min-width: 8ch;
+  box-sizing: border-box;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--bi-border);
+  border-radius: 999px;
+  background-color: var(--bi-surface);
+  text-align: center;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: var(--pico-muted-color);
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.session-clock--running {
+  color: var(--bi-violet);
+  border-color: color-mix(in srgb, var(--bi-violet) 40%, transparent);
+}
+
+/* The token-rate and context counters (SessionStatBadges.vue), left of the tab
+   strip. They never take part in the centre cell's stretching, so the tab
+   strip stays centred. */
+.session-stat-badges {
+  display: flex;
+  align-items: center;
+  gap: var(--bi-space-1);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.session-stat-badges .badge {
+  white-space: nowrap;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.7rem;
+  justify-content: center;
+}
+
+/* Each counter keeps the width of its longest active figure even while idle
+   (`— t/s` / `— ctx` are much shorter), so starting a session cannot reflow
+   the centred tab strip. The values are em-relative to the badge's own font
+   size and cover the `≈` estimate marker plus a wide figure
+   (`≈ 123.4 t/s`, `≈ ctx 123.4k / 128k`), so an active reading always fits. */
+.session-stat-badges .badge--rate {
+  min-width: 6.8em;
+}
+
+.session-stat-badges .badge--context {
+  min-width: 10.8em;
+}
+
 /* -- status pill ------------------------------------------------------------ */
 
 .status-pill {
@@ -282,57 +347,59 @@ body {
 
 /* -- run controls ----------------------------------------------------------- */
 
+/* Both buttons are plain .icon-btn circles — the same shape the WorkBench
+   composer uses for Send / Stop — so only the accent color differs here. */
 .run-controls {
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.run-btn {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: background-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
-}
-
-.run-btn svg {
-  display: block;
-}
-
-.run-btn-play {
+/* The rules below carry the `.run-controls` ancestor on purpose: it lifts them
+   above the generic `.icon-btn` (and `.icon-btn:disabled`) rules, which would
+   otherwise flatten the accent. */
+.run-controls .run-btn-play {
   background-color: var(--pico-primary);
+  border-color: var(--pico-primary);
   color: #ffffff;
   box-shadow: var(--bi-shadow-sm);
 }
 
-.run-btn-play:hover:not(:disabled) {
+.run-controls .run-btn-play:hover:not(:disabled) {
   background-color: var(--pico-primary-hover);
+  border-color: var(--pico-primary-hover);
 }
 
-.run-btn-play.is-running {
+/* Running: the button is inert (one run at a time) but keeps its accent and
+   the pulse ring, so it still reads as the control that owns the run. */
+.run-controls .run-btn-play.is-running {
   animation: bi-glow 1.6s ease-in-out infinite;
+  background-color: var(--pico-primary);
+  border-color: var(--pico-primary);
+  opacity: 1;
 }
 
-.run-btn-stop {
+.run-controls .run-btn-stop {
   background-color: var(--bi-surface);
   border-color: color-mix(in srgb, var(--bi-danger) 45%, transparent);
   color: var(--bi-danger);
 }
 
-.run-btn-stop:hover:not(:disabled) {
+.run-controls .run-btn-stop:hover:not(:disabled) {
   background-color: color-mix(in srgb, var(--bi-danger) 12%, var(--bi-surface));
 }
 
-.run-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-  animation: none;
-  box-shadow: none;
+/* `.icon-btn:disabled` would flatten both of them to the neutral surface, so
+   each keeps its own accent while inert (only the opacity dimming applies). */
+.run-controls .run-btn-play:disabled {
+  background-color: var(--pico-primary);
+  border-color: var(--pico-primary);
+  box-shadow: var(--bi-shadow-sm);
+}
+
+.run-controls .run-btn-stop:disabled {
+  background-color: var(--bi-surface);
+  border-color: color-mix(in srgb, var(--bi-danger) 45%, transparent);
 }
 
 @keyframes bi-glow {
@@ -370,12 +437,20 @@ body {
   stroke: var(--bi-icon);
 }
 
-.run-btn-stop rect {
-  fill: var(--bi-danger);
+/* Icons, now that both run buttons are .icon-btn: the generic rule above gives
+   every icon button's glyph the muted stroke, so the two accents are restated
+   here (and the solid play triangle gets no outline at all). */
+.run-controls .run-btn-play svg {
+  fill: #ffffff;
+  stroke: none;
 }
 
-.run-btn-play svg {
-  fill: #ffffff;
+.run-controls .run-btn-stop svg {
+  stroke: var(--bi-danger);
+}
+
+.run-controls .run-btn-stop rect {
+  fill: var(--bi-danger);
 }
 
 /* -- layout ------------------------------------------------------------------ */
@@ -531,19 +606,6 @@ body {
 .download-link:hover {
   background-color: var(--bi-surface-2);
   border-color: var(--pico-primary);
-}
-
-/* -- chronometer ---------------------------------------------------------------- */
-
-.chronometer {
-  font-family: var(--pico-font-family-monospace);
-  font-size: 1.75rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  font-variant-numeric: tabular-nums;
-  color: inherit;
-  text-align: center;
-  margin: 0;
 }
 
 /* -- stream panel ----------------------------------------------------------------- */
@@ -828,14 +890,13 @@ body {
   border-radius: 999px;
 }
 
-/* Batch meter, under the stopwatch (BatchProgressBar.vue). The <progress> and
-   its caption come from `.progress-row` / `.caption.mono` above; this block
-   only stacks the three lines and takes the panel's full width, which the
-   stopwatch's own min-width already gives the column. */
+/* Batch meter, above the composer row (BatchProgressBar.vue). The <progress>
+   and its caption come from `.progress-row` / `.caption.mono` above; this
+   block only stacks the three lines. It fills `.chat-textarea-col`, which owns
+   the whole composer width now that no side panel stands beside the textarea. */
 .batch-progress {
   flex: 0 0 auto;
   width: 100%;
-  min-width: 12rem;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -1111,6 +1172,13 @@ body {
 .appbar-workspace {
   min-width: 0;
   white-space: nowrap;
+  /* The centre cell is the only one allowed to give way (the actions row is
+   `flex: 0 0 auto` and the brand holds its own line), so on a window narrower
+   than the meters plus the tab strip need, the working-location label is the
+   part that shortens — first to an ellipsis, and below the next breakpoint it
+   leaves altogether. */
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 0.75rem;
   color: var(--pico-muted-color);
 }
@@ -1118,6 +1186,17 @@ body {
 .appbar-workspace-path {
   font-family: var(--pico-font-family-monospace);
   unicode-bidi: isolate;
+}
+
+/* The app bar's three cells cannot be squeezed forever: the grid's `1fr` side
+   tracks stop at their content's own width, so past that point the centre cell
+   would ride over the actions row. The meters and the tab strip are what the
+   bar is now for, so the working-location label — the one piece also readable
+   in Settings — is what leaves. Same 1100 px step the Chat shell already uses. */
+@media (max-width: 1100px) {
+  .appbar-workspace {
+    display: none;
+  }
 }
 
 .tab-nav {
@@ -1212,10 +1291,12 @@ body {
 .chat-input {
   flex: 1 1 0;
   /* The composer splitter's own minimum (useSplitter's CHAT_MIN_RESIZED): the
-     button row plus a usable textarea. Stated here too so the flex floor and
-     the drag clamp agree, and a very short window cannot crush the composer
-     under its own content before anything has been dragged. */
-  min-height: 124px;
+     button row plus a usable textarea (the stat badges and the session clock
+     moved to the app bar, so the floor came down with them). Stated here too
+     so the flex floor and the drag clamp agree, and a very short window cannot
+     crush the composer under its own content before anything has been
+     dragged. */
+  min-height: 96px;
   display: flex;
   align-items: stretch;
   gap: 0.75rem;
@@ -1304,77 +1385,6 @@ body {
 .chat-send:disabled {
   opacity: 0.35;
   cursor: default;
-}
-
-/* Stats/actions panel right of the chat textarea, same height (stretch);
-   hugs its content (no fixed basis — the composer row owns the full width of
-   the right column now that the tool panels moved out of it). */
-.chat-side-panel {
-  flex: 0 0 auto;
-  min-width: 0;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  align-items: flex-start;
-  gap: 0.5rem;
-}
-
-.chat-side-panel .badge {
-  width: 100%;
-  justify-content: center;
-  white-space: nowrap;
-  box-sizing: border-box;
-}
-
-/* Stats row: the token-rate and context badges side by side, equally
-   wide, on a single line. */
-.chat-stat-badges {
-  display: flex;
-  gap: 0.5rem;
-  width: 100%;
-}
-
-.chat-stat-badges .badge {
-  flex: 1 1 0;
-  min-width: 0;
-  padding: 0.3rem 0.35rem;
-  font-size: 0.7rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Session stopwatch (ChatStopwatch.vue), sitting under the stat badges.
-   Monospace tabular digits inside a pill, sized to the badges above so the
-   right-hand column reads as one stack. Idle is muted; a running session
-   takes the same violet the chat status uses. Only theme variables are used,
-   so it follows the light/dark palette on its own.
-   The `min-width` is what gives the (now badge + stopwatch only) side panel
-   its width: `.chat-side-panel` hugs its content, so without it the column
-   collapses to the width of the two stat badges. */
-.chat-stopwatch {
-  flex: 0 0 auto;
-  width: 100%;
-  min-width: 12rem;
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0.25rem 0.4rem;
-  border: 1px solid var(--bi-border);
-  border-radius: 999px;
-  background-color: var(--bi-surface);
-  text-align: center;
-  font-family: var(--pico-font-family-monospace);
-  font-size: 0.85rem;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  font-variant-numeric: tabular-nums;
-  color: var(--pico-muted-color);
-  transition: color 0.15s ease, border-color 0.15s ease;
-}
-
-.chat-stopwatch--running {
-  color: var(--bi-violet);
-  border-color: color-mix(in srgb, var(--bi-violet) 40%, transparent);
 }
 
 /* Container holding the composer row (memory bullets + the session icon
@@ -1543,6 +1553,11 @@ body {
   flex: 0 1 clamp(104px, 26%, 256px);
   min-width: 0;
   min-height: 0;
+  /* Pico's `section { margin-bottom: … }` would float the dock that far above
+     its column's bottom edge, visibly unaligned with the composer's textarea
+     on the other side of the shell. The column's gap is the only spacing
+     wanted here — and the splitter measures its drag without that margin. */
+  margin-bottom: 0;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;

@@ -3,10 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 // Defaults of the chat splitter, kept as defaults so the original two-argument
 // call — `useSplitter(shell, input)` in WorkBenchView — is unchanged.
 const CHAT_STORAGE_KEY = 'benchmarkit:chatSplit'
-// Enough room for the whole input column stack: the badges row, the action
-// buttons and the session stopwatch under them (plus the memory bullets and
-// a one-line textarea) — anything smaller would clip the stopwatch.
-const CHAT_MIN_RESIZED = 124
+// Enough room for the whole input column stack: the composer row (four icon
+// buttons, the memory bullets and up to three run buttons — one line of 36px
+// controls plus the row's own margins) and a one-line textarea. The badges and
+// the session clock left this column for the app bar, so the floor came down
+// with them; `.chat-input`'s `min-height` states the same number.
+const CHAT_MIN_RESIZED = 96
 const CHAT_MIN_OTHER = 160
 const KEYBOARD_STEP = 24
 // The fraction of the shell a keyboard nudge starts from when no size has been

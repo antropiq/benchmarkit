@@ -11,23 +11,21 @@ defineEmits(['start', 'stop'])
 <template>
   <div class="run-controls">
     <button
-      class="run-btn run-btn-play"
+      class="icon-btn run-btn-play"
       :class="{ 'is-running': running }"
       type="button"
-      style="color: #ffffff"
       :disabled="!canStart"
       :aria-label="running ? 'Benchmark running' : 'Run benchmark'"
       :title="running ? 'Running…' : 'Run benchmark'"
       @click="$emit('start')"
     >
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M8 5.14v13.72a1 1 0 0 0 1.52.86l11.14-6.86a1 1 0 0 0 0-1.72L9.52 4.28A1 1 0 0 0 8 5.14z" />
       </svg>
     </button>
     <button
-      class="run-btn run-btn-stop"
+      class="icon-btn run-btn-stop"
       type="button"
-      style="color: var(--bi-danger)"
       :disabled="!canStop || stopping"
       :aria-label="running ? (stopping ? 'Stopping…' : 'Stop run') : 'Reset to initial state'"
       :title="running ? (stopping ? 'Stopping…' : 'Stop run') : 'Reset to initial state'"
@@ -38,15 +36,19 @@ defineEmits(['start', 'stop'])
         width="14"
         height="14"
         viewBox="0 0 24 24"
-        fill="currentColor"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
         aria-hidden="true"
       >
-        <rect x="5" y="5" width="14" height="14" rx="2.5" />
+        <rect x="5" y="5" width="14" height="14" rx="2" />
       </svg>
       <svg
         v-else
-        width="15"
-        height="15"
+        width="16"
+        height="16"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
