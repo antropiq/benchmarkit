@@ -25,7 +25,12 @@ const {
   loadSession,
 } = useChat()
 const { state: benchmarkState } = useBenchmark()
-const { state: batch, stopBatch, clearBatchRun } = useBatch()
+const {
+  state: batch,
+  stopBatch,
+  clearBatchRun,
+  openDialog: openBatchDialog,
+} = useBatch()
 
 // Let draft insertions (memory bullets) focus the textarea after appending.
 const draftEl = ref(null)
@@ -101,6 +106,24 @@ function onFilePicked(event) {
   // Reset so picking the same file again still fires the change event.
   input.value = ''
 }
+
+// --- Batch mode (the dialog itself lives in App.vue, like every modal) ---
+
+// Active only while this tab's state is IDLE: `locked` covers a reply streaming
+// and the whole of a running lot (including the gap between two task turns),
+// and a benchmark run keeps the shared chat endpoint busy, so a launch there
+// would be refused anyway.
+const canOpenBatch = computed(
+  () => !locked.value && benchmarkState.status !== 'running',
+)
+
+const batchDisabledReason = computed(() => {
+  if (batch.active) return 'A batch is already running'
+  if (streaming.value) return 'Available when no reply is streaming'
+  if (benchmarkState.status === 'running')
+    return 'Available when the benchmark is idle'
+  return ''
+})
 
 // --- Copy the conversation as markdown ---
 
@@ -348,6 +371,26 @@ onBeforeUnmount(() => {
               <path d="M4 14v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1" />
               <path d="M12 15V3" />
               <path d="m7 8 5-5 5 5" />
+            </svg>
+          </button>
+          <!-- Batch mode, right of the JSON session buttons: it belongs to this
+               tab only, so it sits in the composer row instead of the app bar.
+               Live only while the composer is fully idle (see canOpenBatch) —
+               a lot always starts on an empty thread. -->
+          <button
+            class="icon-btn"
+            type="button"
+            :disabled="!canOpenBatch"
+            aria-label="Batch mode"
+            :title="canOpenBatch ? 'Batch mode' : batchDisabledReason"
+            @click="openBatchDialog"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 6h10" />
+              <path d="M4 12h16" />
+              <path d="M4 18h7" />
+              <path d="m17 15 3 3-3 3" />
             </svg>
           </button>
         </div>

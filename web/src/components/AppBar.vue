@@ -11,7 +11,7 @@ import { useBatch } from '../composables/useBatch'
 
 const { state, openSettings } = useBenchmark()
 const { state: chat } = useChat()
-const { state: batch, openDialog: openBatchDialog } = useBatch()
+const { state: batch } = useBatch()
 
 const models = computed(() => (state.config?.models ?? []).join(' · '))
 const serverUrl = computed(() => state.config?.serverUrl || '')
@@ -124,30 +124,6 @@ const pillClass = computed(() => {
       <span class="status-pill" :class="pillClass" role="status">
         <span class="status-dot" aria-hidden="true"></span>{{ pillLabel }}
       </span>
-      <!-- Batch mode, immediately left of Settings: a running lot cannot be
-           reconfigured, and a second batch would fight the first one. -->
-      <button
-        class="icon-btn"
-        type="button"
-        :disabled="running || batch.active"
-        aria-label="Batch mode"
-        :title="
-          batch.active
-            ? 'Unavailable while a batch runs'
-            : running
-              ? 'Available when the benchmark is idle'
-              : 'Batch mode'
-        "
-        @click="openBatchDialog"
-      >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M4 6h10" />
-          <path d="M4 12h16" />
-          <path d="M4 18h7" />
-          <path d="m17 15 3 3-3 3" />
-        </svg>
-      </button>
       <button
         class="icon-btn"
         type="button"
