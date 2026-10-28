@@ -1,4 +1,4 @@
-"""Static configuration of the Editor tab's terminal surface (ed-06).
+"""Static configuration of the Editor tab's terminal surface.
 
 Module attributes on purpose (the ``lsphub.constants`` / ``editorfs.constants``
 convention): a test that exercises a cap or a grace period patches it here —
@@ -21,7 +21,7 @@ MAX_SESSIONS = 4
 STOP_GRACE_SECONDS = 5.0
 
 # One ``os.read`` of the PTY master, so a ``cat`` of a big file arrives as many
-# output frames instead of one giant message (ed-06's framing rule).
+# output frames instead of one giant message (the framing rule).
 PTY_READ_BYTES = 4096
 
 # Window size a session is born with; the client's first ``resize`` frame

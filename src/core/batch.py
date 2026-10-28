@@ -66,7 +66,8 @@ class BatchListingError(Exception):
 
 
 # The number may only be followed by the usual slug separator (or the end of
-# the stem): ``ed-1x`` is a file name, not task 1.
+# the stem): a prefix+number+letter stem like ``xx-1x`` is a file name, not
+# task 1.
 NUMBER_SEPARATORS = "-_"
 
 
@@ -85,10 +86,10 @@ def parse_task_number(stem: str, prefix: str) -> Optional[int]:
     """The ``NN`` of ``stem``, or None when the stem carries no task number.
 
     The digit run *immediately after* the prefix, ``int()``-normalised
-    (``ed-01`` -> 1, ``ed-007`` -> 7), so two- and three-digit numbers sort
+    (``xx-01`` -> 1, ``xx-007`` -> 7), so two- and three-digit numbers sort
     numerically and the ``NN`` need not be contiguous. Two shapes are not a
-    number and land in ``skipped``: none at all (``ed-foo``) and a run that is
-    not a token of its own (``ed-1x``) — accepting the latter would silently
+    number and land in ``skipped``: none at all (``xx-foo``) and a run that is
+    not a token of its own (``xx-1x``) — accepting the latter would silently
     give one lot two task 1s.
     """
     if not stem.startswith(prefix):
@@ -271,7 +272,7 @@ def task_lot(prefix: str, raw_dir: Optional[str] = None) -> Dict[str, Any]:
        overflow into ``skipped`` with its number, instead of dropping it.
 
     ``taskCount`` is ``max(number)`` -- the highest task number, not a file
-    count -- so ``ed-00`` plus ``ed-01..ed-08`` reads ``8``, gaps included.
+    count -- so one big-picture file plus tasks 1..8 reads ``8``, gaps included.
     Nothing matching is *not* an error: the payload reports ``taskCount: 0``
     with empty lists, because "no such folder" and "nothing here yet" are
     different things for the dialog to say.

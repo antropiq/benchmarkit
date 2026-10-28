@@ -4,8 +4,7 @@ AGENTS.md: *"Hub teardown kills process \\*trees\\*, not wrappers"*. The escalat
 is the same everywhere a child leads its own process group
 (``start_new_session=True``): SIGTERM the group, reap the leader, probe the
 group until the grace period expires, then SIGKILL the stragglers. The hubs and
-(ed-06) the terminal share this one implementation because two copies is how
-they drift.
+the terminal share this one implementation because two copies is how they drift.
 
 The leader's pid *is* both the pgid and (with ``start_new_session=True``) the
 session id, which is why no ``getpgid()`` is used — and none could work here: it

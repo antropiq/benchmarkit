@@ -5,7 +5,7 @@ The workspace is a throw-away ``tmp_path`` pointed at by
 ``BENCHMARKIT_PATH_LOCATION`` (the ``test_editorfs``/``test_batch`` pattern), so
 the shell always starts in a clean directory. Process tests are gated on the
 shell actually existing on the machine — the guards and the registry tests run
-unconditionally (ed-06's own rule), and the teardown grace is shortened through
+unconditionally on every platform — and the teardown grace is shortened through
 ``termhub.constants`` so a tree-kill assertion stays quick.
 """
 

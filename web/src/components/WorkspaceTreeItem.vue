@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import TreeNameInput from './TreeNameInput.vue'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useGitStatus } from '../composables/useGitStatus'
 import { fileIcon } from '../lib/file-icons'
@@ -130,6 +131,14 @@ function onFocus() {
       :entry="child"
       :index="childIndex"
       :setsize="children.length"
+    />
+    <!-- The inline name input, when this folder is the listing it belongs to:
+         for a create that is the folder being named into, and for a rename it is
+         the folder that currently shows the row (a rename that types a path may
+         end up elsewhere, but the *input* stays where the row is). -->
+    <TreeNameInput
+      v-if="state.editing?.parent === path"
+      :key="`${state.editing.mode}:${path}:${state.editing.path ?? ''}:${state.editing.isDir}`"
     />
     <p v-if="node?.truncated" class="caption tree-truncated">
       more entries are not listed

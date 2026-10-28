@@ -328,3 +328,45 @@ def test_stdout_and_stderr_are_capped_separately():
     script = "import sys; [print(i) for i in range(5000)]; [print(i, file=sys.stderr) for i in range(500)]"
     out = c.execute_command(f'python3 -u -c "{script}"')
     assert out.count("line(s) omitted") == 2
+
+
+# --- C-10: the Editor tab's write routes gave this connector nothing ---------
+
+def test_the_destructive_names_stay_blocked_outside_the_root():
+    # The commands that would emulate a delete, a rename or a truncation stay
+    # exactly where they were: blocked by name once the command reaches outside
+    # the root. The Editor's write routes are the app's own guarded surface
+    # (browser-only, one gate, a trash instead of an unlink); this connector was
+    # given no share of them, and a tool that could reach one would be a
+    # second, ungoverned copy of the same power.
+    for command in (
+        "rm -rf /home/anyone/x",
+        "rmdir /home/anyone/x",
+        "truncate -s 0 /home/anyone/x",
+        "shred /home/anyone/x",
+    ):
+        msg = refused(command)
+        base = command.split()[0]
+        assert base in msg, (command, msg)
+        assert "blocked" in msg, (command, msg)
+
+
+def test_the_creating_names_are_allowed_only_as_path_scoped_workspace_work():
+    # `mv`, `cp`, `touch` and `mkdir` are in ALLOWED_COMMANDS, so outside the
+    # root they still run -- that is the documented, path-scoped design and it
+    # is unchanged. What matters here is that they were not *promoted*: none of
+    # them became a route into the app's own write surface, and each is still
+    # refused when aimed at a credential store.
+    for command in ("mv a.py b.py", "cp a.py b.py", "touch x", "mkdir d"):
+        ok, msg = c.validate_command(command)
+        assert ok, f"{command!r} should be allowed: {msg}"
+    for command in (
+        "mv a.py " + str(Path.home() / ".ssh" / "id_ed25519"),
+        "cp a.py " + str(Path.home() / ".aws" / "credentials"),
+        "touch " + str(Path.home() / ".ssh" / "new_key"),
+        "mkdir " + str(Path.home() / ".gnupg"),
+    ):
+        assert "off-limits" in refused(command), command
+
+
+

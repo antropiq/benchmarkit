@@ -555,7 +555,14 @@ class TestLspLifecycle:
         self, hub, tmp_path
     ):
         # A second click must not tear down the handshake the first one began.
-        entry = _fake_server_entry(tmp_path, "fake", lazy=True)
+        #
+        # The delay matters: the hub records the session *before* it awaits the
+        # ``initialize`` answer, so with a server that answers instantly the
+        # first attempt is over before this test can even see the session — and
+        # a second ``start_server`` on a running server is a restart, which
+        # would prove the opposite of what is being asserted. ``--slow-init``
+        # keeps the attempt genuinely in flight across the second call.
+        entry = _fake_server_entry(tmp_path, "fake", "--slow-init", "1.5", lazy=True)
         _declare(hub, entry)
         hub.start_server("fake")
         first_pid: Optional[int] = None
@@ -566,7 +573,8 @@ class TestLspLifecycle:
                 break
             await asyncio.sleep(0.05)
         assert first_pid is not None
-        hub.start_server("fake")  # in flight / already up: a no-op
+        assert "fake" in hub._starting  # still mid-handshake, by construction
+        hub.start_server("fake")  # in flight: a no-op
         for _ in range(200):
             if hub.server_status("fake") == "running":
                 break

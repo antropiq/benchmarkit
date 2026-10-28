@@ -3,20 +3,21 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useTerminal } from '../composables/useTerminal'
 
-// Bundled with this component only (ed-05 rule 3), never in main.js. The xterm
-// classes load lazily inside useTerminal.attach(); the emulator's base CSS rides
-// this static import so it still lands in the Editor chunk, not the entry one.
+// Bundled with this component only, never in main.js — xterm is heavy and the
+// Benchmark tab is the default screen. The xterm classes load lazily inside
+// useTerminal.attach(); the emulator's base CSS rides this static import so it
+// still lands in the Editor chunk, not the entry one.
 import '@xterm/xterm/css/xterm.css'
 // Shell-prompt icons need a Nerd Font. This rides the same Editor chunk as the
 // xterm CSS above; its @font-face is unicode-range-gated, so the woff2 is only
 // fetched when a prompt glyph actually falls in those ranges.
 import '../fonts/nerd-fonts.css'
 
-// The live xterm.js pane (ed-07): an emulator mounted into the host div below,
-// bridged to `WS /api/terminal` (ed-06). All the socket/PTY/state logic lives
-// in useTerminal — a singleton, so the shell survives the v-show tab switch and
-// a remount of this component never opens a second socket behind the user's
-// back. This component owns only the DOM lifecycle and the header.
+// The live xterm.js pane: an emulator mounted into the host div below, bridged
+// to `WS /api/terminal`. All the socket/PTY/state logic lives in useTerminal —
+// a singleton, so the shell survives the v-show tab switch and a remount of
+// this component never opens a second socket behind the user's back. This
+// component owns only the DOM lifecycle and the header.
 //
 // The mount trap, documented in useSplitter.js:112-120: the tab is v-show, so
 // the pane is in the DOM but has no layout while hidden — `fit()` on a

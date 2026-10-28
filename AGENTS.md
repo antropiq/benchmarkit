@@ -9,16 +9,16 @@ answers, and grades every answer against the expected one with a secondary
 **verifier LLM**. Everything reaches the browser live over Server-Sent Events.
 Desktop browsers only.
 
-The app has three tabs, sharing one LLM configuration and one streaming layer:
+The app's tabs share one LLM configuration and one streaming layer:
 
 - **Benchmark** — runs a question set against the configured model, showing
   answers, scores, timings and token/s as they arrive.
 - **WorkBench** — interactive streaming chat with that same model, optionally
   augmented with MCP connectors and language servers.
-- **Editor** — the working location as a file tree and a code pane: the *file*
-  surface is read-only (no write route for a hub or a human). The app's one
-  shell is a separate human surface (`core/termhub/`, one WebSocket per
-  session), never an agent tool.
+- **Editor** — the working location as a file tree and a code pane. Its writes
+  are one bounded surface reachable from the browser only, never from a hub or
+  a tool. The app's one shell is a separate human surface (`core/termhub/`, one
+  WebSocket per session), never an agent tool either.
 
 ## Commands
 
@@ -35,24 +35,24 @@ cd web && npm run dev                    # Vite dev server :5173, proxies /api
 benchmarkit                              # app on http://127.0.0.1:8000
 pytest                                   # test suite (tests/)
 cd web && npm test                       # JS unit/component tests (Vitest, web/tests)
-cd web && npm run test:e2e               # Playwright e2e (web/e2e), own server on :8123
+cd web && npm run test:e2e               # Playwright e2e (web/e2e), against its own server
 ```
 
 No lint step; the only frontend build is `vite build`. `web/dist` must exist
 for FastAPI to serve the UI — the API works without it.
 
-The frontend has two test layers: Vitest+jsdom for composables and `lib/`, and
-Playwright e2e against the real FastAPI app (it builds `web/dist` itself). e2e
-starts its own server on a separate port and takes its LLM endpoint from
-`.env.test`, never from the developer's `.env`.
+Frontend tests come as unit/component runs (Vitest+jsdom over composables and
+`lib/`) and Playwright e2e against the real FastAPI app (it builds `web/dist`
+itself). e2e starts its own server on a separate port and takes its LLM endpoint
+from `.env.test`, never from the developer's `.env`.
 
 ## Code structure
 
 ### Backend (`src/`)
 
-Two layers: a UI-free **core** and the **API** in front of it. Core functions
-never touch FastAPI — they take an injected `emit(event: dict)` callable and
-report progress through it.
+A UI-free **core** and the **API** in front of it. Core functions never touch
+FastAPI — they take an injected `emit(event: dict)` callable and report
+progress through it.
 
 | Module | Purpose |
 |---|---|
@@ -65,7 +65,7 @@ report progress through it.
 | `core/chat.py` | One streamed chat reply, including the shared tool-call loop. |
 | `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
 | `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
-| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, the three locks + `path_policy` reuse — one directory level per call, one bounded file read (size cap, binary sniff, language id). Read-only — no write route exists. |
+| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call reusing the connector path policy. Reads are bounded; writes go through the policy's write flavour and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. |
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
 | `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |
@@ -83,13 +83,13 @@ touching either one.
 |---|---|
 | `composables/` | One reactive singleton per concern; components use them directly. |
 | `lib/markdown.js` | The single markdown renderer (marked + DOMPurify + KaTeX + hljs). |
-| `App.vue` | App bar and the three tab views (`v-show`, so every view stays mounted; the Editor view is a lazy chunk). |
+| `App.vue` | App bar and the tab views (`v-show`, so every view stays mounted; the Editor view is a lazy chunk). |
 | `components/` | Benchmark widgets, WorkBench widgets, shared chrome. |
 | `styles/theme.css` | Pico CSS variable overrides + app classes (light and dark). |
 
-Two frontend invariants: rendered HTML always goes through `lib/markdown.js`,
-never raw `v-html`; and run/stream state lives in the composables, which own
-the EventSource and its reconnect.
+Frontend invariants: rendered HTML always goes through `lib/markdown.js`, never
+raw `v-html`; and run/stream state lives in the composables, which own the
+EventSource and its reconnect.
 
 ## How a request flows
 
@@ -101,19 +101,18 @@ route list belongs to `api/routes.py` — what matters architecturally:
   `threading.Event` polled both between questions and inside the stream reader.
 - **Chat**: one request per reply, streamed back over SSE. The client re-posts
   the whole history each time; the server keeps no conversation state.
-- **Configuration**: `.env` and the two declaration files are edited from the
-  UI and take effect hot — an app restart is never needed.
+- **Configuration**: `.env` and the hub declaration files are edited from the UI
+  and take effect hot — an app restart is never needed.
 
 ### SSE is the UI's only source of truth
 
 Core emits plain dicts into the `EventBus`, which numbers them so a
-reconnecting client replays what it missed. Two independent streams (event
-names live in `api/routes.py` and `core/`): the run stream, and the per-reply
-chat stream, which ends in exactly one `done`, `error` or `pause_ack` — the
-last ends a reply the user paused with `POST /api/chat/pause`, keeping its
-partial turn.
+reconnecting client replays what it missed. Each stream has its own channel and
+closes with exactly one terminal event (event names live in `api/routes.py` and
+`core/`). A reply the user paused with `POST /api/chat/pause` still ends on its
+own ack, keeping its partial turn.
 
-Two measurement rules hold across both:
+Measurement rules hold across every stream:
 
 - **Timing is app-side** (`time.monotonic()`, anchored to content chunks) —
   warm-up and verifier time never enter the numbers.
@@ -133,8 +132,8 @@ Two measurement rules hold across both:
 | `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
 
 Any new file in `resources/` becomes a selectable set. The `.env`, `.env.test`
-and the two hub files are gitignored, may hold secrets, and each has a committed
-template. Four rules tie them together:
+and the hub declaration files are gitignored, may hold secrets, and each has a
+committed template. These rules tie them together:
 
 - **`.env` is regenerated from a fixed template on every save** (`SETTING_KEYS`
   and `_render_env()` in `src/config.py`): fixed key set and order, empty
@@ -143,16 +142,16 @@ template. Four rules tie them together:
 - **The declaration files are the only source of truth for what runs.** Their
   `enable` flag is the switch, toggled hot from the UI; their secrets
   (`headers`, `env`, `initializationOptions`) never leave the server.
-- **Both accept `${NAME}` / `${NAME:-fallback}`**, expanded at read time by each
-  hub's `discovery` module via shared helpers in `mcphub/validation.py`, so a
+- **The declaration files accept `${NAME}` / `${NAME:-fallback}`**, expanded at
+  read time by each hub's `discovery` module via shared helpers in
+  `mcphub/validation.py`, so a
   per-machine path or key stays in the environment. Expansion runs *before*
   validation, and only the braced form is special (a bare `$` stays literal).
   An unresolved name is kept verbatim with a note, never blanked.
-- **`BENCHMARKIT_PATH_LOCATION`** is the working-location both files point their
-  file-touching tools at (`--root-dir`, `workspaceRoot`, `--tsdk`), so one value
-  moves them together. Seeded at boot from the install dir; deliberately not a
-  managed `.env` key, so a settings save can neither erase it nor resurrect a
-  stale value.
+- **`BENCHMARKIT_PATH_LOCATION`** is the working-location every file-touching
+  connector roots itself at, so one value moves them together. Seeded at boot
+  from the install dir; deliberately not a managed `.env` key, so a settings
+  save can neither erase it nor resurrect a stale value.
 
 ## Key patterns
 
@@ -179,12 +178,16 @@ template. Four rules tie them together:
   `check_command_allowed` is the same parse), and each connector's reach is
   bounded by a deny-list — `lsp_connectors/restricted-paths.txt` for paths,
   `mcp_connectors/restricted-fqdn.txt` for hosts.
+- **A `/api/fs` write route is reachable from the SPA only**: no connector, LSP
+  tool or chat code path may call one, and every write route is refused while a
+  chat reply streams. `tests/test_write_surface_isolation.py` asserts that
+  instead of trusting this sentence.
 - **Batch mode never touches file contents**: the `todos/` lot is *listed*
-  through the shared deny-list (`core/batch.py`, one read-only route) and
-  *read/written* only through the connectors; its loop is client-side
-  (`useBatch.js`), so a reload discards a running lot.
+  through the shared deny-list (`core/batch.py`) and *read/written* only
+  through the connectors; its loop is client-side (`useBatch.js`), so a reload
+  discards a running lot.
 - **Tree file icons are one generated unit**: the per-file-type glyph mapping
-  (`web/src/lib/file-icons.js`), the two `nerd-icons-*.woff2` subsets and the
+  (`web/src/lib/file-icons.js`), the `nerd-icons-*.woff2` subsets and the
   `unicode-range` of the "JetBrains Mono Nerd Icons" faces in `nerd-fonts.css`
   are all produced from the tables in `tools/nerd_icons.py` (`generate`), and a
   test holds them in sync — a code point with no glyph renders a tofu box, so
@@ -231,6 +234,12 @@ template. Four rules tie them together:
 - Describe the **big picture**: what the pieces are and which invariants hold.
   Route-level detail, exhaustive lists and per-feature essays belong in the
   code, the README, or a doc comment next to the thing they describe.
+- Keep out anything a routine code change would make wrong: counts ("three
+  tabs", "four routes"), named enumerations of members, test totals and version
+  numbers. State the invariant instead — *what* the write surface guarantees,
+  not how many endpoints implement it. The code and its tests are the source of
+  truth for those details. Naming the *one* test that enforces an invariant is
+  the exception: it is a pointer, not a count.
 - One idea per bullet, no single long line — wrap prose at ~100 columns.
 - Describe the app as it is now. Nothing about a past session, a rename, a
   previous state of the file, or what used to be true.

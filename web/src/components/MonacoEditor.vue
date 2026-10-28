@@ -32,10 +32,12 @@ ensureMonacoWorkers()
 const props = defineProps({
   content: { type: String, default: '' },
   language: { type: String, default: 'plaintext' },
-  // Read-only by default: the file surface has no write route to disk yet
-  // (AGENTS.md), so the safe default is a viewer. The pane turns this off in
-  // read_write mode (the chat is idle) — `readOnly`+`domReadOnly` gate the
-  // editing, and the watcher below flips both hot when the mode changes.
+  // Read-only by default: the safe shape is the one this component starts in,
+  // and the *pane* decides when it changes (useEditorMode's rule — editable
+  // while the WorkBench is idle). `readOnly`+`domReadOnly` gate the editing, and
+  // the watcher below flips both hot when the mode changes. Saving is wired
+  // either way (Ctrl+S and the header's buttons are window/pane level), so a
+  // read-only pane can still be a pane with unsaved work in it.
   readonly: { type: Boolean, default: true },
   ariaLabel: { type: String, default: 'File contents' },
 })
@@ -118,6 +120,16 @@ onMounted(() => {
 // `setValue` clears the undo stack and the cursor/selection, so it must not
 // run when the text already matches (an unrelated re-render, a reload that
 // changed nothing).
+//
+// Line endings need no handling here beyond letting the model do it: `setValue`
+// builds the model's EOL from the text it is given (the majority of `\r\n` over
+// `\n`), so a CRLF file keeps CRLF, the caret's Enter inserts CRLF, and every
+// `getValue()` the pane saves back is written with that EOL. The server never
+// normalises (D5) — what the model says is what lands. The one thing that does
+// not survive is a file with *mixed* endings, which the model resolves to its
+// dominant form on load: the same normalising any editor with a single EOL per
+// buffer does, and a reason the save goes through the mtime guard rather than
+// trusting the buffer to be byte-identical.
 watch(
   () => props.content,
   (next) => {

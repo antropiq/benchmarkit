@@ -9,7 +9,8 @@ Two entry points for the Editor tab's navigator:
   (``GET /api/fs/diff``), for a diff tab.
 
 Both are **read-only git queries**: nothing here stages, commits or checks out
-anything, and the write stance of this package (decision D4) is untouched.
+anything. The package's one writer is :func:`editorfs.files.write_file`, and a
+git query is not a route to it.
 
 Four rules the two endpoints share:
 

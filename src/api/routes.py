@@ -175,6 +175,62 @@ class LspIn(BaseModel):
     maxIterations: int = Field(default=25, ge=1, le=500)
 
 
+class FileSaveIn(BaseModel):
+    """A save of one whole editor buffer (``PUT /api/fs/file``).
+
+    ``ifUnmodifiedSince`` is the ``mtime`` the ``GET /api/fs/file`` that filled
+    this buffer reported — the optimistic-concurrency token the save guard
+    compares against the disk. ``None`` means the client holds no expectation
+    and skips the guard; the route logs that, because the SPA always sends the
+    token and its absence is the shape of a client bug.
+
+    The size cap is deliberately *not* a validator here: over-cap is a refusal
+    of the same shape as the read route's (``413`` naming the size), and a
+    Pydantic validator would answer ``422`` instead. ``editorfs.write_file``
+    owns it.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    path: str
+    text: str = ""
+    ifUnmodifiedSince: Optional[float] = None
+
+
+class FileRenameIn(BaseModel):
+    """A rename, and therefore a move (``POST /api/fs/rename``).
+
+    ``to`` is the whole workspace-relative **target path**, not a new leaf name:
+    that is what makes a move the same route as a rename, and it means the
+    target's parent chain is a user-supplied path like any other, gated the same
+    way. A name-only field would push the joining into the client and leave the
+    server unable to check the folder a file lands in.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    frm: str = Field(alias="from")
+    to: str
+
+
+class FileCreateIn(BaseModel):
+    """A new file or folder (``POST /api/fs/create``).
+
+    ``path`` is the whole workspace-relative path of the thing to create — its
+    parent must already exist, so this is one name per request and never a
+    ``mkdir -p``. ``dir`` picks a folder over an empty file.
+
+    A name-only field is deliberately *not* offered: the client joins the name
+    it collected to the folder it pointed at, so the route sees one path and the
+    gate that checks the ancestor chain sees the whole of it.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    path: str
+    dir: bool = False
+
+
 # Base64-decoded image size limit for multimodal chat messages (the client
 # applies the same limit before reading a file).
 MAX_CHAT_IMAGE_BYTES = 10 * 1024 * 1024
@@ -353,6 +409,26 @@ def _clear_chat_handle(cancel_event: threading.Event) -> None:
     global _CHAT_HANDLE
     if _CHAT_HANDLE is not None and _CHAT_HANDLE.cancel_event is cancel_event:
         _CHAT_HANDLE = None
+
+
+def _refuse_if_chat_streaming(what: str) -> None:
+    """409 while a chat reply is in flight — the one place that rule is written.
+
+    A reply is the only other writer of the workspace, so a mutation landing in
+    the middle of one races the model's own tool edits. The check is the same
+    process-wide slot ``POST /api/chat/pause`` uses; the client-side rule in
+    ``useEditorMode`` is the *display* of this and the server is the enforcement.
+
+    (The hub-restart and path-location routes ask the wider question instead —
+    ``_CHAT_TASKS``, which also covers a reply whose handle is not armed yet —
+    because they tear down what that reply is using. A file write only needs to
+    know a reply is streaming.)
+    """
+    if _CHAT_HANDLE is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot {what} while a chat reply is streaming",
+        )
 
 
 # Dialog field -> .env key, used for both directions of the settings API.
@@ -1169,8 +1245,9 @@ def build_router(state: RunState) -> APIRouter:
         All the rules live in ``core/editorfs`` (the three locks on the path,
         the entry cap, the ignored names, the deny-list); this route only turns
         a :class:`~src.core.editorfs.policy.WorkspacePathError` into its HTTP
-        status. Read-only by design: there is no write route under ``/api/fs``
-        in this lot, and no hub may ever gain one (decision D4).
+        status. This route reads: every write route under ``/api/fs`` is gated
+        by the *write* flavour of the same policy, belongs to the browser alone,
+        and no hub or tool may ever gain one.
         """
         try:
             return editorfs.list_dir(path)
@@ -1183,18 +1260,138 @@ def build_router(state: RunState) -> APIRouter:
 
         The same gate as the tree — ``editorfs`` resolves the path inside the
         working location and applies the connector deny-list — so the browser
-        can never ask for a file the connectors refuse (decision D3: one policy
-        per surface that touches disk). Past ``editorfs.constants.MAX_EDITOR_BYTES``
+        can never ask for a file the connectors refuse: one policy per surface
+        that touches disk. Past ``editorfs.constants.MAX_EDITOR_BYTES``
         the answer is 413 naming the size; a binary file answers ``binary: true``
         with no ``text`` key rather than an error, so the pane can label it.
 
-        ``mtime`` in the payload is the write guard's token for the write layer
-        of ed-10, and what ed-09's live reload compares against ``/api/fs/stat``.
-        Still read-only: the tree, this read and the probe are all ``/api/fs``
-        answers, and no hub may ever gain a write route (decision D4).
+        ``mtime`` in the payload is the token the save guard compares: the
+        client sends it back as ``ifUnmodifiedSince`` and a disk mtime that has
+        moved since answers 409 instead of overwriting someone else's change.
+        It is also what the freshness probe (``/api/fs/stat``) compares for the
+        open buffers. This route reads; the write routes are browser-only.
         """
         try:
             return editorfs.read_file(path)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    # -- the guarded write surface (browser-only) ------------------------------
+
+    @router.put("/fs/file")
+    def put_fs_file(body: FileSaveIn) -> Dict[str, Any]:
+        """One whole editor buffer, back to disk (``PUT /api/fs/file``).
+
+        The rules all live in :func:`src.core.editorfs.files.write_file` —
+        the write flavour of the gate over the whole ancestor chain, the
+        ``mtime`` guard (409 whose ``detail`` is an object carrying both
+        mtimes), the size cap on the way in *and* on the file on disk (413:
+        a buffer we never fully read is never written back), a pre-save
+        backup, and an atomic temp-file + ``os.replace`` that keeps the file's
+        mode and its exact bytes (CRLF included, no normalisation).
+
+        Refused while a chat reply streams: that reply may be editing these
+        very files through its tools, so a save landing in the middle of one
+        would race the model. The payload answers the new ``size``/``mtime``
+        so the caller re-baselines on the server's truth.
+
+        This is a **browser** surface. No MCP connector, LSP tool or chat code
+        path may call it — the tools stay read-only by design, and the guard
+        suite in ``tests/test_editorfs_write.py`` asserts exactly that.
+        """
+        _refuse_if_chat_streaming("save")
+        try:
+            return editorfs.write_file(
+                body.path, body.text, if_unmodified_since=body.ifUnmodifiedSince
+            )
+        except editorfs.WorkspaceSaveConflict as exc:
+            # The object, not the sentence: the client offers reload-or-
+            # overwrite, and that choice needs both numbers, not prose.
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail_object)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    @router.post("/fs/create")
+    def post_fs_create(body: FileCreateIn) -> Dict[str, Any]:
+        """One new file or folder inside the working location.
+
+        The rules live in :func:`src.core.editorfs.mutate.create_path` — the
+        write gate over the parent chain *and* the leaf name (422 in the
+        deny-list's words), the parent must already be a directory (409 naming
+        it: a typo becomes a refusal, never a stray tree — there is no
+        ``mkdir -p`` here), and never over an existing name, dangling symlink
+        included (409 whose ``detail`` is ``{"reason": "exists", …}``, closed
+        against a race with ``mkdir``/``O_EXCL`` rather than checked).
+
+        Refused while a chat reply streams, like every other write. The payload
+        answers ``path``/``dir``/``size``/``mtime`` — the shape a save answers,
+        so the client re-baselines the new empty buffer on the server's truth.
+
+        Browser-only, like ``PUT /api/fs/file``: no connector or LSP tool may
+        reach a route under ``/fs`` that mutates disk.
+        """
+        _refuse_if_chat_streaming("create a file or folder")
+        try:
+            return editorfs.create_path(body.path, is_dir=body.dir)
+        except editorfs.WorkspacePathExists as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail_object)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    @router.delete("/fs/file")
+    def delete_fs_file(path: str) -> Dict[str, Any]:
+        """One file or one whole folder, moved to the trash (``DELETE /api/fs/file``).
+
+        The rules live in :func:`src.core.editorfs.mutate.trash_path` — the
+        write gate over the chain (422 in the deny-list's words), the working
+        location itself refused outright (400), an absent path answered **404**
+        rather than "already deleted, fine", a top-level symlink refused (400,
+        its target may be outside the workspace), and the **all-or-nothing
+        subtree check**: one denied descendant refuses the whole delete and
+        nothing at all moves. What is deleted is never ``unlink``ed — it lands
+        in ``logs/trash/<batch>/<the relative path>`` and is swept after
+        ``TRASH_RETENTION_DAYS``, which is why the payload names the batch.
+
+        Refused while a chat reply streams, like every other write. The answer
+        carries ``entries`` — the descendant count from the server's own walk —
+        so the confirmation the UI already showed matches what happened.
+
+        Browser-only, like the other write routes: no connector or LSP tool may
+        reach a route under ``/fs`` that mutates disk.
+        """
+        _refuse_if_chat_streaming("delete a file or folder")
+        try:
+            return editorfs.trash_path(path)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    @router.post("/fs/rename")
+    def post_fs_rename(body: FileRenameIn) -> Dict[str, Any]:
+        """One path to another path — a rename, which is also a move.
+
+        The rules live in :func:`src.core.editorfs.mutate.rename_path`: **both
+        ends** go through the write gate (``from`` whole, and ``to`` plus every
+        one of its ancestors — the rule that refuses an innocent file moving
+        into ``.git/…`` or ``mcp_connectors/…``), an absent source is 404, the
+        target's parent must already exist (409 naming it, no implicit
+        ``mkdir``), a folder cannot move into itself (409), and an occupied
+        target is 409 rather than ``os.rename``'s silent replacement. A
+        cross-device move (``EXDEV``) is refused rather than copied.
+
+        Refused while a chat reply streams, like every other write. Nothing is
+        backed up here, deliberately: the bytes did not change and the trash
+        plus git already describe the move. The payload answers
+        ``from``/``to``/``dir``/``size``/``mtime`` so the caller can re-point
+        its open buffers and re-baseline on the server's truth.
+
+        Browser-only, like the other write routes: no connector or LSP tool may
+        reach a route under ``/fs`` that mutates disk.
+        """
+        _refuse_if_chat_streaming("rename a file or folder")
+        try:
+            return editorfs.rename_path(body.frm, body.to)
+        except editorfs.WorkspacePathExists as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail_object)
         except editorfs.WorkspacePathError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
@@ -1202,9 +1399,9 @@ def build_router(state: RunState) -> APIRouter:
     def get_fs_stat(path: List[str] = Query(default_factory=list)) -> Dict[str, Any]:
         """``mtime``/``size``/``exists`` for a handful of exact paths.
 
-        The live-reload probe of ed-09: the client names the files it has open,
-        so nothing has to poll a tree or run a file watcher. Every path goes
-        through the same gate as the tree.
+        The freshness probe: the client names the files it has open, so nothing
+        has to poll a tree or run a file watcher. Every path goes through the
+        same gate as the tree.
         """
         try:
             return {"paths": editorfs.stat_paths(path)}
@@ -1246,7 +1443,7 @@ def build_router(state: RunState) -> APIRouter:
         except editorfs.WorkspacePathError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
-    # -- terminal (ed-06): one PTY per WebSocket --------------------------------
+    # -- terminal: one PTY per WebSocket ---------------------------------------
 
     @router.get("/terminal")
     def get_terminal(request: Request) -> Dict[str, Any]:
@@ -1259,7 +1456,7 @@ def build_router(state: RunState) -> APIRouter:
 
     @router.websocket("/terminal")
     async def terminal_ws(websocket: WebSocket) -> None:
-        """One shell on one PTY, bridged to the browser (ed-07's xterm pane).
+        """One shell on one PTY, bridged to the browser's xterm pane.
 
         Guards, in order, each refusing *before* any process is spawned:
         the Origin check (the app has no CORS/CSRF layer, so this is the one
@@ -1267,7 +1464,7 @@ def build_router(state: RunState) -> APIRouter:
         check (``pty`` is POSIX; the app is self-hosted on Linux), and the
         concurrent-session cap. A real shell can change anything the app's user
         can — which is why it is *never* an MCP or LSP tool, only this route,
-        used by the SPA (decision D4's read-only boundary).
+        used by the SPA. The tools stay read-only; a shell is a human surface.
 
         ``cwd`` is always ``path_location()``; the server takes no path from the
         client. Frames are JSON text (``input``/``resize``/``kill`` in,
@@ -1330,7 +1527,7 @@ def build_router(state: RunState) -> APIRouter:
 
         await websocket.accept()
         try:
-            # One session per connection: no attach, no reuse (ed-06 guard).
+            # One session per connection: no attach, no reuse.
             session.spawn(cols=termhub.DEFAULT_COLS, rows=termhub.DEFAULT_ROWS)
         except (termhub.TerminalUnsupported, OSError) as exc:
             hub.drop(session.id)

@@ -41,7 +41,7 @@ const ariaLabel = computed(() => {
 
 // What each outcome means for the lot, in one line. Deliberately about how the
 // *turn* ended, not whether the task succeeded: batch mode never reads a task
-// body, so it cannot check the staging/commit/move the instruction asks for.
+// body, so it cannot check the move into done/ that the instruction asks for.
 // Re-opening the dialog re-lists the folder, and that is how reality shows.
 const OUTCOME_LABEL = {
   done: 'turn finished',

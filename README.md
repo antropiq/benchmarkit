@@ -26,6 +26,12 @@ same configured model interactively.
   warm-up request so model loading never pollutes the numbers.
 - **Chat tab** — interactive streaming chat with the benchmark-configured
   model, including a "thinking" indicator while the model emits reasoning.
+- **Editor tab** — browse the working location as a file tree and edit it in a
+  Monaco pane: save, create, rename and delete files and folders, with git
+  status badges and an integrated terminal.
+- **Deleted files are not lost** — the Editor never removes a file outright; it
+  moves it into a dated batch under `logs/trash/` (kept 30 days), and each save
+  keeps the previous bytes in `logs/editor_backups/`.
 - **Optional MCP tools in Chat** — declare MCP connectors (remote HTTP or
   local stdio) in `mcp_connectors/externals.json` and tick them in Settings so
   the chat model can browse the web, read docs or run whitelisted shell

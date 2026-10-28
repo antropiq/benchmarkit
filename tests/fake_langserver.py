@@ -17,12 +17,18 @@ tsserver relay is tested.
 tsserver outlives the wrapper that spawned it: the hub's teardown has to
 reach it through the process group and escalate to SIGKILL.
 
+``--slow-init <seconds>`` delays the ``initialize`` answer. The hub records the
+session before it awaits that answer, so this is how a test holds a start
+*attempt* open — without it, a server that answers instantly finishes its
+handshake before the test can observe the in-flight state at all.
+
 Run with ``sys.executable fake_langserver.py [flags]``.
 """
 
 import json
 import subprocess
 import sys
+import time
 
 CAPABILITIES = {
     "hoverProvider": True,
@@ -53,11 +59,14 @@ def main() -> int:
     relay_unknown = "--relay-unknown" in sys.argv
     crash_after = None
     child_pidfile = None
+    slow_init = 0.0
     for index, arg in enumerate(sys.argv):
         if arg == "--crash-after" and index + 1 < len(sys.argv):
             crash_after = int(sys.argv[index + 1])
         if arg == "--child" and index + 1 < len(sys.argv):
             child_pidfile = sys.argv[index + 1]
+        if arg == "--slow-init" and index + 1 < len(sys.argv):
+            slow_init = float(sys.argv[index + 1])
 
     if child_pidfile:
         # A grandchild that survives SIGTERM, so a teardown that only signals
@@ -289,6 +298,11 @@ def main() -> int:
                     }
                 )
                 continue
+            if slow_init:
+                # Hold the handshake open: the hub has already recorded the
+                # session by the time this answers, so a start attempt is
+                # observable mid-flight for the whole delay.
+                time.sleep(slow_init)
             reply(
                 msg_id,
                 {

@@ -50,3 +50,44 @@ IGNORED_DIR_NAMES: frozenset[str] = frozenset(
     }
 )
 
+
+# -- the guarded write surface -------------------------------------------------
+
+# Where a pre-save copy of a file lands. Deliberately in the *app* repo, not in
+# the workspace: the working location may be ``$HOME``, so a backup tree inside
+# it would be a second copy of the user's home, and it would show up in the
+# ``git status`` of whatever is being edited. ``logs/`` is gitignored already,
+# for the same reason ``fedit_mcp`` keeps its backups out of the tree.
+# Separate from ``logs/fedit_backups/`` on purpose too: that one is the fedit
+# connector's chain, and its ``list_edits``/``revert_edit`` must keep answering
+# only about files that connector actually touched.
+BACKUP_DIR = PROJECT_ROOT / "logs" / "editor_backups"
+
+# Pre-save copies kept per file; older ones are pruned after each backup.
+BACKUP_KEEP = 10
+
+# Any backup older than this is swept regardless of its file — a renamed or
+# deleted file leaves copies no per-file keep can ever see. 0 disables the sweep.
+BACKUP_PRUNE_DAYS = 30
+
+# Slack allowed when comparing a buffer's ``mtime`` against the disk one. The
+# value round-trips through a JSON float, and filesystems tick at anything from
+# nanoseconds to whole seconds, so an exact ``==`` would report a conflict for a
+# save that only just happened.
+MTIME_GUARD_EPSILON = 0.01
+
+# -- delete: the trash, never ``unlink`` --------------------------------------
+
+# Where a deleted path is *moved* to, one dated batch per delete. In the app
+# repo for the same reason as ``BACKUP_DIR``: the working location may be
+# ``$HOME``, so a trash folder inside it would be a second copy of the user's
+# home — and it would show up in the ``git status`` of whatever is being
+# edited. ``logs/`` is gitignored already.
+TRASH_DIR = PROJECT_ROOT / "logs" / "trash"
+
+# How long a trashed batch stays recoverable, swept on the same reasoning as
+# ``BACKUP_PRUNE_DAYS``. It is what lets the confirmation name a number out
+# loud ("kept 30 days") instead of promising a restore it never delivers.
+# 0 disables the sweep.
+TRASH_RETENTION_DAYS = 30
+

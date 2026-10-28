@@ -840,8 +840,8 @@ export function useBenchmark() {
       }
       // The Editor tab's tree browses this location, so it re-roots here —
       // from the save path rather than from the tab, which may never have been
-      // opened. (The terminal's `cwd` moves with the same value; ed-07
-      // restarts its session off `pathLocationCurrent`.)
+      // opened. (The terminal's `cwd` moves with the same value: a new session
+      // is born on the current location.)
       useWorkspaceTree().refresh()
     } catch (exc) {
       state.pathLocationError = `Could not reach the API: ${exc}`

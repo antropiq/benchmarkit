@@ -1,6 +1,6 @@
 """One shell on one PTY: spawn, pump, resize, tear down.
 
-``TerminalSession`` is the ed-06 core behind ``WS /api/terminal``. It knows
+``TerminalSession`` is the core behind ``WS /api/terminal``. It knows
 nothing about WebSockets: like the benchmark and chat cores it takes an
 injected ``emit`` (an async callable publishing plain dicts) and is handed a
 ``receive_frame`` callable that yields the next client frame. Everything else —
@@ -65,7 +65,7 @@ Emit = Callable[[Dict[str, Any]], Awaitable[None]]
 # The next client frame, already parsed to a dict; None means the client left.
 ReceiveFrame = Callable[[], Awaitable[Optional[Dict[str, Any]]]]
 
-# Frame types, both directions (ed-06's contract).
+# Frame types, both directions — the contract between this module and the pane.
 INPUT = "input"
 RESIZE = "resize"
 KILL = "kill"
@@ -80,7 +80,7 @@ class SessionCapacity(Exception):
 
 
 def shell_command() -> str:
-    """The shell to run: ``$SHELL``, falling back to ``/bin/sh`` (decision D2).
+    """The shell to run: ``$SHELL``, falling back to ``/bin/sh``.
 
     Interactive and non-login (``-i``): an embedded pane should read
     ``~/.bashrc`` — the prompt, aliases, colours a user expects there — without

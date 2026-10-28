@@ -25,15 +25,14 @@ import { registerBatchGuard, useBenchmark } from './useBenchmark'
 //     big picture rides on every request as `batchContext`.
 // ---------------------------------------------------------------------------
 
-// The per-task user message, verbatim (the architect's wording, including the
-// `commited` spelling — not to be silently rephrased). `<task_location>` is the
-// root-relative path returned by the listing, which both connectors and the
-// agent-instructions block resolve against the project root.
+// The per-task user message, verbatim. `<task_location>` is the root-relative
+// path returned by the listing, which both connectors and the agent-instructions
+// block resolve against the project root. It asks for no commit: a batch leaves
+// its edits in the working tree, for the human to review and commit.
 export const TASK_INSTRUCTION_TEMPLATE =
   "You've been given task: <task_location> to proceed. Do the coding tasks " +
-  'needed to implement the feature. Once done stage your modified file and ' +
-  'create a concise commit message. When the task is commited move it into the ' +
-  'todos/done folder.'
+  'needed to implement the feature. Once done move it into the todos/done ' +
+  'folder.'
 
 // Client-side mirror of the backend PREFIX_PATTERN (core/batch.py): the same
 // single check that keeps the query out of glob-injection territory, so an
@@ -41,12 +40,12 @@ export const TASK_INSTRUCTION_TEMPLATE =
 export const PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
 
 // The connectors the instruction depends on: reading and editing the task's
-// files, and staging/committing/moving them. With either off, every task would
-// fail the same way, so Launch refuses rather than burning the whole lot to
-// prove the point. These are the connector ids declared in externals.json.
+// files, and moving them into done/. With either off, every task would fail the
+// same way, so Launch refuses rather than burning the whole lot to prove the
+// point. These are the connector ids declared in externals.json.
 export const REQUIRED_MCP_CONNECTORS = [
   { id: 'fedit', what: 'read and edit the task files' },
-  { id: 'console', what: 'run git add / git commit / mv into todos/done' },
+  { id: 'console', what: 'run mv into todos/done' },
 ]
 
 export function taskInstruction(taskLocation) {
@@ -72,7 +71,7 @@ const state = reactive({
   // One entry per task started: 'done' | 'capped' | 'truncated' | 'stopped' |
   // 'not-started' | 'error'. These are *turn* outcomes, not verdicts: with B13
   // the app never sees the task body, so it cannot know whether the model
-  // staged, committed or moved anything — the bar's title says so.
+  // moved the task file into done/ — the bar's title says so.
   outcomes: [],
   status: 'idle', // idle | running | stopped | failed | finished
 })

@@ -2245,10 +2245,10 @@ body {
 }
 
 /* -- editor screen ------------------------------------------------------------
-   The Editor tab (ed-02 …): a grid with the navigator spanning both rows on
-   the left, the code pane in the right column's top row and the terminal strip
-   under it. The two splitter bars are grid tracks of their own, so the panes
-   never shift when a track is resized.
+   The Editor tab: a grid with the navigator spanning both rows on the left,
+   the code pane in the right column's top row and the terminal strip under it.
+   The two splitter bars are grid tracks of their own, so the panes never shift
+   when a track is resized.
 
    The shell has no padding and the grid no gap: the three panels take the
    whole area under the app bar and meet along the splitter bars, so the screen
@@ -2505,6 +2505,59 @@ body {
   padding-left: calc(var(--bi-space-2) + 1.2rem);
 }
 
+/* -- the inline name row (TreeNameInput) ------------------------------------
+   The row where a new file or folder is named, sitting inside the listing it
+   will appear in. Pico styles every `input` as a block with margins, which in a
+   flex row would wrap and tower over its neighbours — so it is reset to an
+   inline field that takes the width the name column would have had. */
+.tree-row--creating {
+  cursor: text;
+  user-select: text;
+}
+
+.tree-name-input {
+  flex: 1 1 auto;
+  min-width: 4rem;
+  margin: 0;
+  padding: 0.1rem 0.3rem;
+  font-family: var(--pico-font-family-monospace);
+  font-size: 0.8rem;
+  line-height: 1.3;
+  background-color: var(--bi-surface);
+  border: 1px solid var(--pico-primary);
+  border-radius: var(--pico-border-radius);
+}
+
+.tree-name-input-action {
+  flex: 0 0 auto;
+  width: 1.4rem;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: var(--pico-border-radius);
+  background: none;
+  color: var(--pico-muted-color);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tree-name-input-action:hover {
+  color: var(--pico-color);
+}
+
+/* The refusal of a name — a create's or a rename's — sits *in* the listing it
+   was typed into rather than in a toast elsewhere, because the fix is to edit
+   what is under the caret. `.tree-row-error` is the shared name for that line
+   across both modes. */
+.tree-name-input-error,
+.tree-row-error {
+  margin: 0.15rem 0 0.25rem;
+  padding-left: calc(var(--bi-space-2) + 1.2rem);
+  font-size: 0.75rem;
+  color: var(--bi-danger);
+}
+
 /* -- the unstaged marker (WorkspaceTreeItem) ---------------------------------
    A dot after the file name, coloured by what git says about it. It is a
    decoration on the row, not a control: it takes no click, and its meaning is
@@ -2557,8 +2610,11 @@ body {
 
 /* -- file context menu (WorkspaceNavigator) ----------------------------------
    Teleported to <body> and fixed-positioned at the cursor, so the tree's
-   scrolling container cannot clip it. One surface for both items; the "Close"
-   item is simply absent (not disabled) when no tab holds the file. */
+   scrolling container cannot clip it. One surface for every row kind — file,
+   folder and root — whose items come from one table (lib/tree-menu), so an item
+   that would be lying is *absent* from that list rather than rendered disabled:
+   no "Close" without a buffer, no "View diff…" without a committed side, no
+   "Rename…"/"Delete" on the workspace root. */
 .tree-context-menu {
   position: fixed;
   z-index: 1000;
@@ -2594,6 +2650,28 @@ body {
   color: var(--bi-icon);
 }
 
+/* Tab reaches these items (they are plain buttons in a `role="menu"`), so the
+   caret has to be visible on one — the hover background alone would leave a
+   keyboard user without any answer to "which item is Enter about to run?". */
+.tree-context-item:focus-visible {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: -2px;
+  background-color: var(--bi-surface-2);
+  color: var(--bi-icon);
+}
+
+/* The one destructive item in the tree's menu. It only *asks* — the move to the
+   trash happens in the dialog — but the tone has to say what the item can lead
+   to before it is clicked. */
+.tree-context-item--danger {
+  color: var(--bi-danger);
+}
+
+.tree-context-item--danger:hover {
+  color: var(--bi-danger);
+  background-color: color-mix(in srgb, var(--bi-danger) 8%, var(--bi-surface));
+}
+
 /* The slot bounds the height; the navigator takes it, so its tree column is
    what scrolls instead of the whole panel overflowing the screen. */
 .editor-nav-slot .editor-nav {
@@ -2601,7 +2679,7 @@ body {
   min-height: 0;
 }
 
-/* -- code pane (ed-03 / ed-04 fill this body) ---------------------------------- */
+/* -- code pane ---------------------------------------------------------------- */
 
 .editor-area {
   /* Pico gives every bare `section` a bottom block margin. In a grid whose rows
@@ -2628,10 +2706,10 @@ body {
   min-height: 2.1rem;
 }
 
-/* The open-file tabs: one chip per buffer (ed-04 keeps this markup, and its
-   Monaco replaces the body below). They are square cells *of* the header strip:
-   they stretch to its full height, with no gap and no radius between them, so
-   the borders they share read as the dividers between tabs. */
+/* The open-file tabs: one chip per buffer, the strip above the Monaco body.
+   They are square cells *of* the header strip: they stretch to its full height,
+   with no gap and no radius between them, so the borders they share read as the
+   dividers between tabs. */
 .editor-tabs {
   display: flex;
   align-items: stretch;
@@ -2756,6 +2834,148 @@ body {
   border: 0;
 }
 
+/* The freshness marker: same row and same size as the dirty dot, but a ring
+   rather than a fill, because it reports something *outside* the buffer (the
+   disk moved) instead of the buffer's own unsaved state. Warning for "changed
+   on disk", danger for "gone from disk" — and unlike the dot it is clickable,
+   which is how a turned-down conflict is answered later. */
+.editor-tab-stale {
+  flex: 0 0 auto;
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border: 2px solid var(--bi-warning);
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+
+.editor-tab-stale--deleted {
+  border-color: var(--bi-danger);
+}
+
+.editor-tab-stale-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* -- the Editor pane's dialogs (EditorTreeDialogs) --------------------------
+   Pico renders <dialog> as the full-viewport overlay and the <article> as the
+   card; only the card is sized here, same shape as the other dialogs. It stays
+   narrow: the answer is a sentence and three buttons, and a Compare opens a
+   pane-wide diff rather than a wider dialog. */
+.editor-conflict-dialog > article {
+  width: 560px;
+  max-width: 94vw;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.editor-conflict-dialog .caption {
+  margin: 0.25rem 0;
+}
+
+/* Overwrite is the destructive answer, so it borrows the danger tone while
+   keeping Pico's secondary shape — the primary button belongs to Reload. */
+.editor-conflict-overwrite {
+  color: var(--bi-danger);
+  border-color: color-mix(in srgb, var(--bi-danger) 45%, transparent);
+}
+
+/* The close confirm shares the conflict dialog's card shape. Discard is the
+   destructive answer and borrows the danger tone; Save and close keeps Pico's
+   primary shape, and Cancel (the default, first) gets the secondary one. */
+.editor-close-dialog > article {
+  width: 480px;
+  max-width: 94vw;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.editor-close-dialog .caption {
+  margin: 0.25rem 0;
+}
+
+.editor-close-discard {
+  color: var(--bi-danger);
+  border-color: color-mix(in srgb, var(--bi-danger) 45%, transparent);
+}
+
+/* The delete confirm shares the same card shape. Cancel is first (and so the
+   default for Enter and Esc); Delete is the destructive answer and wears the
+   danger tone, as the other two confirms do. The keep-line is a caption, not a
+   button — it states the retention the server actually applies. */
+.editor-delete-dialog > article {
+  width: 520px;
+  max-width: 94vw;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.editor-delete-dialog .caption {
+  margin: 0.25rem 0;
+}
+
+.editor-delete-dialog code {
+  font-size: 0.78em;
+}
+
+.editor-delete-confirm {
+  color: var(--bi-danger);
+  border-color: color-mix(in srgb, var(--bi-danger) 45%, transparent);
+}
+
+.editor-delete-keeps {
+  margin-bottom: 0;
+}
+
+/* The pane's save affordances, in the header row *beside* the tab scroller: the
+   strip scrolls under its own wheel rule, so a button inside it would scroll out
+   of reach. Same square cell as a chip, so the header stays one line of cells. */
+.editor-save-actions {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+
+.editor-save-button {
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--bi-border);
+  border-radius: 0;
+  background: none;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+
+.editor-save-button:hover:not(:disabled) {
+  color: var(--pico-color);
+}
+
+/* A clean buffer has nothing to save, and that is the common state — so the
+   disabled button must recede rather than look like a control that is broken. */
+.editor-save-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* A save in flight: the chip is busy rather than idle, since a large file is not
+   instantaneous and the dot has not had the chance to clear yet. */
+.editor-tab-saving .editor-tab-dirty {
+  animation: bi-pulse 1.2s ease-in-out infinite;
+}
+
 /* Pico gives a focused button its own ring; the chip's inset bar already marks
    the caret, so the inner buttons add none of their own. */
 .editor-tab-name:focus,
@@ -2838,6 +3058,83 @@ body {
   flex: 0 0 auto;
 }
 
+/* -- write-feedback stack -----------------------------------------------------
+   The Editor's notices (useEditorNotices, EditorNoticeStack.vue) teleport to
+   `<body>`, so they sit outside every pane's stacking context and are readable
+   from the tree as well as the code pane. Bottom-centre: it must not cover the
+   tab strip (top), the composer (WorkBench's bottom) or a right-click point in
+   the tree (left). The tone is carried by the border and the icon colour only —
+   never colour alone — and the × gives every line a dismissal the timer will
+   not do on its own. */
+.editor-notice-stack {
+  position: fixed;
+  z-index: 1100;
+  left: 50%;
+  bottom: 1.5rem;
+  transform: translateX(-50%);
+  /* The stack must never swallow a click aimed at whatever is under it, only
+     its own lines are interactive. */
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bi-space-1);
+  width: min(46rem, calc(100vw - 4rem));
+}
+
+.editor-notice {
+  pointer-events: auto;
+  display: flex;
+  align-items: baseline;
+  gap: var(--bi-space-1);
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  border: 1px solid var(--bi-border);
+  border-left-width: 3px;
+  border-radius: var(--bi-radius-lg);
+  /* The app surface, opaque: this floats over code, so a translucent panel
+     would read as part of the text behind it. */
+  background-color: var(--bi-surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  animation: bi-fade-in 0.2s ease;
+}
+
+.editor-notice-text {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.editor-notice--error {
+  border-left-color: var(--bi-danger);
+  color: var(--bi-danger);
+}
+
+.editor-notice--warn {
+  border-left-color: var(--bi-warning);
+  color: var(--bi-warning);
+}
+
+.editor-notice--ok {
+  border-left-color: var(--bi-success);
+  color: var(--pico-color);
+}
+
+.editor-notice-dismiss {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 0.3rem;
+  border: 0;
+  background: none;
+  font-size: 0.95rem;
+  line-height: 1;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+}
+
+.editor-notice-dismiss:hover {
+  color: var(--bi-danger);
+}
+
 /* The Monaco host: the pane gives it the box, Monaco owns everything inside
    it (its own scrollers, its own line-number gutter), so nothing here may
    add padding or a border — Monaco measures this element.
@@ -2851,7 +3148,7 @@ body {
   overflow: hidden;
 }
 
-/* -- terminal strip (ed-06 / ed-07 mount the real session here) --------------- */
+/* -- terminal strip ----------------------------------------------------------- */
 
 .editor-terminal {
   margin: 0;

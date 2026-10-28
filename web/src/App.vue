@@ -11,9 +11,9 @@ import { useBenchmark } from './composables/useBenchmark'
 import { useTabTitle } from './composables/useTabTitle'
 import { useSessionSound } from './composables/useSessionSound'
 
-// Lazy on purpose: Monaco and xterm (ed-04 / ed-07) are heavy, and the
-// Benchmark tab is the app's default screen — it must never download them.
-// The Editor tab's first open pays the chunk instead.
+// Lazy on purpose: Monaco and xterm are heavy, and the Benchmark tab is the
+// app's default screen — it must never download them. The Editor tab's first
+// open pays the chunk instead.
 const EditorView = defineAsyncComponent(() =>
   import('./components/EditorView.vue'),
 )
@@ -143,8 +143,8 @@ const scorePercent = computed(() =>
   <WorkBenchView v-show="state.activeTab === 'chat'" />
 
   <!-- v-show, like the other tabs: it is what keeps the Editor tab's open
-       buffers, tree state and (from ed-07) its live terminal session alive
-       across a peek at the Benchmark screen. The v-if only defers the first
-       mount until the lazy chunk is worth fetching. -->
+       buffers, tree state and its live terminal session alive across a peek at
+       the Benchmark screen. The v-if only defers the first mount until the
+       lazy chunk is worth fetching. -->
   <EditorView v-if="editorMounted" v-show="state.activeTab === 'editor'" />
 </template>

@@ -8,11 +8,11 @@ What the payload promises (each rule mirrored by a test):
 
 * directories first, then files, each group alphabetical and case-insensitive;
 * **both kinds carry ``mtime``** — for a directory that is the mtime of the
-  directory itself, i.e. when its immediate children changed, which is ed-09's
+  directory itself, i.e. when its immediate children changed, which is the
   cheap "did a file appear, disappear or get renamed here?" predicate for an
   already-expanded branch. (A directory's mtime does *not* move when a
-  descendant is edited, which is why ed-09 stats open files directly instead of
-  inferring from the tree.);
+  descendant is edited, which is why the freshness probe stats open files
+  directly instead of inferring from the tree.);
 * ``children`` on a directory means "expanding it will show something":
   non-empty *and* not everything in it ignored — decided with one ``any()``,
   never a second full listing;

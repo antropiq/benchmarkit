@@ -11,7 +11,7 @@ header", for two honest reasons:
 
 * the dev proxy: the browser page is on Vite's origin, ``changeOrigin`` rewrites
   ``Host`` to the API's but never the ``Origin``, so an origin==host comparison
-  would refuse the very connection ed-05's acceptance criterion requires;
+  would refuse the very connection the Vite dev workflow needs;
 * DNS rebinding: under ``evil.com → 127.0.0.1`` a *host-match* check agrees
   (the browser sends ``Host: evil.com``), while a local-host check still
   refuses — the stronger test for the threat this guards.
@@ -29,8 +29,8 @@ Deliberately *not* here: a path from the client. The shell's ``cwd`` is
 ``path_location()`` and the server never takes a directory (or any path) from
 the frame stream — ``cd`` inside the shell is the user's business, which is the
 point of a terminal, but there is nothing for the tree/editor path policy to
-inject-guard on this surface (decision D3 governs the routes that *do* take
-paths).
+inject-guard on this surface. The routes that *do* take a path are gated by
+``editorfs.policy`` instead.
 """
 
 import ipaddress

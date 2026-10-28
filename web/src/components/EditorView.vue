@@ -2,13 +2,14 @@
 import { ref } from 'vue'
 import WorkspaceNavigator from './WorkspaceNavigator.vue'
 import EditorArea from './EditorArea.vue'
+import EditorNoticeStack from './EditorNoticeStack.vue'
 import EditorTerminal from './EditorTerminal.vue'
 import { useSplitter } from '../composables/useSplitter.js'
 
-// The Editor tab's shell (ed-02): navigator on the left at full height, the
-// code pane in the centre, the terminal strip along the bottom — a grid whose
-// tracks are sized by the two splitters below. Both panes are placeholders
-// here: ed-03/ed-04 fill the centre, ed-06/ed-07 the terminal.
+// The Editor tab's shell: navigator on the left at full height, the code pane
+// in the centre, the terminal strip along the bottom — a grid whose tracks are
+// sized by the two splitters below. Each region owns its own state in a
+// composable, so this component only lays them out and moves the borders.
 //
 // The navigator keeps its own state in useWorkspaceTree, so the whole view
 // staying mounted (App.vue's v-show) is what preserves open files and, later,
@@ -117,5 +118,11 @@ const navOpen = ref(true)
     ></div>
 
     <EditorTerminal ref="terminal" class="editor-terminal-slot" />
+
+    <!-- The write-feedback stack. Mounted here rather than in EditorArea so it
+         belongs to the Editor *screen* (tree, pane and terminal alike) instead
+         of to one of its panes — it teleports to `<body>` anyway, and staying
+         inside this lazy chunk keeps the Editor's weight where it is now. -->
+    <EditorNoticeStack />
   </div>
 </template>

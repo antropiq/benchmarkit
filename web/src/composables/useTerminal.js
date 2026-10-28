@@ -2,7 +2,7 @@ import { reactive, watch } from 'vue'
 import { useTheme } from './useTheme'
 
 // ---------------------------------------------------------------------------
-// Editor terminal bridge: the state behind EditorTerminal.vue (ed-07).
+// Editor terminal bridge: the state behind EditorTerminal.vue.
 //
 // One singleton, like every other composable. It owns the WebSocket to
 // `WS /api/terminal`, the xterm `Terminal` instance, and the connection state,
@@ -11,12 +11,12 @@ import { useTheme } from './useTheme'
 // socket behind the user's back.
 //
 // The xterm classes (Terminal, FitAddon, WebLinksAddon) are imported *lazily*,
-// inside `attach()`, never at module top and never in main.js (ed-05 rule 3):
-// the Benchmark tab must not download the terminal. Their base CSS is imported
-// statically by the component (EditorTerminal.vue), which keeps it in the same
-// lazy Editor chunk as the classes.
+// inside `attach()`, never at module top and never in main.js: the Benchmark
+// tab must not download the terminal. Their base CSS is imported statically by
+// the component (EditorTerminal.vue), which keeps it in the same lazy Editor
+// chunk as the classes.
 //
-// The frame contract is ed-06's: `input`/`resize`/`kill` out,
+// The frame contract with the server: `input`/`resize`/`kill` out,
 // `open`/`output`/`exit`/`error` in, all as JSON text. The server owns the
 // shell, the PTY and the process-tree teardown; this layer only relays frames
 // and reflects the connection to the header.
@@ -335,15 +335,14 @@ watch(theme, () => {
 
 // Unload: no confirmation, and an explicit teardown of the remote tty.
 //
-// Nothing on the page holds unsaved user input today — the file surface is
-// read-only and a shell has no buffer worth keeping — so a reload must not be
-// blocked. What unload *does* owe the server is prompt teardown of the PTY, so
-// a refresh cannot leave a shell (and anything it started) alive until the
-// browser's socket cleanup happens to land: `kill` asks for the session's
-// explicit tree kill, `dispose()` then closes the socket, which is the
-// belt-and-braces path — if the frame is lost in the unload race, the closed
-// socket makes `Session.run` see the disconnect and `Session.teardown` runs the
-// same SIGTERM→reap→SIGKILL (src/core/termhub/session.py). Teardown is
+// A shell has no buffer worth keeping. What unload *does* owe the server is
+// prompt teardown of the PTY, so a refresh cannot leave a shell (and anything it
+// started) alive until the browser's socket cleanup happens to land: `kill` asks
+// for the session's explicit tree kill, `dispose()` then closes the socket,
+// which is the belt-and-braces path — if the frame is lost in the unload race,
+// the closed socket makes `Session.run` see the disconnect and
+// `Session.teardown` runs the same SIGTERM→reap→SIGKILL
+// (src/core/termhub/session.py). Teardown is
 // idempotent, so the two paths cannot double-kill.
 //
 // `pagehide`, not `beforeunload`: it is the event that fires whenever the
@@ -363,17 +362,13 @@ window.addEventListener('pagehide', () => {
   dispose() // closes the socket and releases xterm
 })
 
-// Kept for when the Editor gains a write path (ed-10): a dirty Monaco buffer
-// *is* worth a "leave without saving?" prompt. Re-enable by checking the buffers
-// — `useEditorFiles().state.open.some((file) => file.dirty)` — not the terminal
-// status, and keep this a separate listener from the teardown above: cancelling
-// this one means the user stays, so it must never close the socket.
-// window.addEventListener('beforeunload', (event) => {
-//   if (state.status === 'open') {
-//     event.preventDefault()
-//     event.returnValue = ''
-//   }
-// })
+// There is deliberately no `beforeunload` listener here. A "leave without
+// saving?" prompt is owed by the *buffers*, not by a shell, and it is registered
+// in useEditorFiles (next to the dirty state it reads). It must stay a separate
+// listener from the `pagehide` teardown above: cancelling that prompt means the
+// user stays, and staying must not have closed the socket — which is why the PTY
+// kill rides `pagehide`, the event that only fires once the document is really
+// going away.
 
 export function useTerminal() {
   return {

@@ -230,7 +230,7 @@ class TestStatEndpoint:
 
 
 class TestReadEndpoint:
-    """``GET /api/fs/file`` — every rule of ed-03, mirrored by a test."""
+    """``GET /api/fs/file`` — every rule of the read route, mirrored by a test."""
 
     def test_text_read_payload(self, workspace: Path, client):
         response = read(client, "src/config.py")
@@ -421,20 +421,44 @@ class TestReadEndpoint:
         assert "not a file" in directory.json()["detail"]
 
 
-class TestReadOnlySurface:
-    def test_no_write_route_exists_under_api_fs(self):
-        """This lot's read-only promise, written as a test (decision D4).
+class TestSurfaceShape:
+    """Which verbs ``/api/fs`` answers, and what the package exposes.
 
-        Read through the OpenAPI paths rather than ``app.routes``: the router is
-        included lazily, so the flat path map is the one view that lists every
-        endpoint the app actually answers.
-        """
+    Read through the OpenAPI paths rather than ``app.routes``: the router is
+    included lazily, so the flat path map is the one view that lists every
+    endpoint the app actually answers.
+
+    The read routes stay GET-only — that half of the surface has not moved.
+    Mutating routes are an *allowlist*: the save, the create, the rename/move
+    and the delete (a ``DELETE`` on ``/fs/file``, which trashes rather than
+    unlinks) — all browser-only, and a new one has to appear here on purpose.
+    No hub, tool or connector-facing route may ever add another; the
+    browser-only half of that promise is asserted in
+    ``tests/test_editorfs_write.py``.
+    """
+
+    def test_every_read_route_is_get_and_the_mutations_are_the_named_ones(self):
         paths = create_app().openapi()["paths"]
         fs = {path: sorted(ops) for path, ops in paths.items() if path.startswith("/api/fs")}
-        assert fs, "the /api/fs routes should be registered"
-        for path, ops in fs.items():
-            assert ops == ["get"], f"{path} exposes {ops}, not GET only"
+        assert fs == {
+            "/api/fs/tree": ["get"],
+            "/api/fs/file": ["delete", "get", "put"],
+            "/api/fs/create": ["post"],
+            "/api/fs/stat": ["get"],
+            "/api/fs/status": ["get"],
+            "/api/fs/diff": ["get"],
+            "/api/fs/rename": ["post"],
+        }
 
-    def test_editorfs_exposes_no_write_helper(self):
-        for name in ("write_file", "save_file", "delete_path", "create_file"):
+    def test_editorfs_exposes_the_guarded_write_and_nothing_beyond_it(self):
+        """The names the package exports, and the ones it must not grow.
+
+        ``write_file`` is the guarded save; the create/delete/rename halves live
+        in ``editorfs.mutate`` and are re-exported through the package because
+        the routes call them. What stays forbidden is anything *beyond* those
+        four — a second spelling of a write, or a helper that skips the gate.
+        """
+        for name in ("write_file", "create_path", "trash_path", "rename_path"):
+            assert hasattr(editorfs, name)
+        for name in ("save_file", "delete_file", "move_path", "write_text", "unlink"):
             assert not hasattr(editorfs, name)
