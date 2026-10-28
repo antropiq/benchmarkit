@@ -3,7 +3,7 @@ import { useBenchmark } from './useBenchmark'
 import { useChat } from './useChat'
 import { useEditorNotices } from './useEditorNotices'
 import { useGitStatus } from './useGitStatus'
-import { registerDeleteChord, useWorkspaceTree } from './useWorkspaceTree'
+import { registerDeleteChord, registerReRootHandler, useWorkspaceTree } from './useWorkspaceTree'
 
 // ---------------------------------------------------------------------------
 // Open files: the state behind the Editor tab's code pane.
@@ -574,6 +574,14 @@ export function useEditorFiles() {
   // owns the keyboard, this layer owns the question and the request.
   registerDeleteChord((entry) => requestDelete(entry))
 
+  // …and the same one-way registry for a working-location switch: the tree owns
+  // the re-rooting (its listings are the paths that moved), this layer owns what
+  // happens to the tabs that held them. Registered from here rather than called
+  // from the save path, so the app's default screen never pulls the Editor's
+  // chunk in for state that only the Editor has — and a location the Editor tab
+  // was never opened for has no tabs to forget.
+  registerReRootHandler(({ workspace = '' } = {}) => forgetWorkspaceBuffers({ workspace }))
+
   // Close the *file* buffer for a path (a diff tab of the same path is a
   // different tab and stays open).
   function closeFile(path) {
@@ -1005,6 +1013,14 @@ export function useEditorFiles() {
         const answers = new Map()
         for (const item of body?.paths ?? []) answers.set(item.path, item)
         for (const record of records) {
+          // The buffer may have closed while this request was out — a tab the
+          // user closed, or a workspace switch that closed every one of them.
+          // An answer about a path no buffer is held open for any more is not
+          // news about the pane, it is a reply about the past, and applying it
+          // would raise a warning about work that is already gone.
+          if (!state.open.some((item) => item.key === record.key)) {
+            continue
+          }
           const probe = answers.get(record.path)
           if (!probe) continue // the answer did not name it: leave it alone
           await applyProbeAnswer(record, probe)
@@ -1205,6 +1221,58 @@ export function useEditorFiles() {
     return renamed.length
   }
 
+  // The Editor tab's open paths are relative to the working location, so a new
+  // root makes every one of them name nothing: `src/a.py` here and `src/a.py`
+  // there are two different files, and a tab that keeps showing one while the
+  // tree browses the other is the bug this prevents. So all tabs — buffers and
+  // diff views alike — close with the old root, and with them the state that
+  // points at them: the conflict on screen, the close confirm and the probe's
+  // complaint about a disk that is no longer the one being read.
+  //
+  // A dirty buffer is the one real cost of the switch, and it is *reported*
+  // rather than negotiated: `requestCloseTab` asks about one tab at a time and
+  // offers to save it, and neither answer exists any more — the path it would
+  // save to belongs to the folder that was just left. So the loss gets one line
+  // on the channel that survives the click that closed the tabs, naming how
+  // many buffers carried work that only this page held.
+  //
+  // `useWorkspaceTree.reRoot` calls this through the registry it is registered
+  // in below, and the git marks go with the buffers because they were read from
+  // the same paths. A delete confirmation is cleared rather than left open: its
+  // path belonged to the root that was just replaced, so answering its Delete
+  // button would now destroy a *different* folder's file that no one asked
+  // about. The conflict needs nothing — the last close ends it.
+  function forgetWorkspaceBuffers({ workspace = '' } = {}) {
+    const dirty = state.open.filter(
+      (item) => item.kind === 'file' && item.dirty,
+    ).length
+    // A copy, because `closeTab` splices `state.open` while this walks it.
+    for (const record of [...state.open]) closeTab(record.key)
+    state.closePrompt = null
+    state.deletePrompt = null
+    state.message = null
+    state.probeError = null
+    // The marks are dropped *and* re-read: they were computed over the previous
+    // work tree, and the rows that carry them now belong to another folder.
+    // Reset first so the tree repaints without them at once, then ask for the
+    // new location's answer — the same pair the refresh button and the delete
+    // flow perform, and the reason a switch does not leave the marks blank
+    // until the next tab change.
+    useGitStatus().reset()
+    void useGitStatus().load({ force: true })
+    if (dirty > 0) {
+      // After the closes on purpose: `closeTab` dismisses the notices about a
+      // path that stopped being work in progress, and this one has to survive
+      // them. No path is attached — it is about the tabs, which are gone.
+      notices.notice(
+        'warn',
+        `Working location switched${workspace ? ` to ${workspace}` : ''} — ` +
+          `${dirty} ${dirty === 1 ? 'tab' : 'tabs'} closed with unsaved changes, ` +
+          'which are lost',
+      )
+    }
+  }
+
   function clearMessage() {
     state.message = null
   }
@@ -1264,5 +1332,6 @@ export function useEditorFiles() {
     diffKeyFor,
     clearMessage,
     humanSize,
+    forgetWorkspaceBuffers,
   }
 }

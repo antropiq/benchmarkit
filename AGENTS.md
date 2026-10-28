@@ -152,6 +152,10 @@ committed template. These rules tie them together:
   connector roots itself at, so one value moves them together. Seeded at boot
   from the install dir; deliberately not a managed `.env` key, so a settings
   save can neither erase it nor resurrect a stale value.
+- **Every path the app holds is relative to that location**, so a switch
+  invalidates them all at once: the Editor's tree re-roots (cached listings,
+  branches and selection are forgotten, not re-listed) and every tab of the root
+  it leaves closes, unsaved edits reported rather than negotiated with.
 
 ## Key patterns
 

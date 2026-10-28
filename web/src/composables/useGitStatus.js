@@ -84,9 +84,16 @@ async function load({ force = false } = {}) {
   if (state.loadedAt && !force) return
   state.loading = true
   const run = (async () => {
+    const askedAt = generation
     try {
       const res = await fetch('/api/fs/status')
       const body = await res.json().catch(() => null)
+      if (askedAt !== generation) {
+        // The location moved while this was in flight: the answer — good or
+        // refused — describes the previous workspace, so it is dropped whole.
+        // `load()` is called again for the new one.
+        return
+      }
       if (!res.ok) {
         // Kept apart from "no entries": a 504 from git must not read as a
         // clean work tree. The tree stays usable either way.
@@ -104,12 +111,42 @@ async function load({ force = false } = {}) {
     } catch (exc) {
       state.error = `Could not reach the API: ${exc}`
     } finally {
-      state.loading = false
-      inflight = null
+      // Ours, or abandoned by a `reset()` that left no replacement: either way
+      // this request is the last one, so `loading` ends with it. Only a run
+      // that a *newer* one replaced leaves its marker standing.
+      if (inflight === run || inflight === null) {
+        state.loading = false
+        inflight = null
+      }
     }
   })()
   inflight = run
   await run
+}
+
+// Forget the answer without asking for a new one. A working-location switch
+// re-roots the tree onto a different folder, and the marks the app holds were
+// computed in the *previous* one: kept, they would decorate unrelated rows and
+// offer "View diff…" for paths the new repository knows nothing about. An
+// empty answer is honest while the new one is on its way — it says "nothing is
+// known to be unstaged", which is what the tree draws no marker from.
+//
+// The token bump is what makes this stick: a query that was already in flight
+// against the old location lands *after* the reset, and its answer describes a
+// work tree nothing is showing any more, so `load` drops it instead of applying
+// it. Clearing `inflight` is the other half — that abandoned query must not be
+// the one a new `load()` joins, or the switch would leave the marks unswept.
+let generation = 0
+
+function reset() {
+  generation += 1
+  inflight = null
+  state.entries = []
+  state.repo = false
+  state.atToplevel = true
+  state.truncated = false
+  state.error = null
+  state.loadedAt = 0
 }
 
 export function useGitStatus() {
@@ -120,5 +157,6 @@ export function useGitStatus() {
     isDiffable,
     hasUnstagedBelow,
     load,
+    reset,
   }
 }

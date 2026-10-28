@@ -838,11 +838,24 @@ export function useBenchmark() {
           .map((server) => server.id)
         loadChatLsp()
       }
-      // The Editor tab's tree browses this location, so it re-roots here —
-      // from the save path rather than from the tab, which may never have been
-      // opened. (The terminal's `cwd` moves with the same value: a new session
-      // is born on the current location.)
-      useWorkspaceTree().refresh()
+      // The Editor tab's tree browses this location, so the whole workspace-
+      // relative view of the app moves here: the tree forgets the listings it
+      // cached under the old root and re-roots, and the tabs that held files of
+      // the old one close with it (useWorkspaceTree.reRoot -> the buffer half's
+      // handler, registered by useEditorFiles when the Editor chunk loads).
+      // Driven from the save path rather than from the tab, because the tab may
+      // never have been opened — in which case there is nothing to forget.
+      // `refresh()` would be the wrong call: its cached paths mean something
+      // else entirely in another root. (The terminal's `cwd` moves with the same
+      // value: a new session is born on the current location.)
+      try {
+        await useWorkspaceTree().reRoot(state.pathLocationCurrent)
+      } catch (exc) {
+        // The hubs moved but the tree could not be listed: the panel and the
+        // tools agree, and the next tree request re-reads it. Say so rather
+        // than let it end the save as a failure.
+        state.pathLocationError = `Working location is set, but the file tree could not re-root: ${exc}`
+      }
     } catch (exc) {
       state.pathLocationError = `Could not reach the API: ${exc}`
     } finally {

@@ -15,9 +15,12 @@ import { reactive } from 'vue'
 // Paths are workspace-relative ("" is the root) and the server is the one
 // that applies the policy — denied files are simply absent from the payload,
 // so the client never learns they exist. `refresh()` drops every cache entry
-// and re-lists what is on screen, which is what a working-location change
-// triggers (the tree re-roots with it). A mutation touches one folder, so
-// `refreshBranch(path)` is the sibling that re-lists exactly that listing.
+// and re-lists what is on screen. A *new working location* is the harder case:
+// those same paths now name other files, so `reRoot()` forgets the whole tree
+// instead of re-listing it — and hands the paths the other holders of the
+// workspace (the open tabs, the git marks) to the buffer half to forget too.
+// A mutation touches one folder, so `refreshBranch(path)` is the sibling that
+// re-lists exactly that listing.
 //
 // The tree is also where a name is typed: `editing` is the inline input's state
 // (see TreeNameInput.vue), in two modes — `create` (a new name inside a folder)
@@ -129,6 +132,26 @@ function openDirPaths() {
 // "someone else is busy", which is what reveal() below depends on.
 const inflight = new Map()
 
+// Bumped whenever the tree stops belonging to the folder it was listing. A
+// listing response cannot know the app moved on, so `load` stamps the token it
+// asked with and drops the answer when the token moved — a late reply about the
+// *previous* working location would otherwise re-write old rows into the new
+// tree and republish the old absolute path in `state.workspace`.
+let generation = 0
+
+// What the *other* holders of the previous workspace do when it is replaced.
+// The open buffers — and with them the git marks — belong to the Editor's write
+// half, so it registers itself as the answer here: the same one-way registry the
+// create/delete/rename/refresh chords use, which keeps this module a read model
+// and keeps the two files from importing each other. A working location the
+// Editor tab was never opened for registers nothing, and re-rooting it costs
+// nothing.
+let reRootHandler = null
+
+export function registerReRootHandler(handler) {
+  reRootHandler = typeof handler === 'function' ? handler : null
+}
+
 // The create chord is answered by the create flow, not by this module: the tree
 // owns the keyboard model (which key, in which folder) and `useEditorCreate`
 // owns the request, its refusals and what success does to the buffers. The
@@ -194,9 +217,11 @@ export function useWorkspaceTree() {
     entry.loading = true
     state.error = null
     const run = (async () => {
+      const askedAt = generation
       try {
         const res = await fetch(`/api/fs/tree?path=${encodeURIComponent(path)}`)
         const body = await res.json().catch(() => null)
+        if (askedAt !== generation) return
         if (!res.ok) {
           const detail = typeof body?.detail === 'string' ? body.detail : ''
           entry.error = detail || `Could not list the folder (${res.status})`
@@ -213,7 +238,7 @@ export function useWorkspaceTree() {
         state.error = entry.error
       } finally {
         entry.loading = false
-        inflight.delete(path)
+        if (inflight.get(path) === run) inflight.delete(path)
       }
     })()
     inflight.set(path, run)
@@ -255,8 +280,9 @@ export function useWorkspaceTree() {
   }
 
   // Drop the cache and re-list what is on screen: the refresh button, and the
-  // hook every surface gets when the working location changes. The opened
-  // branches stay open — a refresh is not a collapse.
+  // same promise the header's refresh button makes. The opened branches stay
+  // open — a refresh is not a collapse — because the folders it re-lists are
+  // still the folders that exist.
   async function refresh() {
     // Snapshot the on-screen folders *before* the cache is dropped — after
     // that, the walk that answers "what is on screen" has nothing left to
@@ -269,6 +295,37 @@ export function useWorkspaceTree() {
     // which would leave the roving tabindex pointing at a row that is not
     // rendered any more.
     revalidateFocus()
+  }
+
+  // A *new* working location: not a refresh, because the paths this tree holds
+  // are relative to the previous root and stop meaning anything when it moves.
+  // `src/a.py` of one project and of another are two different files, so every
+  // listing cached under the old name has to go rather than be re-fetched — and
+  // so does the state that points at it: the opened branches, the focus, the
+  // selection, a half-typed name and the absolute path in the root row.
+  //
+  // The token bump is what makes the forget stick: a listing that was already
+  // in flight answers after the switch, and its rows belong to the folder that
+  // was just left. `reRootHandler` (see the registry above) is where the open
+  // buffers and the git marks — the other holders of those paths — go with it.
+  //
+  // `rootPath` is the location the server confirmed, adopted as the root label
+  // straight away rather than waiting for the first listing of the new tree.
+  async function reRoot(rootPath = '') {
+    generation += 1
+    inflight.clear()
+    state.nodes = {}
+    state.expanded = { [ROOT]: true }
+    state.focused = ROOT
+    state.selected = null
+    state.editing = null
+    state.error = null
+    // The previous root is not kept even when no new one is named: the label
+    // and title would then point at a folder nothing is browsing. The listing
+    // below writes the confirmed value as soon as the server answers.
+    state.workspace = rootPath
+    reRootHandler?.({ workspace: rootPath })
+    await load(ROOT)
   }
 
   function expand(path) {
@@ -636,6 +693,7 @@ export function useWorkspaceTree() {
     ROOT,
     load,
     refresh,
+    reRoot,
     refreshBranch,
     refreshListingOfParent,
     expand,
