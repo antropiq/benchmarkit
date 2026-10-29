@@ -1,4 +1,7 @@
 import { computed, reactive } from 'vue'
+// The one renderer the app owns (marked + KaTeX + hljs + DOMPurify). A preview
+// tab renders through it exactly as the chat does — one renderer, one owner.
+import { renderMarkdown } from '../lib/markdown'
 import { useBenchmark } from './useBenchmark'
 import { useChat } from './useChat'
 import { useEditorNotices } from './useEditorNotices'
@@ -51,7 +54,9 @@ const state = reactive({
   // Open buffers, in the order they were opened. Only *text* files get a
   // record: a binary or oversized file is a message in the pane, not a tab.
   // A diff (ed: "View diff…") is a record too — same strip, same rules — with
-  // `kind: 'diff'` and two texts instead of one.
+  // `kind: 'diff'` and two texts instead of one. A rendered markdown preview
+  // (the tree's "Preview") is a record too, `kind: 'preview'`, holding the
+  // snapshot it was rendered from rather than a live buffer.
   open: [],
   active: null, // key of the visible buffer (the tab strip's selection)
   loading: false,
@@ -193,9 +198,33 @@ function detailOf(body, fallback) {
 // prefix no workspace path can have (the server normalises them and they never
 // start with a scheme-like token).
 const DIFF_PREFIX = 'diff:'
+// A rendered preview is a third record kind with a prefix of its own, so a file
+// buffer, its diff and its preview are three tabs about one path that can never
+// collide (see `openPreview`).
+const PREVIEW_PREFIX = 'preview:'
 
 function diffKeyFor(path) {
   return `${DIFF_PREFIX}${path}`
+}
+
+function previewKeyFor(path) {
+  return `${PREVIEW_PREFIX}${path}`
+}
+
+// The tab key and the chip label for one record kind. Both are *derived* from
+// (kind, path) — the only place that spells the rules out, so `repointPath` can
+// re-key a renamed record of any kind without a chain of `kind ===` tests that a
+// fourth kind would silently fall through.
+function keyFor(kind, path) {
+  if (kind === 'diff') return diffKeyFor(path)
+  if (kind === 'preview') return previewKeyFor(path)
+  return path
+}
+
+function labelFor(kind, path) {
+  if (kind === 'diff') return `${nameOf(path)} (diff)`
+  if (kind === 'preview') return `${nameOf(path)} (preview)`
+  return nameOf(path)
 }
 
 // The record for a tab key, or null when nothing is open under it.
@@ -212,6 +241,10 @@ function recordFor(path) {
 
 function diffRecordFor(path) {
   return recordForKey(diffKeyFor(path))
+}
+
+function previewRecordFor(path) {
+  return recordForKey(previewKeyFor(path))
 }
 
 export function useEditorFiles() {
@@ -347,7 +380,7 @@ export function useEditorFiles() {
         path: body.path ?? path,
         // The chip says which file *and* that it is a diff, so two chips for
         // one path are never confusable when a long name is ellipsised.
-        name: `${nameOf(body.path ?? path)} (diff)`,
+        name: labelFor('diff', body.path ?? path),
         original: body.original ?? '',
         modified: body.modified ?? '',
         language: body.language ?? 'plaintext',
@@ -366,6 +399,135 @@ export function useEditorFiles() {
       return null
     } finally {
       state.loading = false
+    }
+  }
+
+  // Fetch and show a markdown file *rendered*, through the app's one renderer
+  // (`lib/markdown.js`) — a sibling surface in the same pane, not a Monaco
+  // feature: the bundled monaco ESM build ships no markdown preview widget, and
+  // rendering through anything else would fork the app's markdown rules.
+  //
+  // The record owns a **snapshot**: `text` and `html` are computed once, from
+  // the one read that opened the tab, exactly as a diff owns its two immutable
+  // sides. That is what buys no re-render on keystrokes, no debounce and no
+  // second mutable copy of a buffer — and it is why a preview is deliberately
+  // outside the freshness probe. The cost is stated in the pane's note line
+  // ("rendered from the copy read when this tab opened"), and the refresh is the
+  // user's: unlike `openDiff`'s pure append-or-focus, re-picking **Preview** on a
+  // row whose tab already exists *re-reads and re-renders* it. That re-read is
+  // the whole staleness story for v1 (it resets the panel's scroll position — a
+  // rendered DOM has no model to restore it from).
+  //
+  // A preview is not a buffer: it has no `dirty`, no `baseline`, no `conflict`
+  // and no save. Every buffer rule in this file already filters
+  // `kind === 'file'`, so it is excluded from the dirty count, the close prompt,
+  // `saveFile`, `saveAllDirty`, the probe and the delete warning for free — do
+  // not widen any of those.
+  //
+  // Deliberately *not* reachable as a tree selection: the menu's Preview item
+  // calls this directly (as `view-diff` does), because publishing a selection
+  // would make EditorArea's watcher open the Monaco buffer beside it.
+  async function openPreview(path) {
+    if (!path) return null
+    const existing = previewRecordFor(path)
+    if (existing) {
+      state.active = existing.key
+      state.message = null
+      // …then read again: focus *and* refresh, the manual half of D2.
+      await refreshPreview(existing)
+      return existing
+    }
+    state.loading = true
+    state.message = null
+    try {
+      const res = await fetch(`/api/fs/file?path=${encodeURIComponent(path)}`)
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        // The same answers `openFile` gives, so refusal wording has one home:
+        // 404 for a hidden or missing path, 422 a policy refusal, 413 over the
+        // cap — the server's sentence, with the path beside it.
+        state.message = {
+          path,
+          tone: 'error',
+          text: detailOf(body, `Could not open the file (${res.status})`),
+        }
+        return null
+      }
+      if (body.binary) {
+        state.message = {
+          path,
+          tone: 'info',
+          text: `binary file, ${humanSize(body.size)}`,
+        }
+        return null
+      }
+      const recordPath = body.path ?? path
+      const text = body.text ?? ''
+      const record = {
+        kind: 'preview',
+        key: previewKeyFor(recordPath),
+        path: recordPath,
+        name: labelFor('preview', recordPath),
+        // What this render was made of. Kept on the record so the pane can say
+        // so, and so a refresh has something to compare its new read against.
+        text,
+        html: renderMarkdown(text, { mermaid: true }),
+        language: body.language ?? 'plaintext',
+        size: body.size ?? text.length,
+        truncated: !!body.truncated,
+        truncatedAt: body.truncatedAt ?? null,
+      }
+      state.open.push(record)
+      state.active = record.key
+      return record
+    } catch (exc) {
+      state.message = { path, tone: 'error', text: `Could not reach the API: ${exc}` }
+      return null
+    } finally {
+      state.loading = false
+    }
+  }
+
+  // Re-read the file behind an open preview and re-render it. A read that fails
+  // or turns out binary leaves the *existing* render standing — half a preview
+  // is worse than a stale one, and the answer to a refusal is the message line,
+  // not the disappearance of what the user was reading.
+  async function refreshPreview(record) {
+    if (!record || record.kind !== 'preview') return null
+    try {
+      const res = await fetch(`/api/fs/file?path=${encodeURIComponent(record.path)}`)
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.message = {
+          path: record.path,
+          tone: 'error',
+          text: detailOf(body, `Could not open the file (${res.status})`),
+        }
+        return record
+      }
+      if (body.binary) {
+        state.message = {
+          path: record.path,
+          tone: 'info',
+          text: `binary file, ${humanSize(body.size)}`,
+        }
+        return record
+      }
+      const text = body.text ?? ''
+      record.text = text
+      record.html = renderMarkdown(text, { mermaid: true })
+      record.language = body.language ?? record.language
+      record.size = body.size ?? text.length
+      record.truncated = !!body.truncated
+      record.truncatedAt = body.truncatedAt ?? null
+      return record
+    } catch (exc) {
+      state.message = {
+        path: record.path,
+        tone: 'error',
+        text: `Could not reach the API: ${exc}`,
+      }
+      return record
     }
   }
 
@@ -462,9 +624,10 @@ export function useEditorFiles() {
   // counts the dirty buffers under the path and the single dialog says what will
   // be lost, because unsaved edits are the one thing the trash cannot bring back.
 
-  // Every record — file buffer or diff tab — whose path is the deleted one or
-  // sits under it. A diff tab is closed too: `refreshBranch` drops its row and
-  // a reveal of it would fail, so leaving the chip behind points at nothing.
+  // Every record — file buffer, diff tab or preview — whose path is the deleted
+  // one or sits under it. A diff tab is closed too: `refreshBranch` drops its row
+  // and a reveal of it would fail, so leaving the chip behind points at nothing.
+  // A preview goes for the same reason — its file has no future.
   function recordsUnder(path) {
     return state.open.filter((item) => underPath(item.path, path))
   }
@@ -593,6 +756,12 @@ export function useEditorFiles() {
 
   // Close the *file* buffer for a path (a diff tab of the same path is a
   // different tab and stays open).
+  //
+  // A preview tab of that path stays open too, and that is the promise, not an
+  // oversight: the tree's `Close` means "that file's buffer" — the same promise a
+  // diff already refuses to make (`hasBuffer` in WorkspaceNavigator reads
+  // `recordFor`, which is file-only). A rendered snapshot has no buffer to close,
+  // and it is dismissed by its own ×.
   function closeFile(path) {
     requestCloseTab(path)
   }
@@ -1155,7 +1324,7 @@ export function useEditorFiles() {
       kind: 'diff',
       key: diffKeyFor(diffPath),
       path: diffPath,
-      name: `${nameOf(diffPath)} (diff)`,
+      name: labelFor('diff', diffPath),
       // Left is disk, right is the buffer — see the note rule above.
       original: fresh.text,
       modified: record.text,
@@ -1210,11 +1379,13 @@ export function useEditorFiles() {
     for (const record of renamed) {
       const newPath = to + record.path.slice(from.length)
       record.path = newPath
-      // A file's key is its path; a diff's is `diff:` + its path. Both are
-      // derived, so neither can drift from the other after a move.
-      record.key = record.kind === 'diff' ? diffKeyFor(newPath) : newPath
-      record.name =
-        record.kind === 'diff' ? `${nameOf(newPath)} (diff)` : nameOf(newPath)
+      // A file's key is its path; a diff's is `diff:` + its path and a preview's
+      // is `preview:` + it. Both are *derived* (keyFor/labelFor), so a record of
+      // any kind re-keys and re-names with its tab kind intact — an inline
+      // `kind === 'diff' ? … : …` here would leave a renamed preview keyed at
+      // the old path while its `path` moved, and the pane would lose it.
+      record.key = keyFor(record.kind, newPath)
+      record.name = labelFor(record.kind, newPath)
     }
     // `active` is a *key*, so it travels with the record it names — otherwise
     // the pane loses the buffer it is showing while the strip still lists it.
@@ -1309,6 +1480,7 @@ export function useEditorFiles() {
     dirtyCount,
     openFile,
     openDiff,
+    openPreview,
     closeFile,
     closeDiff,
     closeTab,
@@ -1339,6 +1511,10 @@ export function useEditorFiles() {
     recordForKey,
     diffRecordFor,
     diffKeyFor,
+    previewRecordFor,
+    previewKeyFor,
+    // `refreshPreview` is deliberately not on this surface: a re-read only ever
+    // comes from re-picking Preview, i.e. through `openPreview` (D2).
     clearMessage,
     humanSize,
     forgetWorkspaceBuffers,

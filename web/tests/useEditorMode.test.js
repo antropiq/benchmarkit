@@ -27,7 +27,8 @@ function resetState() {
 }
 
 function open(kind) {
-  const key = kind === 'diff' ? 'diff:a.py' : 'a.py'
+  const prefix = kind === 'diff' ? 'diff:' : kind === 'preview' ? 'preview:' : ''
+  const key = `${prefix}a.py`
   files.state.open.push({ kind, key, path: 'a.py' })
   files.state.active = key
 }
@@ -60,6 +61,23 @@ describe('useEditorMode: one rule, shown and enforced', () => {
     expect(mode.badgeTitle.value).toContain('this tab is a diff')
     // The neighbouring file buffer of the same path is editable again: the
     // rule follows the *active* tab, not the paths that are open.
+    files.state.open.push({ kind: 'file', key: 'a.py', path: 'a.py' })
+    files.state.active = 'a.py'
+    expect(mode.editorMode.value).toBe('read_write')
+  })
+
+  // A preview tab is a reader too: with nothing to type into, an *editable*
+  // badge would be a promise the pane cannot keep.
+  it('is read-only while the active tab is a preview, idle chat or not', () => {
+    open('preview')
+    expect(mode.editorMode.value).toBe('read_only')
+    expect(mode.paneReadonly.value).toBe(true)
+    expect(mode.badgeLabel.value).toBe('read-only')
+    expect(mode.badgeTitle.value).toContain(
+      'Read-only — this tab shows the rendered Markdown of the file.',
+    )
+    // The sibling buffer of the same path is editable again — the rule follows
+    // the active *tab*, and it is the view rule, not a diff-specific one.
     files.state.open.push({ kind: 'file', key: 'a.py', path: 'a.py' })
     files.state.active = 'a.py'
     expect(mode.editorMode.value).toBe('read_write')

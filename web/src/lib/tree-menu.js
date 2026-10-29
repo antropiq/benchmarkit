@@ -33,6 +33,17 @@ const ITEMS = [
     title: 'Open this file in the editor',
     scope: 'file',
   },
+  // Preview sits right after Open because it is the other answer to "show me
+  // this file": same file, rendered instead of as a buffer. It needs its own
+  // flag rather than being read off an open record — a tree row carries no
+  // language, and the menu is built before any read happens (lib/markdown-preview).
+  {
+    id: 'preview',
+    label: 'Preview',
+    title: 'Show this file rendered as Markdown, instead of as a buffer',
+    scope: 'file',
+    needs: 'isMarkdown',
+  },
   {
     id: 'new-file',
     label: 'New file…',
@@ -100,6 +111,7 @@ function inScope(scope, { dir, isRoot }) {
 // The items for one row, in the table's order. `flags`:
 //   dir                — the row is a folder (the root row counts as one)
 //   isRoot             — the row is the workspace root itself
+//   isMarkdown         — the row's name ends in `.md` (lib/markdown-preview)
 //   diffable           — git says this file has a committed side to compare
 //   hasBuffer          — a tab already holds this file
 //   mutable            — the row may be renamed/deleted (false for the root)

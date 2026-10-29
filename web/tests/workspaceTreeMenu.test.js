@@ -46,6 +46,15 @@ function stubFetch() {
         return jsonResponse({ path, workspace: '/work/machine/demo', entries, truncated: false })
       }
     }
+    if (key.startsWith('/api/fs/file')) {
+      return jsonResponse({
+        path: 'notes.md',
+        text: '# Title\n',
+        language: 'markdown',
+        size: 8,
+        mtime: 1000,
+      })
+    }
     return jsonResponse({ path: '', workspace: '/work/machine/demo', entries: [], truncated: false })
   })
 }
@@ -110,8 +119,11 @@ describe('the context menu, per row kind', () => {
     ])
     // notes.md is `comparable`, so View diff… is there; src/a.py is untracked,
     // so the item is absent rather than disabled-and-lying. Neither has a buffer.
+    // The one difference between the two rows is *their own name*: notes.md ends
+    // in `.md`, so it gets Preview and a.py does not, whatever git says.
     expect(await menuFor(wrapper, 'notes.md')).toEqual([
       'Open',
+      'Preview',
       'View diff…',
       'Rename…',
       'Delete',
@@ -123,6 +135,16 @@ describe('the context menu, per row kind', () => {
       'Delete',
       'Copy relative path',
     ])
+  })
+
+  // Preview belongs to a file row only: a folder and the root are not documents
+  // to render, and `scope: 'file'` is what keeps it that way even though the
+  // navigator's own flag builder is the only thing that could have set it.
+  it('never offers Preview on a folder or the root', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    expect(await menuFor(wrapper, 'src')).not.toContain('Preview')
+    expect(await menuFor(wrapper, '')).not.toContain('Preview')
   })
 
   it('Close appears only once a tab holds the file', async () => {
@@ -142,6 +164,24 @@ describe('the context menu, per row kind', () => {
     const bare = await menuFor(wrapper, 'notes.md')
     expect(without).toContain('Close')
     expect(bare).not.toContain('Close')
+  })
+
+  // A *preview* tab of the same path does not make that promise true: the tree's
+  // `Close` means "that file's buffer", and a rendered view has no buffer — it is
+  // dismissed by its own ×. `hasBuffer` reads `files.recordFor`, which is
+  // file-only, and that is what keeps the item honest.
+  it('a preview tab alone does not offer Close', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    files.state.open.push({
+      kind: 'preview',
+      key: 'preview:notes.md',
+      path: 'notes.md',
+      name: 'notes.md (preview)',
+      text: '# x',
+      html: '<h1>x</h1>',
+    })
+    expect(await menuFor(wrapper, 'notes.md')).not.toContain('Close')
   })
 
   // The right-click *is* a focus change: the keyboard chords answer about the
@@ -191,6 +231,29 @@ describe('the context menu, per row kind', () => {
     await clickMenuItem('Refresh')
     await flushPromises()
     expect(fetchCalls('/api/fs/tree?path=src')).toBe(before + 1)
+  })
+
+  // Preview is the one item that must *not* go through the tree's selection:
+  // publishing one would make EditorArea's watcher open the Monaco buffer beside
+  // the rendered tab. So its answer is a record of its own kind, and no buffer.
+  it('routes Preview to the preview record, not to a buffer or a selection', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    await menuFor(wrapper, 'notes.md')
+    await clickMenuItem('Preview')
+    await flushPromises()
+
+    expect(files.state.open).toHaveLength(1)
+    expect(files.state.open[0]).toMatchObject({
+      kind: 'preview',
+      key: 'preview:notes.md',
+      path: 'notes.md',
+      name: 'notes.md (preview)',
+    })
+    expect(files.state.open[0].html).toContain('<h1')
+    // No Monaco buffer was created for it, and no tree selection was published.
+    expect(files.recordFor('notes.md')).toBeNull()
+    expect(tree.state.selected).toBeNull()
   })
 })
 

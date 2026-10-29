@@ -283,6 +283,10 @@ test('each row offers exactly what it can honour', async ({ page }) => {
   await openFolders(page, SCRATCH)
   const file = `${SCRATCH}/menu.txt`
   expect((await create(page.request, file)).ok()).toBe(true)
+  // A markdown sibling, so the one difference between the two rows is the *name*
+  // the row carries — `isMarkdown` is derived from it, before any read happens.
+  const markdown = `${SCRATCH}/menu.md`
+  expect((await create(page.request, markdown)).ok()).toBe(true)
   await useMenuItem(page, SCRATCH, 'Refresh')
 
   // The root lists its own actions but is never renamable or deletable; an
@@ -307,6 +311,109 @@ test('each row offers exactly what it can honour', async ({ page }) => {
     'Delete',
     'Copy relative path',
   ])
+  // The `.md` row is the only difference, and it adds exactly Preview.
+  expect(await menuItems(page, markdown)).toEqual([
+    'Open',
+    'Preview',
+    'Rename…',
+    'Delete',
+    'Copy relative path',
+  ])
+})
+
+// The markdown preview as the Editor performs it: the tree's Preview item opens
+// a *rendered* panel in the same strip — no Monaco surface — and a plain Open of
+// the same row afterwards gives a second chip that has one. Both are the pane's
+// own surfaces; no LLM call is involved.
+test('Preview renders a .md row in its own tab, beside the buffer', async ({ page, request }) => {
+  const file = `${SCRATCH}/preview.md`
+  expect((await create(request, file)).ok()).toBe(true)
+  const seeded = await request.put('/api/fs/file', {
+    data: {
+      path: file,
+      text: [
+        '# Rendered heading',
+        '',
+        '| column | note |',
+        '| --- | --- |',
+        '| a | b |',
+        '',
+        '```python',
+        'def greet(name):',
+        '    return f"hi {name}"',
+        '```',
+        '',
+      ].join('\n'),
+      ifUnmodifiedSince: (await diskStat(request, file)).mtime,
+    },
+  })
+  expect(seeded.ok(), await seeded.text()).toBe(true)
+
+  await openEditor(page)
+  await openFolders(page, SCRATCH)
+  await useMenuItem(page, file, 'Preview')
+
+  // One chip, named for what it is, and the panel renders through the app's
+  // markdown path: an h1 and a real table, inside the tabpanel the chips point at.
+  await expect(page.locator('.editor-tab-label')).toHaveText('preview.md (preview)')
+  // `#editor-pane` *is* the preview panel here — exactly one element carries the
+  // id at a time, which is what makes the chips' aria-controls honest.
+  const panel = page.locator('#editor-pane.editor-preview')
+  await expect(panel).toHaveCount(1)
+  await expect(panel.locator('h1')).toContainText('Rendered heading')
+  await expect(panel.locator('table')).toHaveCount(1)
+  await expect(panel.locator('pre code .hljs-keyword').first()).toBeVisible()
+  // The honesty line about the snapshot the pane is showing.
+  await expect(page.locator('.editor-raw-note').first()).toContainText(
+    'rendered from the copy read when this tab opened',
+  )
+  // No Monaco surface at all for a preview.
+  await expect(page.locator('.monaco-host')).toHaveCount(0)
+
+  // Opening the same row normally gives a second chip with the buffer, and the
+  // preview's own panel gives way to Monaco — exactly one #editor-pane on screen.
+  await page.locator(`.tree-row[data-path="${file}"]`).first().click()
+  await expect(page.locator('.editor-tab-label')).toHaveText([
+    'preview.md (preview)',
+    'preview.md',
+  ])
+  await expect(page.locator('.monaco-host .view-lines').first()).toBeVisible()
+  await expect(page.locator('.editor-preview')).toHaveCount(0)
+  await expect(page.locator('#editor-pane.editor-monaco')).toHaveCount(1)
+
+  // The preview chip is a tab like any other, so selecting it reveals its row —
+  // a preview record carries a real `path`, which is all the reveal needs.
+  await page.locator(`.tree-row[data-path="${SCRATCH}"]`).first().click()
+  await expect(page.locator(`.tree-row[data-path="${file}"]`)).toHaveCount(0)
+  await page.getByRole('tab', { name: 'preview.md (preview)' }).click()
+  await expect(page.locator(`.tree-row[data-path="${file}"]`)).toBeVisible()
+  // Revealing went through the tree as a *tab* echo, so it did not open a
+  // buffer on top of the render: still exactly two chips.
+  await expect(page.locator('.editor-tab')).toHaveCount(2)
+  // The buffer is editable; the preview chip is a view, so switching back to it
+  // makes the pane read-only rather than inviting an edit of a rendered document.
+  await page.getByRole('tab', { name: 'preview.md', exact: true }).click()
+  await expect(page.locator('.editor-mode-badge')).toHaveText('read-write')
+  await page.getByRole('tab', { name: 'preview.md (preview)' }).click()
+  await expect(page.locator('.editor-mode-badge')).toHaveText('read-only')
+  await expect(page.locator('.editor-mode-badge')).toHaveAttribute(
+    'title',
+    /this tab shows the rendered Markdown of the file/,
+  )
+  await expect(page.locator('#editor-pane.editor-preview h1')).toBeVisible()
+
+  // Dirty the *buffer*, then close the preview from its own chip: a view has
+  // nothing to lose, so the gesture closes it with no prompt even while the
+  // buffer of the same path holds unwritten work. (The dialog is always mounted,
+  // so "no prompt" is `toBeHidden`, not "no count".)
+  await page.getByRole('tab', { name: 'preview.md', exact: true }).click()
+  await typeAtEnd(page, ' written nowhere')
+  await expect(page.locator('.editor-tab-dirty')).toHaveCount(1)
+  await page.getByRole('tab', { name: 'preview.md (preview)' }).click()
+  await page.locator('.editor-tab').first().locator('.editor-tab-close').click()
+  await expect(page.locator('.editor-close-dialog')).toBeHidden()
+  await expect(page.locator('.editor-tab-label')).toHaveText('preview.md')
+  await expect(page.locator('.editor-tab-dirty')).toHaveCount(1)
 })
 
 test('a refusal reaches the DOM in the server\'s own words', async ({ page, request }) => {

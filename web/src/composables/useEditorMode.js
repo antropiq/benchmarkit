@@ -36,17 +36,24 @@ export function useEditorMode() {
   const notices = useEditorNotices()
   const chat = useChat()
 
-  // A diff tab is a reader whatever the chat is doing: its two sides come from
-  // git and the disk and there is no buffer to type into, so the editable
-  // promise the badge makes belongs to a file buffer only.
-  const isDiffTab = computed(() => {
+  // Which kind the active tab is: 'file' (an editable buffer) or the kind of a
+  // *view* — a diff, a preview. A view is a reader whatever the chat is doing:
+  // its contents come from the server and there is no buffer to type into, so
+  // the editable promise the badge makes belongs to a file buffer only.
+  const activeKind = computed(() => {
     const active = files.state.active
-    if (!active) return false
-    return files.state.open.find((item) => item.key === active)?.kind === 'diff'
+    if (!active) return null
+    return files.state.open.find((item) => item.key === active)?.kind ?? null
   })
 
+  // A diff tab is a reader whatever the chat is doing (kept as its own name: the
+  // badge wording for a diff is a separate sentence below).
+  const isDiffTab = computed(() => activeKind.value === 'diff')
+  const isPreviewTab = computed(() => activeKind.value === 'preview')
+  const isViewTab = computed(() => activeKind.value !== null && activeKind.value !== 'file')
+
   const editorMode = computed(() => {
-    if (isDiffTab.value) return 'read_only'
+    if (isViewTab.value) return 'read_only'
     // Idle *and* no lot in progress: between two task turns `phase` is 'idle'
     // but the next turn is already queued, and the model may be mid-edit of the
     // file under the caret.
@@ -64,6 +71,8 @@ export function useEditorMode() {
     const parts = []
     if (isDiffTab.value) {
       parts.push('Read-only — this tab is a diff: the committed side and the one on disk.')
+    } else if (isPreviewTab.value) {
+      parts.push('Read-only — this tab shows the rendered Markdown of the file.')
     } else if (batch.state.active) {
       parts.push(
         'Read-only — a batch is running and its tasks edit these files. Saving is refused until the lot stops.',
@@ -108,5 +117,14 @@ export function useEditorMode() {
     return parts.join(' ')
   })
 
-  return { editorMode, paneReadonly, isEditable, isDiffTab, badgeLabel, badgeTitle }
+  return {
+    editorMode,
+    paneReadonly,
+    isEditable,
+    isDiffTab,
+    isPreviewTab,
+    isViewTab,
+    badgeLabel,
+    badgeTitle,
+  }
 }

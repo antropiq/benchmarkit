@@ -3199,6 +3199,23 @@ body {
   overflow: hidden;
 }
 
+/* The rendered-markdown panel (the tree's "Preview"), a sibling of the Monaco
+   surfaces in the same pane. It must NOT reuse `.editor-monaco`: that element is
+   `overflow: hidden` because Monaco measures it and owns its own scroller, so a
+   rendered document given that class could not scroll. Sizing only — the markup
+   inside is MarkdownStream's `.answer`, the one stylesheet for rendered markdown
+   (already light/dark through the Pico variables and the hljs token rules), and
+   `.editor-body-col` already supplies the padding every other panel gets. */
+.editor-preview {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.editor-preview .answer {
+  max-width: 88ch;
+}
+
 /* -- terminal strip ----------------------------------------------------------- */
 
 .editor-terminal {

@@ -80,10 +80,21 @@ onMounted(() => {
     readOnly: props.readonly,
     domReadOnly: props.readonly,
     ariaLabel: props.ariaLabel,
-    // The viewer shape: no minimap, no sticky scroll, a ruler-less overview —
-    // none of it is decoration, each of them costs width this pane does not
-    // have next to the tree and the terminal strip.
-    minimap: { enabled: false },
+    // The viewer shape: no sticky scroll, a ruler-less overview — none of it is
+    // decoration, each of them costs width this pane does not have next to the
+    // tree and the terminal strip. The minimap is the exception worth paying
+    // that width for: it is how you scrub a long file, so it never autohides
+    // (an autohidden minimap is a slider you cannot grab) and its slider is
+    // shown always rather than only on hover. It draws colour blocks instead
+    // of glyphs — unreadable at this scale, and they cost render time.
+    // `maxColumn` is the width budget for this narrow pane.
+    minimap: {
+      enabled: true,
+      autohide: 'none',
+      showSlider: 'always',
+      renderCharacters: false,
+      maxColumn: 80,
+    },
     stickyScroll: { enabled: false },
     overviewRulerLanes: 0,
     hideCursorInOverviewRuler: true,

@@ -70,8 +70,10 @@ onMounted(() => {
     renderGutterMenu: false,
     renderOverviewRuler: false,
     hideUnchangedRegions: { enabled: true, contextLineCount: 3 },
-    // The same viewer shape as the code pane: no minimap, no sticky scroll,
-    // nothing that costs width this pane does not have.
+    // Kept narrow on purpose: a diff already spends its width on two columns,
+    // and here the minimap would have to repeat both of them to be useful, so
+    // it stays off (unlike the single-buffer code pane). No sticky scroll and
+    // no overview ruler either.
     minimap: { enabled: false },
     stickyScroll: { enabled: false },
     overviewRulerLanes: 0,

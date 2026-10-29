@@ -432,6 +432,19 @@ describe('the menu table: exactly the items a row kind can honour', () => {
     expect(treeMenuItemIds(file)).toEqual(['open', 'rename', 'delete', 'copy-path'])
   })
 
+  it('Preview only for a markdown row, between Open and View diff…', () => {
+    // The flag is the row's *name* answered by lib/markdown-preview before any
+    // read happens; without it the item is absent, not disabled-and-lying.
+    expect(treeMenuItemIds(file)).not.toContain('preview')
+    expect(treeMenuItemIds({ ...file, isMarkdown: true })).toEqual([
+      'open',
+      'preview',
+      'rename',
+      'delete',
+      'copy-path',
+    ])
+  })
+
   it('View diff… only with a committed side, Close only with an open buffer', () => {
     expect(treeMenuItemIds({ ...file, diffable: true })).toContain('view-diff')
     expect(treeMenuItemIds({ ...file, hasBuffer: true })).toContain('close')
@@ -443,10 +456,35 @@ describe('the menu table: exactly the items a row kind can honour', () => {
       'close',
       'copy-path',
     ])
-    // Neither flag is ever read on a folder or the root: they describe a file.
-    expect(treeMenuItemIds({ ...folder, diffable: true, hasBuffer: true })).toEqual(
-      treeMenuItemIds(folder),
-    )
+    expect(
+      treeMenuItemIds({ ...file, diffable: true, hasBuffer: true, isMarkdown: true }),
+    ).toEqual([
+      'open',
+      'preview',
+      'view-diff',
+      'rename',
+      'delete',
+      'close',
+      'copy-path',
+    ])
+    // None of these flags is ever read on a folder or the root: they describe a
+    // file, so `scope: 'file'` must exclude them even when a caller sets them.
+    expect(
+      treeMenuItemIds({
+        ...folder,
+        diffable: true,
+        hasBuffer: true,
+        isMarkdown: true,
+      }),
+    ).toEqual(treeMenuItemIds(folder))
+    expect(
+      treeMenuItemIds({
+        ...root,
+        diffable: true,
+        hasBuffer: true,
+        isMarkdown: true,
+      }),
+    ).toEqual(treeMenuItemIds(root))
   })
 
   // The caller opens *no* menu when this answers with nothing (a menu of one

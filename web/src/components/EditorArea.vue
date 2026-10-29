@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import MonacoEditor from './MonacoEditor.vue'
 import MonacoDiffViewer from './MonacoDiffViewer.vue'
+import MarkdownStream from './MarkdownStream.vue'
 import EditorTreeDialogs from './EditorTreeDialogs.vue'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
@@ -11,11 +12,12 @@ import { useEditorMode } from '../composables/useEditorMode'
 import { scrollStripWithWheel } from '../lib/tab-strip-wheel'
 import { applyEditorChord } from '../lib/editor-keys'
 
-// The centre pane: the open-file tab strip and the Monaco surface that shows
-// the active buffer. The header chrome and the tab chips are the pane's own
-// markup; everything below them belongs to Monaco, which owns the DOM inside
-// its host and the line-number gutter that used to be a hand-rolled `<pre>`
-// column here.
+// The centre pane: the open-file tab strip and the surface that shows the
+// active tab — a Monaco buffer for a file, the diff editor for a diff, or the
+// rendered-markdown panel for a preview. The header chrome and the tab chips
+// are the pane's own markup; inside `.monaco-host` (the two Monaco surfaces)
+// everything belongs to Monaco, which owns the DOM there and the line-number
+// gutter that used to be a hand-rolled `<pre>` column here.
 //
 // The pane's mode — editable while the WorkBench is idle, read-only while a
 // reply streams — is decided once in useEditorMode and *displayed* in the file
@@ -56,6 +58,7 @@ const state = files.state
 // two tabs about one path (useEditorFiles), and the pane has to tell them apart.
 const tab = computed(() => state.open.find((item) => item.key === state.active) ?? null)
 const isDiff = computed(() => tab.value?.kind === 'diff')
+const isPreview = computed(() => tab.value?.kind === 'preview')
 
 // The one line that says what the two columns mean, so a reader never has to
 // guess which side is which — and never reads the left side as the truth.
@@ -86,11 +89,19 @@ const deletedNote = computed(() =>
     : '',
 )
 
-// Two Monaco surfaces share this pane, never at once: the code editor (one
-// surface, one model, swapped between file buffers) and the diff editor (two
-// models, and it cannot use the code pane's single model). Each is mounted only
-// for the tab kind that needs it, so the last tab closing disposes the surface
-// it belongs to and neither pays for the other.
+// Three surfaces share this pane, never at once: the code editor (one surface,
+// one model, swapped between file buffers), the diff editor (two models, and it
+// cannot use the code pane's single model) and the rendered markdown preview —
+// an app-owned sibling, because the bundled `monaco-editor` ESM build ships no
+// markdown preview widget and `.monaco-host` must stay empty of app markup (it
+// is the scope of the `monaco-pico.css` overrides and of e2e selectors). Each is
+// mounted only for the tab kind that needs it, so the last tab closing disposes
+// the surface it belongs to and none of them pays for the others.
+//
+// Known and accepted for v1: a preview shows no relative *image* (the app has no
+// byte-serving route, so `<img src="diagram.png">` resolves against the app
+// origin and renders broken), and a relative link navigates the SPA away.
+// See the note in lib/markdown-preview.js.
 
 // Which chip is the selected one of the tablist (the roving tabindex and the
 // pane's aria-labelledby both key on it).
@@ -152,10 +163,14 @@ const canSaveActive = computed(
   () => tab.value?.kind === 'file' && tab.value.dirty,
 )
 const dirtyCount = computed(() => files.dirtyCount.value)
+// Names the tab's own kind, so the tooltip does not claim "diff" over a preview
+// (the button itself is already disabled for every non-buffer kind).
 const saveButtonTitle = computed(() => {
   const record = tab.value
   if (!record) return 'Nothing to save'
-  if (record.kind !== 'file') return 'A diff tab has no buffer to save'
+  if (record.kind !== 'file') {
+    return `A ${record.kind} tab has no buffer to save`
+  }
   if (record.saving) return 'Saving…'
   return record.dirty
     ? `Save ${record.path} (Ctrl+S)`
@@ -436,6 +451,36 @@ onBeforeUnmount(() => {
               :language="tab.language"
               :aria-label="`Diff of ${tab.path}`"
             />
+          </div>
+        </template>
+
+        <template v-else-if="isPreview">
+          <!-- The preview is a snapshot (useEditorFiles.openPreview), not a live
+               binding to the buffer or the disk — this line is the honesty half
+               of that bargain, and "Preview again to refresh" is the whole
+               refresh affordance. -->
+          <p class="caption editor-raw-note">
+            rendered from the copy read when this tab opened — Preview again to refresh
+          </p>
+          <!-- A truncated `.md` renders a *fragment* (an unclosed fence swallows
+               the rest of the file as one code block), so this caption is the
+               only thing that says so. -->
+          <p v-if="tab.truncated" class="caption editor-raw-note">
+            file grew while it was being read — showing its first
+            {{ files.humanSize(tab.truncatedAt) }}
+          </p>
+          <!-- App-owned, and it carries `id="editor-pane"` like the other two
+               panels: exactly one element holds that id at a time, which is what
+               makes the chips' `aria-controls` honest. It is *not* `.editor-monaco`
+               — that is `overflow: hidden` because Monaco owns its own scroller,
+               and reusing it would leave a rendered document that cannot scroll. -->
+          <div
+            class="editor-preview"
+            id="editor-pane"
+            role="tabpanel"
+            :aria-labelledby="`editor-tab-${activeIndex}`"
+          >
+            <MarkdownStream :html="tab.html" mermaid />
           </div>
         </template>
 

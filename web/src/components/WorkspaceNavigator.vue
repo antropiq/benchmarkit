@@ -11,6 +11,7 @@ import { useBenchmark } from '../composables/useBenchmark'
 import { useEditorMode } from '../composables/useEditorMode'
 import { treeMenuItems } from '../lib/tree-menu'
 import { fileIcon } from '../lib/file-icons'
+import { isMarkdownPath } from '../lib/markdown-preview'
 // The rows render Nerd Font glyphs (lib/file-icons). This CSS declares the
 // "JetBrains Mono Nerd Icons" face those code points need; it is unicode-range-
 // gated to exactly them, so the woff2 is only fetched once a glyph actually
@@ -225,6 +226,7 @@ function menuFlags(path, isDir) {
     dir: isDir,
     isRoot,
     mutable: !isRoot,
+    isMarkdown: !isDir && !isRoot && isMarkdownPath(path),
     diffable: !isDir && !isRoot && git.isDiffable(path),
     hasBuffer: !isDir && !isRoot && !!files.recordFor(path),
     trashRetentionDays: TRASH_RETENTION_DAYS,
@@ -281,6 +283,10 @@ const MENU_ACTIONS = {
   'new-file': (target) => creator.startCreate(target.path, false),
   'new-folder': (target) => creator.startCreate(target.path, true),
   'view-diff': (target) => files.openDiff(target.path),
+  // Preview goes directly to the flow, like `view-diff` and unlike `open`:
+  // publishing a tree selection would make EditorArea's watcher open the Monaco
+  // buffer *beside* the preview tab. So `useWorkspaceTree` needs no new field.
+  preview: (target) => files.openPreview(target.path),
   // Rename asks for a name; it does not move anything. The inline input opens in
   // the folder that shows the row, prefilled, and the move happens only when
   // that input is submitted — the same one-gesture-never-decides shape as the
