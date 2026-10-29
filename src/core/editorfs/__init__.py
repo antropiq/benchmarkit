@@ -33,10 +33,11 @@ Core-only (no FastAPI, no browser concerns), a sibling of ``mcphub/`` and
   over an existing name; ``rename_path`` (the rename route) moves one path to a
   new one — both ends and both parent chains gated, never over an occupied
   target; and ``trash_path`` (the delete route) moves one file or one whole
-  folder into a dated batch under ``constants.TRASH_DIR`` — never ``unlink``ed,
-  and all-or-nothing on the subtree's verdict. The parent chain and the leaf
-  name both go through the same write gate, which is one policy answer per
-  path and nothing else.
+  folder into a dated batch under the **active workspace's** trash
+  (``mutate.trash_dir()`` — ``<workspace>/.nojae/trash``, per call) — never
+  ``unlink``ed, and all-or-nothing on the subtree's verdict. The parent chain
+  and the leaf name both go through the same write gate, which is one policy
+  answer per path and nothing else.
 * :mod:`editorfs.gitstatus` the read-only git queries: ``git_status``
   (``GET /api/fs/status``, which rows to mark) and ``file_diff``
   (``GET /api/fs/diff``, the two sides of one file). They answer *about* the
@@ -72,6 +73,7 @@ from .mutate import (
     rename_path,
     sweep_trash,
     trash_batches,
+    trash_dir,
     trash_digest,
     trash_path,
 )

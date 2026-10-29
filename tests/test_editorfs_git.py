@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 
 from src.api.server import create_app
 from src.core import editorfs
-from src.core.editorfs import policy_file
+from src.core.editorfs import policy_file, policy_seed
 
 
 def write_policy(root: Path, rules: List[Dict[str, str]]) -> Path:
@@ -244,6 +244,38 @@ class TestStatusFollowsTheTreePolicy:
 
         write_policy(ws, [{"path": "pkg", "mode": "hidden"}])
         assert status(client)["entries"] == []
+
+    def test_the_reserved_folder_never_draws_a_marker_even_untracked(
+        self, ws, client
+    ):
+        """The wrinkle the new trash placement accepts, pinned rather than hoped.
+
+        A *foreign* repo has no `.nojae/` in its own `.gitignore` (that entry
+        lives in benchmarkit's), and the app will not edit a repository it was
+        pointed at — so a terminal `git status` there shows `.nojae/` as
+        untracked. The app must not: the reservation is unconditional, and every
+        path git reported is re-filtered through the verdict, so neither the
+        policy file nor a trashed batch inside that folder can become a row the
+        tree refuses to show.
+        """
+        # Seeding is what writes `.nojae/read-write-policy.json` here, and a
+        # delete's batch would land in `.nojae/trash` — both untracked.
+        policy_seed.ensure_policy_file(str(ws))
+        (ws / editorfs.constants.POLICY_DIRNAME / "trash" / "batch").mkdir(parents=True)
+        (ws / "shown.txt").write_text("x\n", encoding="utf-8")
+
+        # The raw query really does report the folder — this repo has no
+        # `.gitignore` naming it, which is exactly the foreign-workspace wrinkle.
+        assert editorfs.constants.POLICY_DIRNAME in git(ws, "status", "--porcelain")
+
+        paths = [entry["path"] for entry in status(client)["entries"]]
+        shared = editorfs.constants.policy_shared
+        assert editorfs.mode_for(editorfs.constants.POLICY_DIRNAME).mode == shared.HIDDEN
+        assert not any(
+            part == editorfs.constants.POLICY_DIRNAME for path in paths
+            for part in path.split("/")
+        )
+        assert "shown.txt" in paths
 
 
 class TestSubdirectoryWorkspace:

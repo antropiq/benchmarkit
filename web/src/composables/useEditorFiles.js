@@ -142,6 +142,15 @@ const MTIME_EPSILON = 0.01
 // it actually used.
 export const TRASH_RETENTION_DAYS = 30
 
+// Where a delete files the copy: the workspace's reserved folder. The mirror
+// of `editorfs.constants.TRASH_SUBDIR` under `.nojae` — same "asked before the
+// request exists" reasoning as TRASH_RETENTION_DAYS, and the reason the label
+// is only a *folder name*: the exact batch is the route's `trashedTo`, and
+// `.nojae` is hidden from the tree, so the pane can never open either one.
+// `/api/policy` publishes the real reserved name if this mirror ever needs to
+// stop being one.
+export const TRASH_FOLDER = '.nojae/trash'
+
 // The two halves of one path, joined/split the way the server spells them (""
 // is the workspace root).
 function parentOf(path) {

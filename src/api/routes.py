@@ -1386,8 +1386,11 @@ def build_router(state: RunState) -> APIRouter:
         subtree check**: one hidden or read-only descendant refuses the whole
         delete, naming that descendant, and nothing at all moves. What is
         deleted is never ``unlink``ed — it lands in
-        ``logs/trash/<batch>/<the relative path>`` and is swept after
+        ``.nojae/trash/<batch>/<the relative path>`` of the **current** working
+        location (so a switch moves the trash with it) and is swept after
         ``TRASH_RETENTION_DAYS``, which is why the payload names the batch.
+        That folder is reserved, so the pane cannot list or open it: the batch is
+        restored with ``mv`` in a terminal.
 
         Refused while a chat reply streams, like every other write. The answer
         carries ``entries`` — the descendant count from the server's own walk —

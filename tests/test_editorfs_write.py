@@ -64,6 +64,27 @@ def trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A private trash folder, so a delete never touches the app's real one."""
     folder = tmp_path / "app-trash"
     monkeypatch.setattr(editorfs.constants, "TRASH_DIR", folder)
+    # The sweep prunes the legacy ``logs/trash`` too, so that folder is pinned
+    # to a temp path that does not exist: a test asserting about batches must
+    # never list — let alone expire — the real repo's copies.
+    monkeypatch.setattr(
+        editorfs.constants,
+        "LEGACY_TRASH_DIR",
+        tmp_path / "legacy-trash-absent",
+    )
+    return folder
+
+
+@pytest.fixture
+def legacy_trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin the *legacy* folder on its own, for the un-pinned-trash tests.
+
+    ``sweep_trash`` prunes both folders, so a test that lets the trash resolve
+    to a real workspace must still keep the sweep away from the app repo's own
+    ``logs/trash`` — which is exactly what it used to be written into.
+    """
+    folder = tmp_path / "legacy-trash"
+    monkeypatch.setattr(editorfs.constants, "LEGACY_TRASH_DIR", folder)
     return folder
 
 
@@ -1324,6 +1345,122 @@ class TestDeleteToTrash:
         assert client.get("/api/fs/tree").json()["path"] == ""
 
 
+class TestTrashBelongsToTheWorkspace:
+    """The trash is the *active* workspace's own ``.nojae/trash``, per call.
+
+    The old placement was one module-level constant under ``logs/``: resolved
+    once at import, shared by every workspace, so deleting in a foreign project
+    wrote bytes inside the benchmarkit checkout. These tests are the proof of
+    the fix — the folder is derived from ``workspace_root()`` at call time, so a
+    settings switch moves the trash with the workspace, and each root's batches
+    are invisible to the other.
+    """
+
+    def test_the_default_resolves_to_the_active_workspaces_reserved_folder(
+        self, workspace: Path, legacy_trash: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """No pin, no patch: ``<root>/.nojae/trash``, named from the constants."""
+        monkeypatch.setattr(editorfs.constants, "TRASH_DIR", None)
+        resolved = editorfs.trash_dir()
+        assert resolved == Path(
+            workspace / editorfs.constants.POLICY_DIRNAME
+            / editorfs.constants.TRASH_SUBDIR
+        )
+        # And the reserved name is the *policy* module's, so a test that moves
+        # the reserved folder moves the trash with it — no second literal.
+        assert editorfs.constants.POLICY_DIRNAME == ".nojae"
+
+    def test_a_delete_without_a_pin_files_into_the_workspaces_own_trash(
+        self, workspace: Path, client, legacy_trash: Path,
+        monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(editorfs.constants, "TRASH_DIR", None)
+        response = trash_path(client, "src/config.py")
+        assert response.status_code == 200
+        batch = workspace / ".nojae" / "trash" / Path(response.json()["trashedTo"]).name
+        assert (batch / "src" / "config.py").read_text(encoding="utf-8") == "x = 1\n"
+
+    def test_trashedTo_is_workspace_relative(
+        self, workspace: Path, client, legacy_trash: Path,
+        monkeypatch: pytest.MonkeyPatch
+    ):
+        """``.nojae/trash/<digest>_<stamp>`` — the frame every other payload uses.
+
+        The label names a folder the pane deliberately cannot open, so the
+        confirmation quotes it as a path to ``cd`` to in a terminal; a client
+        joining it onto the working location lands on the batch.
+        """
+        monkeypatch.setattr(editorfs.constants, "TRASH_DIR", None)
+        body = trash_path(client, "src/config.py").json()
+        assert body["trashedTo"].startswith(".nojae/trash/")
+        assert not Path(body["trashedTo"]).is_absolute()
+        assert (workspace / body["trashedTo"]).is_dir()
+
+    def test_a_switched_in_workspace_gets_its_own_trash(
+        self, tmp_path: Path, legacy_trash: Path,
+        monkeypatch: pytest.MonkeyPatch
+    ):
+        """Defect 2, head-on: two roots, two trashes, and neither sees the other.
+
+        One client spans the switch (as a settings change does), so the second
+        delete *must* land under the second root and must not see — let alone
+        sweep — the first root's batches.
+        """
+        monkeypatch.setattr(editorfs.constants, "TRASH_DIR", None)
+        first = tmp_path / "one"
+        second = tmp_path / "two"
+        for root in (first, second):
+            root.mkdir()
+            (root / "f.txt").write_text("content\n", encoding="utf-8")
+            policy_seed.ensure_policy_file(str(root))
+        policy_file.invalidate_policy_cache()
+
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(first))
+        with TestClient(create_app()) as client:
+            body = trash_path(client, "f.txt").json()
+            assert (first / body["trashedTo"]).is_dir()
+            assert editorfs.trash_batches()[0].is_relative_to(first / ".nojae")
+
+            # The switch: the very next delete files into the *new* root, and
+            # the old root's batch is not this workspace's to list or sweep.
+            monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(second))
+            policy_file.invalidate_policy_cache()
+            body = trash_path(client, "f.txt").json()
+            assert (second / body["trashedTo"]).is_dir()
+            batches = editorfs.trash_batches()
+            assert len(batches) == 1
+            assert batches[0].is_relative_to(second / ".nojae")
+            assert not any(batch.is_relative_to(first / ".nojae") for batch in batches)
+
+        assert (first / ".nojae" / "trash").is_dir()
+        assert (second / ".nojae" / "trash").is_dir()
+
+    def test_the_legacy_logs_trash_is_swept_but_never_written_to(
+        self, workspace: Path, client, trash: Path,
+        legacy_trash: Path
+    ):
+        """``logs/trash`` keeps nothing writable, but its batches still expire."""
+        # The `trash` pin keeps the sweep's *primary* folder private; the
+        # `legacy_trash` fixture does the same for the legacy one, so a test
+        # never lists — let alone expires — the real app repo's copies.
+        legacy = legacy_trash
+        old = legacy / "000000000000_old-batch"
+        old.mkdir(parents=True)
+        (old / "gone.txt").write_text("x\n", encoding="utf-8")
+        os.utime(old, (0, 0))
+        young = legacy / "111111111111_young-batch"
+        young.mkdir()
+
+        assert trash_path(client, "README.md").status_code == 200
+        # The delete's batch went to the workspace's own trash (pinned by the
+        # `trash` fixture), never to the legacy folder — which the sweep only
+        # *drains*: the over-age batch is gone, the young one stays.
+        assert len(list(trash.iterdir())) == 1
+        assert not old.exists()
+        assert young.is_dir()
+        assert [item.name for item in legacy.iterdir()] == [young.name]
+
+
 class TestChatStreamGate:
     def test_a_save_while_a_reply_streams_is_409(
         self, client, workspace: Path, backups: Path
@@ -1658,37 +1795,36 @@ class TestWriteMatrix:
 
 
 class TestTrashIsNotASideDoor:
-    """The trash sits *inside the browsed tree*, and that is honest.
+    """The trash lives *inside the workspace* — and the workspace cannot open it.
 
-    ``TRASH_DIR`` and ``BACKUP_DIR`` are under the app repo's ``logs/`` — the
-    same folder the tree browses whenever the working location is the install
-    directory, which is the value the app seeds at boot. So the write surface
-    adds ``logs/trash`` and ``logs/editor_backups`` to what a user can see.
-    That is deliberate, not an oversight: the working location may be
-    ``$HOME``, so a trash *inside it* would be a second copy of the user's
-    home, and putting the artefacts outside the browsed tree would hide from
-    ``git status`` the very moves the user just made. ``logs/`` is gitignored
-    already, for the same argument ``mcp_connectors/fedit_mcp.py`` makes about
-    ``logs/fedit_backups``.
+    A delete files into ``<workspace>/.nojae/trash``, so the copy of what the
+    user deleted sits in the tree the pane browses. The old placement under the
+    app repo's ``logs/`` needed level A to hide it, which only worked in
+    benchmarkit's own checkout. The new placement is hidden by the *reservation*
+    (pol-00 D5): unconditional, in every workspace, whatever the policy file
+    says, checked on the component list before any ``stat``. So the guarantee is
+    stronger than the one it replaces — there is no batch to browse at all.
 
-    What has to hold — and what this class asserts — is that being browsable
-    does not make it readable: the trash cannot become a side door around the
-    gate, because the verdict judges the *name*, wherever it sits. In
-    benchmarkit's own workspace level A hides ``logs/**`` outright, so there is
-    nothing to browse; the shape exercised here is the one a *foreign* workspace
-    creates by moving the artefact folders inside itself, where the workspace's
-    own rules are all that stands between a batch and the pane.
+    What this class asserts is exactly that: no route can *address* the trash.
+    A read of a path inside it answers 404 (indistinguishable from absence,
+    D8), the tree never lists the reserved folder, and a delete of anything
+    under it is a 422 naming the reservation — so the new location is not a
+    side door around the gate for a hidden name, and a batch can never be
+    trashed into itself.
     """
 
     @pytest.fixture
     def repo_like(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        """A workspace whose trash lives inside itself (the boot shape)."""
+        """A workspace whose trash resolves to its own reserved folder."""
         root = tmp_path / "repo"
-        (root / "logs" / "trash").mkdir(parents=True)
+        (root / ".nojae" / "trash").mkdir(parents=True)
         (root / "src").mkdir()
         (root / "src" / "app.py").write_text("print(1)\n", encoding="utf-8")
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
-        monkeypatch.setattr(editorfs.constants, "TRASH_DIR", root / "logs" / "trash")
+        monkeypatch.setattr(editorfs.constants, "TRASH_DIR", None)
+        monkeypatch.setattr(
+            editorfs.constants, "LEGACY_TRASH_DIR", tmp_path / "legacy-trash-absent"
+        )
         monkeypatch.setattr(editorfs.constants, "BACKUP_DIR", root / "logs" / "editor_backups")
         # The rule that used to be the connector floor's ``.env`` name check:
         # here it is a rule of this workspace, which is what makes the promise
@@ -1703,8 +1839,13 @@ class TestTrashIsNotASideDoor:
 
     @pytest.fixture
     def planted_batch(self, repo_like: Path) -> Path:
-        """``logs/trash/<batch>/.env`` — a hidden name inside the trash."""
-        batch = repo_like / "logs" / "trash" / self.PLANTED
+        """``.nojae/trash/<batch>/.env`` — a hidden name inside the trash.
+
+        Planted on disk, because no route could have written it: that is the
+        point of the reservation. It stands in for a batch a delete *would*
+        have made, and for a human's own ``mv``.
+        """
+        batch = repo_like / ".nojae" / "trash" / self.PLANTED
         batch.mkdir()
         (batch / ".env").write_text("SECRET=planted\n", encoding="utf-8")
         return batch
@@ -1714,64 +1855,93 @@ class TestTrashIsNotASideDoor:
         with TestClient(create_app()) as test_client:
             yield test_client
 
-    def test_the_default_artefact_dirs_are_inside_the_default_browsed_tree(self):
-        """The shape the test below stands in for, asserted on the real defaults.
+    def test_the_default_trash_is_the_workspaces_reserved_folder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The shape every test here stands in for, asserted on the real default.
 
-        ``BACKUP_DIR``/``TRASH_DIR`` are children of ``PROJECT_ROOT`` — so a
-        workspace left at its boot default browses them. Naming this here keeps
-        the arrangement visible instead of inherited.
+        With no pin, the trash is ``<workspace>/.nojae/trash`` — and at the boot
+        default (workspace = install dir) that is inside the browsed tree, which
+        is fine precisely because the reserved folder is not listable.
+        ``BACKUP_DIR`` stays where the ``fedit`` symmetry lives; the legacy
+        folder's own batches are the sweep test's business.
         """
         root = Path(editorfs.constants.PROJECT_ROOT)
+        # Pinned rather than inherited: the resolution is what is asserted, so
+        # the location this process happens to have booted on must not decide it.
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
+        assert editorfs.workspace_root() == os.path.realpath(str(root))
+        assert editorfs.constants.TRASH_DIR is None
+        assert editorfs.trash_dir() == (
+            root / editorfs.constants.POLICY_DIRNAME / editorfs.constants.TRASH_SUBDIR
+        )
         assert editorfs.constants.BACKUP_DIR == root / "logs" / "editor_backups"
-        assert editorfs.constants.TRASH_DIR == root / "logs" / "trash"
 
     def test_a_trashed_copy_of_a_hidden_name_is_still_absent_to_a_read(
         self, repo_client, planted_batch: Path
     ):
-        """A hidden name inside the trash stays hidden — the verdict judges the
-        whole relative path, wherever the folder happens to sit.
+        """Nothing about a batch is observable, secret or otherwise.
 
-        A delete can never *produce* this (the subtree rule below refuses the
-        delete before anything moves), so the state is planted: an older build's
-        copy, or a human's own ``mv``. The promise is that browsing the trash
-        leaks nothing the original path would have kept private — and it answers
-        the way any hidden path answers a look: absent (D8).
+        The path inside the reserved folder is refused one level earlier than
+        the old shape: the verdict does not have to judge ``.env`` inside it,
+        because the *component* hit answers first — and it answers a look with
+        absence (D8), exactly as a hidden path does everywhere else.
         """
         response = repo_client.get(
-            "/api/fs/file", params={"path": f"logs/trash/{self.PLANTED}/.env"}
+            "/api/fs/file", params={"path": f".nojae/trash/{self.PLANTED}/.env"}
         )
         assert response.status_code == 404
         assert "does not exist" in response.json()["detail"]
         assert "SECRET=planted" not in response.text
 
-        # The tree omits it rather than marking it: the branch is browsable and
-        # its name is harmless, but a hidden entry is never published at all.
-        listing = repo_client.get("/api/fs/tree", params={"path": "logs/trash"}).json()
-        assert self.PLANTED in [entry["name"] for entry in listing["entries"]]
-        inner = repo_client.get(
-            "/api/fs/tree", params={"path": f"logs/trash/{self.PLANTED}"}
-        ).json()["entries"]
-        assert inner == []  # an empty-looking branch, not a list of secrets
+        # The reserved folder is not a browsable branch with a hidden entry: it
+        # is absent from the root listing, and every path under it 404s.
+        listing = repo_client.get("/api/fs/tree").json()
+        assert ".nojae" not in [entry["name"] for entry in listing["entries"]]
+        for rel in (".nojae", ".nojae/trash", f".nojae/trash/{self.PLANTED}"):
+            assert repo_client.get(
+                "/api/fs/tree", params={"path": rel}
+            ).status_code == 404, rel
+        assert (
+            repo_client.get("/api/fs/stat", params={"path": ".nojae/trash"}).json()[
+                "paths"
+            ][0]["exists"]
+            is False
+        )
 
     def test_a_delete_of_a_batch_holding_a_hidden_name_is_refused_whole(
         self, repo_client, planted_batch: Path
     ):
-        """The trash cannot launder a protected path either.
+        """The trash cannot launder a protected path, and cannot be deleted.
 
-        The same subtree check that protects an innocent folder holding a hidden
-        file protects one that already sits in the trash: the route answers 422
-        naming the rule *and* the batch the entry lives in, and nothing moves —
-        so a hidden name can only reach the trash from outside the route.
+        The reservation answers before the name is looked for, so the batch —
+        hidden content and all — cannot be addressed by the delete route at
+        all: 422 naming the reserved folder, and nothing moves.
         """
-        response = repo_client.request(
-            "DELETE", "/api/fs/file", params={"path": f"logs/trash/{self.PLANTED}"}
-        )
-        assert response.status_code == 422
-        detail = response.json()["detail"]
-        assert '"**/.env**"' in detail
-        assert self.PLANTED in detail
+        for rel in (".nojae", ".nojae/trash", f".nojae/trash/{self.PLANTED}"):
+            response = repo_client.request(
+                "DELETE", "/api/fs/file", params={"path": rel}
+            )
+            assert response.status_code == 422, rel
+            assert ".nojae" in response.json()["detail"], rel
         assert (planted_batch / ".env").is_file()
         assert editorfs.trash_batches() == [planted_batch]
+
+    def test_a_batch_is_never_trashed_into_itself(
+        self, repo_client, repo_like: Path, planted_batch: Path
+    ):
+        """The ``shutil.move`` "directory into itself" hazard cannot arise.
+
+        Nothing under the root contains the trash path (only the trash names
+        it, and that is unreachable), and no folder holding it can be deleted —
+        so the destination is never inside the source. Asserted on a real
+        delete of the folder beside the trash.
+        """
+        response = repo_client.request("DELETE", "/api/fs/file", params={"path": "src"})
+        assert response.status_code == 200
+        assert (repo_like / ".nojae" / "trash" / self.PLANTED / ".env").is_file()
+        batch = repo_like / response.json()["trashedTo"]
+        assert (batch / "src" / "app.py").is_file()
 
 
 class TestPolicyFileIsBroken:

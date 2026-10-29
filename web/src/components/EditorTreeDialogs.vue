@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { TRASH_RETENTION_DAYS, useEditorFiles } from '../composables/useEditorFiles'
+import { TRASH_FOLDER, TRASH_RETENTION_DAYS, useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 
 // The Editor tab's dialogs, one file for all of them: the save conflict, the
@@ -361,10 +361,11 @@ async function deleteViaDialog() {
   </dialog>
 
   <!-- The delete confirm. Nothing is unlinked: the path is *moved* into a
-       batch under the app's trash folder, which is why the confirmation can
-       name it and the retention out loud — a mistaken delete is two commands
-       away from being undone. Cancel is first and therefore the default;
-       Delete is the destructive answer and wears the danger tone. -->
+       batch under the workspace's own `.nojae/trash`, which is why the
+       confirmation can name it and the retention out loud — a mistaken delete
+       is two terminal commands away from being undone. Cancel is first and
+       therefore the default; Delete is the destructive answer and wears the
+       danger tone. -->
   <dialog
     ref="deleteDialogEl"
     class="editor-delete-dialog"
@@ -401,8 +402,9 @@ async function deleteViaDialog() {
         </button>
       </footer>
       <p class="caption editor-delete-keeps">
-        kept in <code>logs/trash/</code> for {{ TRASH_RETENTION_DAYS }} days — the
-        exact folder is named once it has moved
+        kept in <code>{{ TRASH_FOLDER }}/</code> for {{ TRASH_RETENTION_DAYS }} days —
+        the exact batch is named once it has moved. That folder is reserved, so it
+        is not shown in the tree: put it back with <code>mv</code> in a terminal.
       </p>
     </article>
   </dialog>

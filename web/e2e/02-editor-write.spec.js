@@ -16,12 +16,13 @@ import { join } from 'node:path'
 // The scratch is a top-level folder — gitignored, and **visible to the pane**.
 // It used to live under `logs/`, and that no longer works: benchmarkit's own
 // rules hide `logs/**` from the tree, the read and the write routes, because
-// that is where the app keeps its backups and its trash. Each test starts by
-// trashing the scratch, because a leftover from an interrupted run would turn
-// this run's create into a 409 and its rename into a collision with a
-// collapsed row.
+// that is where the app keeps its pre-save backups (the trash does not live
+// there any more — it is each workspace's own `.nojae/trash`, reserved and
+// hidden in every workspace). Each test starts by trashing the scratch,
+// because a leftover from an interrupted run would turn this run's create into
+// a 409 and its rename into a collision with a collapsed row.
 const SCRATCH = 'e2e-write'
-const TRASH_BATCH = 'logs/trash'
+const TRASH_BATCH = '.nojae/trash'
 
 async function trash(request, path) {
   return request.delete(`/api/fs/file?path=${encodeURIComponent(path)}`)
@@ -256,16 +257,25 @@ test('delete — the row is gone, and the notice names the trash folder the rout
   await expect(notice).toContainText(file)
   await expect(notice).toContainText(body.trashedTo)
 
-  // The batch is named repo-relative so a human can cd to it, it is real, and
-  // it holds the *path* that was deleted — the layout that makes a restore a
-  // plain mv. (The timestamp inside the name is deliberately not asserted on.)
-  // In *this* workspace the trash is not browsable — benchmarkit's own rules
-  // hide `logs/**`, because that is where the app keeps its backups and its
-  // deleted files — so the witness is the filesystem, not the tree route.
+  // The batch is named **working-location**-relative so a human can cd to it,
+  // it is real, and it holds the *path* that was deleted — the layout that
+  // makes a restore a plain mv. (The timestamp inside the name is deliberately
+  // not asserted on.) The trash now sits in the workspace's reserved folder,
+  // which is hidden from the tree, the read and the write routes in *every*
+  // workspace — so `existsOnDisk`, which joins the working location the server
+  // itself reports, is the only witness left, and asserting on it is the point.
   expect(body.trashedTo).toContain(`${TRASH_BATCH}/`)
   expect(await existsOnDisk(request, body.trashedTo)).toBe(true)
   expect(await existsOnDisk(request, `${body.trashedTo}/${file}`)).toBe(true)
   expect(await diskExists(request, file)).toBe(false)
+
+  // And the reserved folder that holds it is not a side door: the pane cannot
+  // list or read it, whatever the batch inside.
+  const trashedCopy = `${body.trashedTo}/${file}`
+  expect((await request.get('/api/fs/tree?path=.nojae')).status()).toBe(404)
+  expect(
+    (await request.get(`/api/fs/file?path=${encodeURIComponent(trashedCopy)}`)).status(),
+  ).toBe(404)
 })
 
 test('each row offers exactly what it can honour', async ({ page }) => {

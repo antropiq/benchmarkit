@@ -7,6 +7,7 @@ that exercises a cap patches it here — ``editorfs.constants.MAX_TREE_ENTRIES_P
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -87,12 +88,30 @@ MTIME_GUARD_EPSILON = 0.01
 
 # -- delete: the trash, never ``unlink`` --------------------------------------
 
-# Where a deleted path is *moved* to, one dated batch per delete. In the app
-# repo for the same reason as ``BACKUP_DIR``: the working location may be
-# ``$HOME``, so a trash folder inside it would be a second copy of the user's
-# home — and it would show up in the ``git status`` of whatever is being
-# edited. ``logs/`` is gitignored already.
-TRASH_DIR = PROJECT_ROOT / "logs" / "trash"
+# Where a deleted path is *moved* to, one dated batch per delete: the active
+# workspace's own reserved folder, ``<workspace>/.nojae/trash``, resolved **per
+# call** by :func:`editorfs.mutate.trash_dir` — so a settings switch moves the
+# trash with the workspace instead of filing another project's deleted bytes
+# inside the install directory.
+#
+# A trash inside the workspace is not the second copy of ``$HOME`` the old
+# comment feared: the move is a *rename*, so the folder holds exactly what the
+# user deleted and nothing that is still on disk. And it is not browsable —
+# ``.nojae`` is reserved by code in every workspace (pol-00 D5), hidden from the
+# tree, the read and the write route whatever the policy file says. That is a
+# stronger guarantee than the level-A ``logs/**`` rule this replaces, which was
+# only live while the workspace was benchmarkit's own checkout.
+TRASH_SUBDIR: str = "trash"
+
+# ``None`` = derive from the active workspace (``<root>/.nojae/trash``). A test
+# — or a deployment — that pins one absolute folder sets this instead; it is
+# read at call time, never captured at import, which is what keeps the pin
+# patchable in the ``lsphub.constants`` style.
+TRASH_DIR: Optional[Path] = None
+
+# Where the batches the *old* code wrote still live. Swept by ``sweep_trash``,
+# never written to again.
+LEGACY_TRASH_DIR = PROJECT_ROOT / "logs" / "trash"
 
 # How long a trashed batch stays recoverable, swept on the same reasoning as
 # ``BACKUP_PRUNE_DAYS``. It is what lets the confirmation name a number out

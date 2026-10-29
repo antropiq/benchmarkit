@@ -30,8 +30,14 @@ same configured model interactively.
   Monaco pane: save, create, rename and delete files and folders, with git
   status badges and an integrated terminal.
 - **Deleted files are not lost** — the Editor never removes a file outright; it
-  moves it into a dated batch under `logs/trash/` (kept 30 days), and each save
-  keeps the previous bytes in `logs/editor_backups/`.
+  moves it into a dated batch under `.nojae/trash/` of the **current** working
+  location (kept 30 days), so the batch is a `mv` away from the tree it came
+  from; each save keeps the previous bytes in `logs/editor_backups/`. That
+  folder is reserved — hidden from the tree, the read and the write routes — so
+  you restore it from a terminal. One wrinkle to know: `.nojae/` is only in
+  benchmarkit's own `.gitignore`, so in a *foreign* project's `git status` it
+  shows as untracked; the app never edits a repository it was pointed at, so it
+  will not add it to your `.gitignore` for you.
 - **Optional MCP tools in Chat** — declare MCP connectors (remote HTTP or
   local stdio) in `mcp_connectors/externals.json` and tick them in Settings so
   the chat model can browse the web, read docs or run whitelisted shell

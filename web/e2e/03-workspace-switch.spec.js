@@ -101,10 +101,41 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   await expect(rootRow).toHaveAttribute('title', new RegExp(original))
   // The scratch folder the spec created is back in the listing (it is a
   // top-level folder of this workspace, and no policy rule names it). What the
-  // root can *not* list is `.nojae` — reserved — and `logs`, which
-  // benchmarkit's own rules hide as the app's backups and trash.
+  // root can *not* list is `.nojae` — reserved, and holding this workspace's
+  // policy *and* its trash — and `logs`, which benchmarkit's own rules hide as
+  // the app's backups.
   await expect(page.locator('.tree-row[data-path="e2e-ws-root"]')).toBeVisible()
   await expect(page.locator('.tree-row[data-path="logs"]')).toHaveCount(0)
+  await expect(page.locator('.tree-row[data-path=".nojae"]')).toHaveCount(0)
+})
+
+// The other half of "one value moves everything": the trash moves with the
+// root too. Deleting inside a switched-in workspace must file its batch under
+// *that* workspace's reserved folder — not under the install directory the app
+// booted from, where a foreign project's deleted bytes have no business being.
+test('a delete in a switched-in workspace trashes under that workspace', async ({
+  page,
+  request,
+}) => {
+  const original = await currentRoot(request)
+  bootRoot = original
+  expect((await create(request, SCRATCH, true)).ok()).toBe(true)
+  expect((await create(request, `${SCRATCH}/gone.txt`)).ok()).toBe(true)
+  const scratchAbs = `${original}/${SCRATCH}`
+
+  await page.goto('/')
+  await setRoot(page, scratchAbs)
+
+  const res = await request.delete('/api/fs/file?path=gone.txt')
+  expect(res.ok(), await res.text()).toBe(true)
+  const body = await res.json()
+  // Working-location-relative, the digest-and-stamp batch name the delete
+  // invents — and this time the location it is relative to is the new root.
+  expect(body.trashedTo).toMatch(/^\.nojae\/trash\/[0-9a-f]{12}_/)
+  // The batch lives under the *switched-in* root, layout and all, and the
+  // install directory gained nothing.
+  expect(fs.existsSync(path.join(scratchAbs, body.trashedTo))).toBe(true)
+  expect(fs.existsSync(path.join(scratchAbs, body.trashedTo, 'gone.txt'))).toBe(true)
 })
 
 test('unsaved edits are reported when the switch closes their tab', async ({ page, request }) => {

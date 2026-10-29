@@ -11,7 +11,8 @@ sibling of ``tree.py``/``files.py``. Entry points:
   one where the policy has the most ways to go wrong, because two
   user-supplied paths describe one filesystem action.
 * :func:`trash_path` — the delete route: one file or one whole folder, **moved**
-  into a dated batch under ``constants.TRASH_DIR`` and never ``unlink``ed, so a
+  into a dated batch under the active workspace's own trash (``trash_dir()``,
+  ``<workspace>/.nojae/trash``) and never ``unlink``ed, so a
   mistaken delete is a ``mv`` away from being undone.
 
 The gate is the one the save goes through — the whole ancestor chain, each level
@@ -315,6 +316,40 @@ def rename_path(frm: str, to: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def trash_dir() -> Path:
+    """The active workspace's trash — ``.nojae/trash`` under the resolved root.
+
+    Resolved **per call**, never captured at import: a settings switch changes
+    :func:`editorfs.policy.workspace_root`, and the very next delete has to file
+    into the new root rather than into the install directory it was pointed at
+    when the module was imported.
+
+    ``constants.TRASH_DIR`` stays as the pin for a test (or a deployment) that
+    wants one absolute folder instead; it is read here, at call time.
+
+    Nothing in :mod:`editorfs.constants` may import :mod:`editorfs.policy` (the
+    package imports ``policy`` *from* ``constants``, and a cycle through a
+    partially-initialised module is not worth one helper), which is why the
+    resolver lives here — the one module that already imports both sides.
+
+    The destination is app-chosen space inside the reserved folder, so it is
+    **never** put through the write gate: the gate refuses every ``.nojae/...``
+    path with a 422 naming the reservation, and a delete that gated its own
+    destination could never move anything. Only the *source* is gated.
+
+    ``resolve()`` normalises both sides of every later comparison — the batch
+    label rebases on this path, and :func:`_rel_in_workspace` works on the
+    resolved root, so a symlinked workspace spelling must not leave the label
+    absolute by an accident of spelling.
+    """
+    override = constants.TRASH_DIR
+    if override is not None:
+        return Path(override).resolve()
+    return Path(
+        workspace_root(), constants.POLICY_DIRNAME, constants.TRASH_SUBDIR
+    ).resolve()
+
+
 def trash_digest(resolved: Path) -> str:
     """The digest identifying *what* a trashed batch holds.
 
@@ -332,7 +367,19 @@ def trash_batches() -> List[Path]:
     Public because a test asserts the shape of what a delete leaves behind
     without re-deriving the naming scheme.
     """
-    trash = Path(constants.TRASH_DIR)
+    trash = trash_dir()
+    if not trash.is_dir():
+        return []
+    return sorted(item for item in trash.iterdir() if item.is_dir())
+
+
+def _legacy_batches() -> List[Path]:
+    """Batches the *old* code wrote under ``logs/trash`` — swept, never written.
+
+    Separate from :func:`trash_batches` so that one stays exactly what its
+    docstring promises: the active workspace's own batches.
+    """
+    trash = Path(constants.LEGACY_TRASH_DIR)
     if not trash.is_dir():
         return []
     return sorted(item for item in trash.iterdir() if item.is_dir())
@@ -345,20 +392,33 @@ def sweep_trash(*, older_than_days: Optional[int] = None,
     The shape of the fedit connector's ``prune_old_backups`` — age is the only
     signal that still works for a path that no longer exists, the scan is one
     directory level, and it is called from the write path so it never raises: a
-    batch that cannot be deleted is not worth failing a delete over. It is
-    deliberately *not* imported across the connector boundary (``src/`` does not
-    depend on ``mcp_connectors/`` except for the one lazily-imported policy
-    module).
+    batch that cannot be deleted is not worth failing a delete over.
+
+    It prunes **both** the active workspace's trash and the legacy
+    ``logs/trash`` folder the batches written before this task live in. The
+    legacy folder is only ever expired, never *moved* into the new shape:
+    rewriting bytes nobody is looking at is a worse surprise than a batch that
+    outlives its usefulness one day longer, and age is the only signal left for
+    a path the app no longer addresses. Because the sweep is best-effort, it is
+    also called once from the app's startup, so the legacy folder drains even
+    when no further delete ever happens.
+
+    Like the move it follows, the sweep walks these folders with plain ``os`` /
+    ``shutil`` calls — the trash sits inside the reserved folder, which the
+    gate refuses to *address*, and the sweep is the app tidying its own space
+    rather than a request naming a path. It is deliberately *not* imported
+    across the connector boundary (``src/`` does not depend on
+    ``mcp_connectors/`` except for the shared policy modules).
     """
     days = (
         constants.TRASH_RETENTION_DAYS if older_than_days is None else older_than_days
     )
-    trash = Path(constants.TRASH_DIR)
     if days <= 0:
         return 0
     cutoff = (now if now is not None else time.time()) - days * 86400
     removed = 0
-    for item in trash_batches():
+    folders = [trash_dir(), Path(constants.LEGACY_TRASH_DIR)]
+    for item in trash_batches() + _legacy_batches():
         try:
             if item.stat().st_mtime >= cutoff:
                 continue
@@ -367,7 +427,8 @@ def sweep_trash(*, older_than_days: Optional[int] = None,
         except OSError:
             continue
     if removed:
-        fsync_dir(str(trash))
+        for folder in folders:
+            fsync_dir(str(folder))
     return removed
 
 
@@ -453,14 +514,19 @@ def _subtree_refusal(
 def _batch_label(batch: Path) -> str:
     """How the trash folder is named back to the browser.
 
-    Repo-relative (``logs/trash/<batch>``) when it is the repo's own trash,
-    because that is a path the user can ``cd`` to from the app's directory and
-    the confirmation can quote. Absolute when a deployment (or a test) moved
-    ``TRASH_DIR`` elsewhere — a label that is wrong is worse than one that is
-    longer.
+    **Workspace-relative** (``.nojae/trash/<batch>``) whenever the batch sits in
+    the active workspace's trash — the same frame every other Editor payload
+    uses, and the one the e2e witness joins onto the working location. It names
+    a folder the pane *deliberately cannot open* (the reserved folder is hidden
+    from the tree and the read route), so the confirmation has to phrase it as a
+    path to ``cd`` to in a terminal, not as a browsable location.
+
+    Absolute when a deployment (or a test) pinned ``TRASH_DIR`` outside the
+    workspace — a label that is wrong is worse than one that is longer.
     """
+    workspace = Path(workspace_root())
     try:
-        return str(batch.relative_to(constants.PROJECT_ROOT))
+        return str(batch.relative_to(workspace))
     except ValueError:
         return str(batch)
 
@@ -484,20 +550,31 @@ def trash_path(rel: str) -> Dict[str, Any]:
       descendant with the write flavour, symlinks not followed. One denied
       path → 422 naming it, and **nothing moves**;
     * the move: ``shutil.move`` of the top-level entry into
-      ``TRASH_DIR/<digest>_<stamp>/<the path exactly as it was, relative to the
-      workspace>``. Keeping the relative layout is what makes a restore a plain
-      ``mv`` — with a bare ``f.py`` one cannot tell ``src/f.py`` from
-      ``web/f.py``, and a name collision inside one batch would be data loss.
+      ``trash_dir()/<digest>_<stamp>/<the path exactly as it was, relative to the
+      workspace>`` — ``trash_dir()`` being the **active** workspace's
+      ``.nojae/trash``, asked here rather than at import so a settings switch is
+      followed by the very next delete. Keeping the relative layout is what makes
+      a restore a plain ``mv`` — with a bare ``f.py`` one cannot tell ``src/f.py``
+      from ``web/f.py``, and a name collision inside one batch would be data loss.
       ``shutil.move`` preserves the subtree, and on a workspace that sits on
       another filesystem it degrades to a copy + delete: slower, and correct,
-      which is the trade being taken here;
+      which is the trade being taken here.
+      The **destination** is built with plain ``mkdir`` calls and is never put
+      through :func:`resolve_write_target`: it lives under the reserved folder,
+      which that gate refuses for every path that names it, and it is app-chosen
+      space no route can address anyway. Only the source is gated.
+      A batch can never be trashed into itself either — nothing can delete
+      ``.nojae`` or anything inside it, and no folder under the root contains the
+      trash path — so the ``shutil.move`` "directory into itself" hazard does not
+      arise.
     * the sweep (:func:`sweep_trash`) runs after the move, so a failed prune can
       never lose the copy that was just made.
 
     The payload answers ``path``, ``dir``, the batch (``trashedTo``, relative to
-    the app repo so the confirmation can name a path the user can ``cd`` to) and
-    ``entries`` — the descendant count from the server's own walk, which is the
-    number the confirmation dialog already promised.
+    the working location — a folder the pane cannot open, so the confirmation
+    names it as something to ``cd`` to in a terminal) and ``entries`` — the
+    descendant count from the server's own walk, which is the number the
+    confirmation dialog already promised.
     """
     normalised = normalise_rel(rel)
     if normalised == "":
@@ -526,7 +603,7 @@ def trash_path(rel: str) -> Dict[str, Any]:
     if subtree_error is not None:
         raise subtree_error
 
-    trash = Path(constants.TRASH_DIR)
+    trash = trash_dir()
     trash.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S.%f")
     batch = trash / f"{trash_digest(resolved)}_{stamp}"

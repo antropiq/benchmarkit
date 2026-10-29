@@ -132,7 +132,7 @@ function stubRoutes({ saveAnswer = null, texts = {} } = {}) {
           path,
           dir: !!entry?.dir,
           entries: 0,
-          trashedTo: `logs/trash/abc-${nameOf(path)}`,
+          trashedTo: `.nojae/trash/abc-${nameOf(path)}`,
         })
       }
       if (init?.method === 'PUT') {
@@ -359,7 +359,10 @@ describe('a mutation meeting the layer that is not its own', () => {
     expect(files.state.open).toHaveLength(0)
     // One confirmation about the folder, not one per buffer.
     expect(notices.state.notices.map((item) => item.tone)).toEqual(['ok'])
-    expect(notices.state.notices[0].text).toContain('logs/trash')
+    // The notice quotes the *route's* batch, not a client-side guess: the
+    // server named `.nojae/trash/abc-src`, and that is the word of record the
+    // confirmation shows (the reserved folder is not listable in the tree).
+    expect(notices.state.notices[0].text).toContain('.nojae/trash/abc-src')
     // And the work is gone, which is why the dialog asked first.
     expect(files.dirtyCount.value).toBe(0)
   })
@@ -406,6 +409,15 @@ describe('the tree and the dialogs, side by side', () => {
     await flushPromises()
     const dialog = host.querySelector('.editor-delete-dialog')
     expect(dialog?.open).toBe(true)
+
+    // The promise the confirmation makes *before* the request exists: the
+    // workspace's reserved trash folder, spelled like the server's, and said to
+    // be a place the pane cannot open. The exact batch belongs to the route's
+    // `trashedTo`, quoted by the notice once the delete answers.
+    const keeps = host.querySelector('.editor-delete-keeps')
+    expect(keeps.textContent).toContain('.nojae/trash')
+    expect(keeps.textContent).toContain('reserved')
+    expect(keeps.textContent).not.toContain('logs/trash')
 
     for (const key of ['n', 'N', 'F2', 'Delete', 'r', 'ArrowDown']) {
       dialog.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))

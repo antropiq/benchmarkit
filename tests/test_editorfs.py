@@ -357,6 +357,10 @@ class TestBenchmarksOwnWorkspaceAtTheRoutes:
         (root / "src").mkdir(parents=True)
         (root / ".env").write_text("ENDPOINT=x\n", encoding="utf-8")
         (root / "src" / ".env.local").write_text("SECRET=1\n", encoding="utf-8")
+        # ``logs/`` is level A's *backups* folder. A batch under the legacy
+        # ``logs/trash`` name is planted here because the rule is about the whole
+        # tree, not about which artefact still lives in it — the live trash is in
+        # the reserved ``.nojae/trash`` (see ``tests/test_editorfs_write.py``).
         (root / "logs" / "trash").mkdir(parents=True)
         (root / "logs" / "trash" / "x").write_text("kept\n", encoding="utf-8")
         monkeypatch.setattr(editorfs.constants, "PROJECT_ROOT", root)

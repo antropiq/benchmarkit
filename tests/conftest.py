@@ -1,7 +1,9 @@
+from pathlib import Path
 from typing import Iterator
 
 import pytest
 
+from src.core import editorfs
 from src.core.job import RunJob
 
 
@@ -15,6 +17,22 @@ def _no_mcp_processes(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_lsp_processes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never spawn real language servers from app lifespans in tests."""
     monkeypatch.setenv("BENCHMARKIT_DISABLE_LSP", "1")
+
+
+@pytest.fixture(autouse=True)
+def _no_trash_of_its_own(monkeypatch: pytest.MonkeyPatch,
+                         tmp_path: Path) -> None:
+    """Keep every test's sweep off the app repo's legacy ``logs/trash``.
+
+    ``sweep_trash`` prunes that folder as well as the workspace's own, and the
+    app sweeps once at boot — so without this pin, running the suite would
+    expire the developer's real old batches. Tests that assert about batches
+    patch ``TRASH_DIR``/``LEGACY_TRASH_DIR`` themselves (the ``trash`` /
+    ``legacy_trash`` fixtures); this only closes the paths that never ask.
+    """
+    monkeypatch.setattr(
+        editorfs.constants, "LEGACY_TRASH_DIR", tmp_path / "legacy-trash-unused"
+    )
 
 
 @pytest.fixture(autouse=True)

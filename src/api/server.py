@@ -22,7 +22,7 @@ from src.config import (
 )
 from src.core.mcphub import McpManager, load_externals
 from src.core.lsphub import LspManager, all_servers
-from src.core.editorfs import policy_seed
+from src.core.editorfs import mutate as editorfs_mutate, policy_seed
 from src.core.termhub import TerminalHub
 from src.config import lsp_enabled_ids
 
@@ -52,6 +52,25 @@ def _seed_workspace_policy() -> Dict[str, Any]:
             result["error"],
         )
     return result
+
+
+def _sweep_trash() -> None:
+    """Expire old trash batches — including the pre-``.nojae`` ones in ``logs/``.
+
+    The sweep normally runs after a delete, so a folder nothing is ever deleted
+    into again would rot forever. One best-effort call per boot is the cheapest
+    way to keep the legacy ``logs/trash`` batches from outliving their
+    retention, and the same rule as the seed above applies: a folder this app
+    could not prune must not take the boot down with it. It never *moves* those
+    batches, only lets them expire.
+    """
+    try:
+        removed = editorfs_mutate.sweep_trash()
+    except Exception as exc:  # noqa: BLE001 — boot must survive anything here
+        _log.warning("could not sweep the trash: %s", exc)
+        return
+    if removed:
+        _log.info("removed %d expired trash batch(es)", removed)
 
 
 def create_app() -> FastAPI:
@@ -90,6 +109,11 @@ def create_app() -> FastAPI:
     # honest place. Failure is a note in the log, never a boot failure: an
     # unseeded workspace still works, it just has no level-B rules yet.
     _seed_workspace_policy()
+    # And drain the trash of whichever location that is, plus the legacy
+    # ``logs/trash`` batches the pre-``.nojae`` code wrote here. Age is the only
+    # signal for a batch nobody addresses any more, and a boot is the one moment
+    # guaranteed to happen even if no further delete ever does.
+    _sweep_trash()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

@@ -383,7 +383,7 @@ describe('the children flag: no listing may lie about a folder', () => {
 
     vi.spyOn(globalThis, 'fetch').mockImplementation((url, init) => {
       if (String(url).startsWith('/api/fs/file') && init?.method === 'DELETE') {
-        return jsonResponse({ path: 'src', dir: true, entries: 2, trashedTo: 'logs/trash/ab/src' })
+        return jsonResponse({ path: 'src', dir: true, entries: 2, trashedTo: '.nojae/trash/ab/src' })
       }
       return jsonResponse({
         path: '',

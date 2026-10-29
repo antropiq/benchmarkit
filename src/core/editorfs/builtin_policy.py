@@ -72,13 +72,14 @@ BUILTIN_RULES: Tuple[Tuple[str, str, str], ...] = (
         shared.HIDDEN,
         "benchmarkit regenerates it from the settings template on every save",
     ),
-    # New with this lot, and a bug fix: ``BACKUP_DIR`` and ``TRASH_DIR``
-    # (``constants.py``) live under ``logs/`` — outside the workspace *by path*,
-    # but inside the tree whenever the workspace is the repo. So the Editor could
-    # browse the app's own pre-save copies and its trash. A workspace pointed at
-    # another project has no reason to hide a folder called ``logs``, which is
-    # exactly why this rule is level A and not the seeded file.
-    ("logs/**", shared.HIDDEN, "the app's own backups and trash"),
+    # ``BACKUP_DIR`` (``constants.py``) lives under ``logs/``, beside the
+    # ``fedit`` connector's chain — outside the workspace *by path*, but inside
+    # the tree whenever the workspace is the repo, so the Editor could browse
+    # the app's own pre-save copies. A workspace pointed at another project has
+    # no reason to hide a folder called ``logs``, which is exactly why this rule
+    # is level A and not the seeded file. The trash is not in here: it lives in
+    # each workspace's reserved ``.nojae/trash``, hidden by D5's reservation.
+    ("logs/**", shared.HIDDEN, "the app's own backups"),
     # Build output: worth looking at, never worth hand-editing, and
     # ``npm run build`` overwrites whatever is there.
     ("web/dist/**", shared.READ_ONLY, "vite build output"),

@@ -130,7 +130,7 @@ Measurement rules hold across every stream:
 | `results.json` | Run output, written once when a run ends. |
 | `mcp_connectors/externals.json` | MCP connectors: `remote` (HTTP) or `local` (stdio). |
 | `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
-| `<working location>/.nojae/read-write-policy.json` | The workspace's own read-write rules; seeded when a folder becomes the working location, edited only outside the app. |
+| `<working location>/.nojae/` | The workspace's reserved folder: `read-write-policy.json` holds its own read-write rules (seeded when a folder becomes the working location, edited only outside the app), and `trash/` holds the dated batches the Editor's deletes move. |
 
 Any new file in `resources/` becomes a selectable set. The `.env`, `.env.test`
 and the hub declaration files are gitignored, may hold secrets, and each has a
