@@ -113,21 +113,28 @@ const {
         @scroll.passive="onScroll"
       >
         <template v-for="(message, i) in state.messages" :key="i">
-          <div v-if="message.role === 'user'" class="chat-user-row">
-            <button
-              v-if="i === lastUserIndex && state.phase === 'idle' && !batch.active"
-              class="icon-btn chat-edit-btn"
-              type="button"
-              aria-label="Edit and resend"
-              title="Edit and resend"
-              @click="editLast"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
-              </svg>
-            </button>
+          <div v-if="message.role === 'user'" class="chat-turn">
             <div class="chat-bubble">
+              <span class="chat-turn-chip chat-turn-avatar" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="8" r="4" />
+                  <path d="M4 21a8 8 0 0 1 16 0" />
+                </svg>
+              </span>
+              <button
+                v-if="i === lastUserIndex && state.phase === 'idle' && !batch.active"
+                class="chat-turn-chip chat-turn-edit"
+                type="button"
+                aria-label="Edit and resend"
+                title="Edit and resend"
+                @click="editLast"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
               <button
                 v-for="(image, j) in message.images ?? []"
                 :key="j"

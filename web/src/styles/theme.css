@@ -1775,34 +1775,66 @@ body {
   animation: bi-pulse 1.2s ease-in-out infinite;
 }
 
-/* Right-aligned row holding the edit pencil to the left of a user bubble. */
-.chat-user-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 0.4rem;
-  width: 100%;
+/* A user turn is as wide as the assistant's card, so the two affordances that
+   mark it - the user icon and the edit pencil - hang off the bubble's top
+   corners instead of sitting beside it: as flex siblings each would steal about
+   1.6rem of the width the message wants. They are children of the *bubble*
+   (whose padding-box is the containing block) offset by half their own size, so
+   each chip straddles the corner it marks: half outside, half recovering part
+   of the panel. */
+.chat-turn {
+  /* BFC: keeps the bubble's top offset margin inside the turn, so the panel's
+     own gap stays the vertical rhythm between turns. */
+  display: flow-root;
+  min-width: 0;
 }
 
-/* Inside the row the cross axis is vertical: align-self flex-end (the column
-   rule below) would bottom-pin the bubble next to the button. */
-.chat-user-row .chat-bubble {
-  align-self: auto;
+.chat-turn .chat-bubble {
+  position: relative;
+  margin: 0.9rem 0 0 0.85rem;
+  /* Extra top padding keeps the first line clear of both chips. */
+  padding-top: 1.1rem;
 }
 
-.chat-edit-btn {
-  flex: none;
-  opacity: 0.45;
+.chat-turn-chip {
+  position: absolute;
+  top: -0.8rem;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--pico-primary) 35%, transparent);
+  border-radius: 50%;
+  /* Opaque like the panel behind, so a chip reads as punched over the bubble
+     rather than merged into its tint. Pico forces `--pico-color: white` onto
+     every <button>, so the glyph colour is set here rather than inherited. */
+  background-color: var(--bi-surface);
+  color: var(--pico-muted-color);
 }
 
-.chat-edit-btn:hover,
-.chat-edit-btn:focus-visible {
-  opacity: 1;
+.chat-turn-avatar {
+  left: -0.8rem;
 }
 
+.chat-turn-edit {
+  right: -0.8rem;
+  cursor: pointer;
+}
+
+.chat-turn-edit:hover,
+.chat-turn-edit:focus-visible {
+  color: var(--bi-icon);
+  border-color: var(--pico-primary);
+}
+
+/* Every user-side bubble - a sent turn or the composer draft - fills the
+   panel's width like the assistant's card does. Nothing else uses this class,
+   so width lives here once rather than per caller. */
 .chat-bubble {
-  align-self: flex-end;
-  max-width: min(75%, 46rem);
+  align-self: stretch;
+  max-width: none;
   margin: 0;
   padding: 0.6rem 0.9rem;
   border: 1px solid color-mix(in srgb, var(--pico-primary) 35%, transparent);
@@ -1811,9 +1843,11 @@ body {
   overflow-wrap: break-word;
 }
 
-/* Live markdown preview of the composer draft: same typography as a sent
-   user bubble, dimmed with a dashed border until it becomes the message. */
+/* Live markdown preview of the composer draft: same box as a sent user bubble
+   (so it lines up with it) but dashed and dimmed until it becomes the message.
+   It owns no chips, so only the indent is inherited. */
 .chat-bubble--draft {
+  margin-left: 0.85rem;
   border-style: dashed;
   opacity: 0.7;
 }
