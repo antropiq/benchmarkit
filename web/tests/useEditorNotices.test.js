@@ -172,9 +172,11 @@ describe('what the callers put in the stack', () => {
   // written, prefixed by what was attempted, naming the path the request
   // carried — never rewritten, never a bare status code.
   it('a refused save becomes the attempt plus the server sentence', async () => {
+    // The policy's own sentence (pol-06): level, mode and the pattern that
+    // matched, verbatim — what the pane shows is what the policy file holds.
     const detail =
-      "Path is refused by the connector path policy: inside 'mcp_connectors', " +
-      'which connectors never write to it'
+      'Refused by the workspace policy: "**/mcp_connectors" (read-only) ' +
+      '— nothing under it may change'
     vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() =>
       jsonResponse({ path: 'mcp_connectors/x.py', text: 'one\n', mtime: 1000, size: 4 }),
     )

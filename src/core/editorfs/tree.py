@@ -14,11 +14,15 @@ What the payload promises (each rule mirrored by a test):
   descendant is edited, which is why the freshness probe stats open files
   directly instead of inferring from the tree.);
 * ``children`` on a directory means "expanding it will show something":
-  non-empty *and* not everything in it ignored — decided with one ``any()``,
+  non-empty *and* not everything in it hidden — decided with one ``any()``,
   never a second full listing;
-* denied siblings are **omitted**, not marked. The navigator's footer explains
-  that some files are hidden by the connector policy, so the UI never has to
-  render a lock icon (or leak that a secret file exists);
+* siblings the policy marks ``hidden`` are **omitted**, not marked, so the UI
+  never has to render a lock icon (or leak that the name exists);
+* a ``hidden`` **directory is pruned, not walked** — one verdict on its own name
+  and no ``scandir`` below it, so nothing under it is reachable at all, not even
+  a path a later rule would have carved back out (pol-00). A rule author who
+  wants the folder browsable but most of its contents invisible writes ``ro`` on
+  the folder and ``hidden`` on the children;
 * a symlinked directory is listed but not followed, so the tree can never walk
   out of the workspace one hop at a time.
 """
@@ -28,12 +32,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import constants
-from .policy import (
-    WorkspacePathError,
-    listable,
-    resolve_in_workspace,
-    workspace_root,
-)
+from .policy import WorkspacePathError, resolve_in_workspace, workspace_root
+from .policy_modes import mode_for
+from .constants import policy_shared as shared
 
 
 def _name_key(entry: Dict[str, Any]) -> Tuple[str, str]:
@@ -41,18 +42,30 @@ def _name_key(entry: Dict[str, Any]) -> Tuple[str, str]:
     return (entry["name"].lower(), entry["name"])
 
 
-def _has_children(path: Path) -> bool:
+def _rel_of(parent_rel: str, name: str) -> str:
+    """The normalised workspace-relative path of one child.
+
+    The form every rule is written against, and the same string the payload
+    carries in ``path`` — so the verdict that decided whether to list an entry
+    and the path the browser clicks on are one and the same text. Never the
+    absolute path: a workspace of ``$HOME`` would match ``web/**`` by accident.
+    """
+    return f"{parent_rel}/{name}" if parent_rel else name
+
+
+def _has_children(path: Path, rel: str) -> bool:
     """True when expanding ``path`` would show at least one entry.
 
-    One ``any()`` over the raw ``scandir`` — the same two filters the listing
-    applies (ignored name, deny-list), so ``children: false`` never promises an
-    empty branch that then lists something.
+    One ``any()`` over the raw ``scandir`` — and the *same* filter the listing
+    applies, one verdict per child name, so ``children: false`` never promises
+    an empty branch that then lists something. That promise only holds while the
+    two ask the same question of the same paths, which is why neither one gets
+    its own copy of a rule.
     """
     try:
         with os.scandir(path) as scan:
             return any(
-                entry.name not in constants.IGNORED_DIR_NAMES
-                and listable(Path(entry.path))
+                mode_for(_rel_of(rel, entry.name)).mode != shared.HIDDEN
                 for entry in scan
             )
     except OSError:
@@ -65,10 +78,11 @@ def list_dir(rel: Optional[str] = None) -> Dict[str, Any]:
     """The tree payload for one level of the workspace.
 
     ``rel`` is workspace-relative ("" is the root). Raises
-    :class:`~src.core.editorfs.policy.WorkspacePathError` with 422 when the
-    path escapes the workspace or the deny-list refuses it, 404 when it is not
-    there, and 400 when the caller asked for a file — three different things
-    for the navigator to say.
+    :class:`~src.core.editorfs.policy.WorkspacePathError` with 422 when the path
+    escapes the workspace, 404 when it is not there **or a policy hides it** (an
+    observation of a hidden path must be indistinguishable from absence), and 400
+    when the caller asked for a file — three different things for the navigator
+    to say.
     """
     normalised, resolved = resolve_in_workspace(rel)
     if resolved.is_file():
@@ -82,11 +96,12 @@ def list_dir(rel: Optional[str] = None) -> Dict[str, Any]:
     try:
         with os.scandir(resolved) as scan:
             for scan_entry in scan:
-                if scan_entry.name in constants.IGNORED_DIR_NAMES:
+                child_rel = _rel_of(normalised, scan_entry.name)
+                # One verdict, and it is a *prune*: a hidden folder costs no
+                # second ``scandir``, so nothing below it is ever reached.
+                if mode_for(child_rel).mode == shared.HIDDEN:
                     continue
                 child = Path(scan_entry.path)
-                if not listable(child):
-                    continue
                 try:
                     stat = scan_entry.stat(follow_symlinks=False)
                 except OSError:
@@ -97,12 +112,12 @@ def list_dir(rel: Optional[str] = None) -> Dict[str, Any]:
                 is_dir = scan_entry.is_dir(follow_symlinks=False)
                 entry: Dict[str, Any] = {
                     "name": scan_entry.name,
-                    "path": f"{normalised}/{scan_entry.name}" if normalised else scan_entry.name,
+                    "path": child_rel,
                     "dir": is_dir,
                     "mtime": stat.st_mtime,
                 }
                 if is_dir:
-                    entry["children"] = _has_children(child)
+                    entry["children"] = _has_children(child, child_rel)
                     dirs.append(entry)
                 else:
                     entry["size"] = stat.st_size

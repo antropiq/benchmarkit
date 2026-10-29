@@ -5,9 +5,26 @@ that exercises a cap patches it here — ``editorfs.constants.MAX_TREE_ENTRIES_P
 — instead of reaching into the function that reads it.
 """
 
+import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# The shared policy modules live outside ``src`` so the two stdio connectors can
+# read them too (pol-08), so they are imported the connectors' own way — the same
+# ``sys.path`` fallback ``core.batch`` uses, because the project root is not
+# always on the path. They hold the vocabulary and the machinery, never a rule
+# list: that is what ``.nojae/read-write-policy.json`` and ``builtin_policy`` are.
+# ``policy_glob`` (pol-02) is the matcher both policy levels are evaluated with,
+# and level A (pol-03) is written in that pattern language, so it is mirrored
+# here beside the vocabulary for the same reason: patchability.
+try:
+    from mcp_connectors import policy_glob, policy_shared
+except ImportError:  # pragma: no cover - depends on how the app is started
+    root = str(PROJECT_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from mcp_connectors import policy_glob, policy_shared  # type: ignore[no-redef]
 
 # Entries one directory listing may return. A huge checkout stays responsive
 # because the tree is one level per request, and the cap bounds even that one
@@ -33,23 +50,15 @@ GIT_COMMAND_TIMEOUT = 10.0
 # bounded list plus ``truncated: true`` instead of a huge response.
 MAX_STATUS_ENTRIES = 5000
 
-# Directory names never offered by the tree. A productivity default, not a
-# security rule — the deny-list in ``mcp_connectors/path_policy.py`` is the
-# security rule (``.git`` is denied there too, so it could never appear).
-# Kept here as a module attribute so a deployment can widen or narrow it
-# without touching the component.
-IGNORED_DIR_NAMES: frozenset[str] = frozenset(
-    {
-        ".git",
-        "node_modules",
-        "__pycache__",
-        ".venv",
-        "dist",
-        ".pytest_cache",
-        ".coverage",
-    }
-)
-
+# -- the path-policy vocabulary, mirrored from ``mcp_connectors/policy_shared`` --
+#
+# Those names live outside ``src`` so the two stdio connectors can read them
+# too (pol-08), and a test patches *this* copy — the ``mcphub.constants`` /
+# ``lsphub.constants`` convention: a module attribute exists precisely so a test
+# can move the lookup without touching the connector processes' default.
+POLICY_DIRNAME: str = policy_shared.POLICY_DIRNAME
+POLICY_FILENAME: str = policy_shared.POLICY_FILENAME
+POLICY_VERSION: int = policy_shared.POLICY_VERSION
 
 # -- the guarded write surface -------------------------------------------------
 

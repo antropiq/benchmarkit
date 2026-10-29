@@ -9,14 +9,19 @@ import { join } from 'node:path'
 // own Editor surface and **no LLM call is needed**. The server is the witness
 // for the result (the file is read back through the API, never inferred from
 // what the DOM drew), and the server's *wording* is part of the assertion for
-// the refusals: a connector rule a human cannot read is a rule that gets
-// worked around.
+// the refusals: a rule a human cannot read or change is a rule that gets
+// worked around, so each refusal here is asserted by the sentence that names
+// the level and the pattern.
 //
-// The scratch lives under `logs/` — gitignored, already part of what the tree
-// browses, and outside every protected name. Each test starts by trashing it,
-// because a leftover from an interrupted run would turn this run's create into
-// a 409 and its rename into a collision with a collapsed row.
-const SCRATCH = 'logs/e2e-write'
+// The scratch is a top-level folder — gitignored, and **visible to the pane**.
+// It used to live under `logs/`, and that no longer works: benchmarkit's own
+// rules hide `logs/**` from the tree, the read and the write routes, because
+// that is where the app keeps its backups and its trash. Each test starts by
+// trashing the scratch, because a leftover from an interrupted run would turn
+// this run's create into a 409 and its rename into a collision with a
+// collapsed row.
+const SCRATCH = 'e2e-write'
+const TRASH_BATCH = 'logs/trash'
 
 async function trash(request, path) {
   return request.delete(`/api/fs/file?path=${encodeURIComponent(path)}`)
@@ -36,12 +41,12 @@ async function diskExists(request, path) {
 }
 
 // A protected name is the one path `diskExists` cannot ask about: `/api/fs/stat`
-// answers it with a 422 refusal rather than `exists: false`, so the probe can
-// never be used to learn whether a secret file is there (and the tree omits
-// denied siblings, so it cannot witness it either). So "nothing was created"
-// for a denied name is checked on the filesystem, with the working location the
-// server itself reports — which also makes it an independent witness, with no
-// app code in the loop.
+// answers it with `exists: false` — indistinguishable from absence, which is
+// what a hidden name means for anything that only looks (pol-00 D8) — so the
+// probe cannot tell a hidden file from a missing one, in either direction.
+// "Nothing was created" for a refused name is therefore checked on the
+// filesystem, with the working location the server itself reports, which is also
+// an independent witness with no app code in the loop.
 async function existsOnDisk(request, rel) {
   const res = await request.get('/api/path-location')
   const { path: root } = await res.json()
@@ -122,7 +127,7 @@ test('create, type, save, reload — the bytes are on disk, not just on screen',
   request,
 }) => {
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH)
+  await openFolders(page, SCRATCH)
 
   // A folder and a file inside it, both from the tree's own menu.
   await useMenuItem(page, SCRATCH, 'New folder…')
@@ -163,7 +168,7 @@ test('create, type, save, reload — the bytes are on disk, not just on screen',
   // A reload re-reads the same text, so the buffer was never the only copy.
   await page.reload()
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH, inner)
+  await openFolders(page, SCRATCH, inner)
   await page.locator(`.tree-row[data-path="${file}"]`).first().click()
   await expect(page.locator('.editor-tab-label')).toHaveText('note.txt')
   await expect(page.locator('.editor-tab-dirty')).toHaveCount(0)
@@ -183,7 +188,7 @@ test('rename from the menu — the row moves, the chip follows, the buffer saves
   expect(seeded.ok(), await seeded.text()).toBe(true)
 
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH)
+  await openFolders(page, SCRATCH)
   await page.locator(`.tree-row[data-path="${from}"]`).first().click()
   await expect(page.locator('.editor-tab')).toHaveCount(1)
 
@@ -224,7 +229,7 @@ test('delete — the row is gone, and the notice names the trash folder the rout
   expect((await create(request, file)).ok()).toBe(true)
 
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH)
+  await openFolders(page, SCRATCH)
 
   await useMenuItem(page, file, 'Delete')
   const dialog = page.locator('.editor-delete-dialog')
@@ -254,23 +259,18 @@ test('delete — the row is gone, and the notice names the trash folder the rout
   // The batch is named repo-relative so a human can cd to it, it is real, and
   // it holds the *path* that was deleted — the layout that makes a restore a
   // plain mv. (The timestamp inside the name is deliberately not asserted on.)
-  expect(body.trashedTo).toContain('logs/trash/')
-  const branch = await (
-    await request.get(`/api/fs/tree?path=${encodeURIComponent(body.trashedTo)}`)
-  ).json()
-  expect(branch.entries.map((entry) => entry.name)).toEqual(['logs'])
-  const inside = await (
-    await request.get(
-      `/api/fs/tree?path=${encodeURIComponent(`${body.trashedTo}/logs/e2e-write`)}`,
-    )
-  ).json()
-  expect(inside.entries.map((entry) => entry.name)).toEqual(['keep-me-anyway.txt'])
+  // In *this* workspace the trash is not browsable — benchmarkit's own rules
+  // hide `logs/**`, because that is where the app keeps its backups and its
+  // deleted files — so the witness is the filesystem, not the tree route.
+  expect(body.trashedTo).toContain(`${TRASH_BATCH}/`)
+  expect(await existsOnDisk(request, body.trashedTo)).toBe(true)
+  expect(await existsOnDisk(request, `${body.trashedTo}/${file}`)).toBe(true)
   expect(await diskExists(request, file)).toBe(false)
 })
 
 test('each row offers exactly what it can honour', async ({ page }) => {
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH)
+  await openFolders(page, SCRATCH)
   const file = `${SCRATCH}/menu.txt`
   expect((await create(page.request, file)).ok()).toBe(true)
   await useMenuItem(page, SCRATCH, 'Refresh')
@@ -301,24 +301,29 @@ test('each row offers exactly what it can honour', async ({ page }) => {
 
 test('a refusal reaches the DOM in the server\'s own words', async ({ page, request }) => {
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH)
+  await openFolders(page, SCRATCH)
 
-  // Creating `.env` — a name the write gate refuses. The copy is the deny-list's
-  // sentence: in the row the name was typed into, and in the notice stack for a
-  // user whose eyes are elsewhere.
+  // Creating `.env` — the app's own file, hidden by a rule this app wrote. The
+  // refusal names the **level** and the **pattern**, because "benchmarkit
+  // regenerates that file from the settings template" is a different answer from
+  // "your policy hides it", and only the second one can be edited away.
   await useMenuItem(page, SCRATCH, 'New file…')
   await page.locator('.tree-name-input').fill('.env')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.tree-name-input-error')).toContainText('connector path policy')
-  await expect(page.locator('.tree-name-input-error')).toContainText('never write to it')
+  await expect(page.locator('.tree-name-input-error')).toContainText(
+    "benchmarkit's own rules for this workspace",
+  )
+  await expect(page.locator('.tree-name-input-error')).toContainText('"**/.env**"')
   await expect(page.locator('.editor-notice--error').first()).toContainText(
     `Could not create ${SCRATCH}/.env`,
   )
   expect(await existsOnDisk(request, `${SCRATCH}/.env`)).toBe(false)
 
-  // A move into the connectors' own folder: an innocent source, a protected
-  // target. The input stays open holding the typed value, so the fix is to type
-  // again, and nothing moved.
+  // A move into a read-only folder: an innocent source, a locked target. The
+  // input stays open holding the typed value, so the fix is to type again, and
+  // nothing moved. The seeded file marks every `node_modules` read-only — the
+  // destination does not even exist yet, and the policy answers before the
+  // "parent is missing" 409 could.
   const file = `${SCRATCH}/innocent.txt`
   expect((await create(request, file)).ok()).toBe(true)
   // Dismiss the create input (it stays open on a refusal, by design) and let the
@@ -329,13 +334,16 @@ test('a refusal reaches the DOM in the server\'s own words', async ({ page, requ
   await expect(page.locator(`.tree-row[data-path="${file}"]`)).toBeVisible()
   await useMenuItem(page, file, 'Rename…')
   const input = page.locator('.tree-name-input')
-  await input.fill('mcp_connectors/policy_patch.py')
+  // A typed `/` makes it a move, resolved against the working location.
+  await input.fill('web/node_modules/hand-edited.js')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.tree-row-error')).toContainText('connector path policy')
-  await expect(page.locator('.tree-row-error')).toContainText('mcp_connectors')
+  await expect(page.locator('.tree-row-error')).toContainText('workspace policy')
+  await expect(page.locator('.tree-row-error')).toContainText('"**/node_modules"')
+  await expect(page.locator('.tree-row-error')).toContainText('read-only')
   await expect(input).toBeVisible()
-  await expect(input).toHaveValue('mcp_connectors/policy_patch.py')
+  await expect(input).toHaveValue('web/node_modules/hand-edited.js')
   expect(await diskExists(request, file)).toBe(true)
+  expect(await existsOnDisk(request, 'web/node_modules/hand-edited.js')).toBe(false)
   await page.keyboard.press('Escape')
 })
 
@@ -351,7 +359,7 @@ test('a folder renamed with F2 keeps its branch open under the new name', async 
   expect((await create(request, file)).ok()).toBe(true)
 
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH, inner)
+  await openFolders(page, SCRATCH, inner)
   await page.locator(`.tree-row[data-path="${inner}"]`).first().focus()
   await page.keyboard.press('F2')
   await page.locator('.tree-name-input').fill('renamed-inner')
@@ -377,7 +385,7 @@ test('a dirty buffer is never closed by one gesture — the three answers all me
   expect((await create(request, file)).ok()).toBe(true)
 
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH)
+  await openFolders(page, SCRATCH)
   await page.locator(`.tree-row[data-path="${file}"]`).first().click()
   await typeAtEnd(page, 'work that exists nowhere else')
   await expect(page.locator('.editor-tab-dirty')).toHaveCount(1)
@@ -422,7 +430,7 @@ test('the badge says what the pane will do, including what is unsaved', async ({
   expect((await create(page.request, file)).ok()).toBe(true)
 
   await openEditor(page)
-  await openFolders(page, 'logs', SCRATCH)
+  await openFolders(page, SCRATCH)
   await page.locator(`.tree-row[data-path="${file}"]`).first().click()
   await expect(page.locator('.editor-tab')).toHaveCount(1)
 

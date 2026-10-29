@@ -31,7 +31,8 @@ from . import constants
 from .policy import (
     WorkspacePathError,
     missing_path_error,
-    resolve_existing_in_workspace,
+    normalise_rel,
+    resolve_save_target,
     resolve_in_workspace,
 )
 
@@ -104,8 +105,11 @@ def read_file(rel: str) -> Dict[str, Any]:
 
     Rules, each one mirrored by a test:
 
-    * the same gate as the tree (``resolve_in_workspace``, read flavour), so a
-      path the connectors refuse is refused here too, naming the rule;
+    * the same gate as the tree (:func:`policy.resolve_in_workspace`), so a path
+      the tree would not have listed answers **404** here — an observation of a
+      hidden name is indistinguishable from absence (pol-00 D8). A read-only
+      name is read normally: ``ro`` constrains what changes, not what is seen,
+      and the tree promised this row;
     * past ``constants.MAX_EDITOR_BYTES``: 413 naming the size, before any
       bytes are read — a browser tab is as little use for a giant file as the
       context window is (the same argument as ``lsphub.MAX_DOCUMENT_BYTES``);
@@ -218,14 +222,30 @@ def stat_paths(paths: Iterable[str]) -> List[Dict[str, Any]]:
 
     A path that is simply absent answers ``exists: false`` — that is the answer
     the freshness probe needs (the model deleted an open buffer's file), not an error. A path
-    the policy refuses still raises :class:`WorkspacePathError` (422), so the
-    probe can never be used to *stat* a secret file into existence: the answer
-    for a denied path is a refusal, never ``exists: false``, which would leak
-    that it is there.
+    a policy **hides** answers that same ``exists: false`` (pol-00 D8): the probe
+    only *looks*, and an observation of a hidden name has to be indistinguishable
+    from absence — the opposite of the old gate's 422, where the refusal is what
+    kept the probe from confirming a secret was there. A hidden name is not a
+    secret from the browser any more: the user wrote the rule (pol-07 shows it),
+    and the pane never receives the name from a listing that pruned it.
+
+    What still raises :class:`WorkspacePathError` (422) is a **lock**: a path
+    outside the working location, or a working location the app itself refuses.
+    That is a refusal about the request rather than an answer about a file, so it
+    travels for the whole batch instead of becoming a list of absences.
     """
     results: List[Dict[str, Any]] = []
     for raw in paths:
-        normalised, resolved = resolve_in_workspace(raw)
+        try:
+            normalised, resolved = resolve_in_workspace(raw)
+        except WorkspacePathError as exc:
+            if exc.status_code != 404:
+                raise  # a lock, not a hidden name
+            results.append(
+                {"path": normalise_rel(raw), "exists": False, "mtime": None,
+                 "size": None, "dir": False}
+            )
+            continue
         try:
             stat = os.stat(resolved)
         except OSError:
@@ -402,10 +422,12 @@ def write_file(
 
     Rules, each one mirrored by a test:
 
-    * the **write** flavour of the gate, over the whole ancestor chain
-      (:func:`policy.resolve_write_target`), so the secret stores, ``.git``,
-      ``mcp_connectors`` and a protected *parent* are all refused, in the
-      deny-list's own words;
+    * the write gate on the **leaf** (:func:`policy.resolve_save_target`): the
+      path itself must not be hidden or read-only, and a name the policy locks
+      answers 422 naming the rule and the level that wrote it. A folder's own
+      rule reaches every path under it, so a save inside a read-only folder is
+      refused for that reason — while a later rule that marks one file ``rw``
+      saves it, which is the carve-out the policy file is designed around;
     * 404 for an absent path, 400 for a directory or anything that is not a
       regular file — a save is not how a file is created;
     * the **mtime guard**: ``if_unmodified_since`` is the token ``GET
@@ -428,9 +450,9 @@ def write_file(
     BOM touched. A buffer that holds ``\\r\\n`` had it read from disk, and the
     write route keeps the read route's promise of exact characters.
     """
-    # The whole write gate: the ancestors and the leaf, each with the write
-    # flavour, and a 404 when the leaf is not there — save never creates.
-    normalised, resolved = resolve_existing_in_workspace(rel)
+    # The write gate on the leaf, and a 404 when the leaf is not there — save
+    # never creates, and never changes a folder's listing either.
+    normalised, resolved = resolve_save_target(rel)
 
     # One stat for the two shape checks and the size cap. A vanished file here
     # still answers the write family's 404, never an unhandled OSError.

@@ -4,7 +4,15 @@ Issue #1 was an asymmetry: the deny-lists were applied on the write path only,
 so ``read_file`` returned ``~/.git-credentials`` and ``preview_edit`` happily
 diffed ``~/.ssh/config``. These tests pin both halves of the fix -- reads are
 now held to a policy, and the ordinary editing workflow is untouched.
+
+The last section belongs to pol-08: inside the root the connector obeys the
+workspace's own ``.nojae/read-write-policy.json``, the same file and the same
+verdict the Editor tab applies, so a folder its owner marked ``ro`` or
+``hidden`` is off-limits to an agent too. Those tests pin the two floors'
+*domains* apart as well -- the workspace policy speaks inside the root, the
+connector deny-list outside it, and neither is loosened by the other.
 """
+import json
 import os
 import stat
 import time
@@ -13,6 +21,8 @@ from pathlib import Path
 import pytest
 
 from mcp_connectors import fedit_mcp as f
+from mcp_connectors import policy_file as connector_policy
+from mcp_connectors import policy_shared as shared
 
 DENIED_READ = "may not be read by this connector"
 DENIED_WRITE = "may not be written by this connector"
@@ -489,3 +499,343 @@ def test_the_root_bypass_needs_a_sane_address(tmp_path, monkeypatch):
     assert f.apply_edit(str(root / "f.txt"), EDIT_ONE).startswith("Applied")
     # Reading through the link discloses nothing the operator does not own.
     assert f.read_file(str(system / "x")).startswith("File:")
+
+
+# --- pol-08: the workspace's own policy constrains the agent inside the root ---
+
+
+@pytest.fixture
+def ws(tmp_path, monkeypatch):
+    """A throw-away workspace rooted like --root-dir, with no policy file yet.
+
+    The connector resolves paths against ``ROOT_DIR`` and asks the workspace
+    policy through it, so the root *is* the workspace here exactly as
+    ``externals.json`` configures it (``--root-dir ${BENCHMARKIT_PATH_LOCATION}``).
+    The cache in the connector process is keyed on that root, so it is cleared on
+    both sides of every test -- otherwise one test's parsed rules answer the next
+    test's paths (the same reason pol-04's app-side cache carries the root).
+    """
+    root = tmp_path.resolve()
+    monkeypatch.setattr(f, "ROOT_DIR", root)
+    connector_policy.invalidate_workspace_policy_cache()
+    yield root
+    connector_policy.invalidate_workspace_policy_cache()
+
+
+def write_policy(root: Path, rules, *, raw: str = None) -> Path:
+    """Drop a ``.nojae/read-write-policy.json`` in ``root``, verbatim or built."""
+    folder = root / shared.POLICY_DIRNAME
+    folder.mkdir(exist_ok=True)
+    path = folder / shared.POLICY_FILENAME
+    text = raw if raw is not None else json.dumps(
+        {"version": shared.POLICY_VERSION, "policies": list(rules)}, indent=2
+    )
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_read_only_folder_is_not_editable_by_an_agent(ws: Path):
+    """The headline of pol-08: ``ro`` means the same thing to both surfaces."""
+    (ws / "secret").mkdir()
+    target = ws / "secret" / "notes.md"
+    target.write_text("one\n", encoding="utf-8")
+    write_policy(ws, [{"path": "secret", "mode": "ro"}])
+
+    out = f.apply_edit(str(target), EDIT_ONE)
+    assert DENIED_WRITE in out, out
+    # The refusal names the rule the user wrote, in the pane's own words.
+    assert '"secret"' in out and "(read-only)" in out
+    assert "the workspace policy" in out
+    assert "nothing under it may change" in out
+
+    # A dry run is judged by the rules of the write it previews.
+    assert DENIED_WRITE in f.preview_edit(str(target), EDIT_ONE)
+    assert "@@" not in f.preview_edit(str(target), EDIT_ONE)
+
+
+def test_a_read_only_folder_stays_readable(ws: Path):
+    """``ro`` is not ``hidden``: reading is the reason the mode exists."""
+    (ws / "vendor").mkdir()
+    target = ws / "vendor" / "README.md"
+    target.write_text("one\n", encoding="utf-8")
+    write_policy(ws, [{"path": "**/vendor", "mode": "ro"}])
+
+    assert f.read_file(str(target)).startswith("File:")
+    out = f.apply_edit(str(target), EDIT_ONE)
+    assert DENIED_WRITE in out and "(read-only)" in out, out
+
+
+def test_a_hidden_path_is_not_readable_either(ws: Path):
+    """``hidden`` refuses both directions, and says which pattern did it.
+
+    This is the half that makes the seeded ``**/__pycache__`` rule mean
+    "unsearchable by an agent" too, so the pattern has to be in the message for
+    the model to ask about something else instead of retrying.
+    """
+    (ws / "a" / "__pycache__").mkdir(parents=True)
+    target = ws / "a" / "__pycache__" / "job.pyc"
+    target.write_text("one\n", encoding="utf-8")
+    write_policy(ws, [{"path": "**/__pycache__", "mode": "hidden"}])
+
+    out = f.read_file(str(target))
+    assert DENIED_READ in out, out
+    assert '"**/__pycache__"' in out and "(hidden)" in out
+    # A mutation still names the rule rather than pretending absence: "not there"
+    # is the green light for a create.
+    out = f.apply_edit(str(target), EDIT_ONE)
+    assert DENIED_WRITE in out and '"**/__pycache__"' in out
+
+
+def test_a_carve_out_below_a_folder_rule_edits(ws: Path):
+    """Last match wins -- the idiom the policy file is designed around.
+
+    ``**/node_modules`` read-only with one README carved back to ``rw``: the pane
+    and the agent must agree on the exception as well as on the rule, so the
+    connector's verdict runs the same merge (``policy_shared.verdict_for``).
+    """
+    module = ws / "web" / "node_modules" / "react"
+    module.mkdir(parents=True)
+    readme = module / "README.md"
+    readme.write_text("one\n", encoding="utf-8")
+    source = module / "index.js"
+    source.write_text("one\n", encoding="utf-8")
+    write_policy(ws, [
+        {"path": "**/node_modules", "mode": "ro"},
+        {"path": "**/node_modules/**/README.md", "mode": "rw"},
+    ])
+
+    assert f.apply_edit(str(readme), EDIT_ONE).startswith("Applied")
+    out = f.apply_edit(str(source), EDIT_ONE)
+    assert DENIED_WRITE in out and '"**/node_modules"' in out, out
+
+
+def test_the_reserved_policy_folder_is_addressable_by_neither_surface(ws: Path):
+    """An agent rewriting the rules that constrain it is the accident D5 prevents.
+
+    Refused for reading *and* writing, and refused with a deliberately corrupt
+    file in place -- the reservation is a component check, not a rule, so a JSON
+    typo cannot open the folder that holds the JSON.
+    """
+    policy = write_policy(ws, [{"path": "src", "mode": "ro"}])
+    for read in (True, False):
+        call = f.read_file if read else (
+            lambda p: f.apply_edit(p, EDIT_ONE))
+        out = call(str(policy))
+        assert (DENIED_READ if read else DENIED_WRITE) in out, (read, out)
+        assert shared.POLICY_DIRNAME in out
+
+    # And the same answer when the file cannot be parsed at all.
+    write_policy(ws, [], raw='{"version": 1, "policies": [')
+    connector_policy.invalidate_workspace_policy_cache()
+    assert DENIED_READ in f.read_file(str(policy))
+    assert DENIED_WRITE in f.apply_edit(str(policy), EDIT_ONE)
+
+
+def test_a_corrupt_policy_file_refuses_writes_and_leaves_reads_open(ws: Path):
+    """pol-00 D4, connector edition: the same asymmetry the pane uses.
+
+    A file that did not load contributes no rules, so the user can still look at
+    it (reads stay open) -- but every write is refused with the parse message,
+    because the policy that was meant to protect a folder demonstrably did not
+    run, and letting an agent edit inside it is the one answer that is not
+    acceptable.
+    """
+    (ws / "src").mkdir()
+    target = ws / "src" / "job.py"
+    target.write_text("one\n", encoding="utf-8")
+    write_policy(ws, [], raw="{ not json")
+    connector_policy.invalidate_workspace_policy_cache()
+
+    out = f.apply_edit(str(target), EDIT_ONE)
+    assert DENIED_WRITE in out, out
+    assert "did not load" in out
+    assert str(ws / shared.POLICY_DIRNAME / shared.POLICY_FILENAME) in out
+    assert "not valid JSON" in out
+    assert target.read_text(encoding="utf-8") == "one\n"
+    # The read half: the file has to stay reachable so it can be fixed.
+    assert f.read_file(str(target)).startswith("File:")
+
+
+def test_the_workspace_policy_says_nothing_outside_the_root(tmp_path, ws: Path):
+    """The two floors' domains, pinned apart.
+
+    A sibling tree of the root is not governed by the root's rules -- that file
+    is written relative to *this* workspace -- and the connector deny-list answers
+    there exactly as it always did. This is the test that keeps pol-08 from
+    quietly becoming "the policy replaces the deny-list".
+    """
+    outside = ws.parent / "sibling-project"
+    (outside / "secret").mkdir(parents=True)
+    target = outside / "secret" / "notes.md"
+    target.write_text("one\n", encoding="utf-8")
+    write_policy(ws, [{"path": "secret", "mode": "hidden"}])
+    connector_policy.invalidate_workspace_policy_cache()
+
+    # The name is innocent, so neither floor speaks: an ordinary file.
+    assert f.read_file(str(target)).startswith("File:")
+    assert f.apply_edit(str(target), EDIT_ONE).startswith("Applied")
+    # A name the deny-list knows is refused outside the root as before, and that
+    # answer does not mention the workspace policy at all.
+    secret = outside / ".env"
+    secret.write_text("A=1\n", encoding="utf-8")
+    out = f.read_file(str(secret))
+    assert DENIED_READ in out
+    assert "secrets/config file" in out and "workspace policy" not in out
+
+
+def test_the_same_named_folder_inside_the_root_is_governed(ws: Path):
+    """The mirror of the test above, so the split is not an accident of naming.
+
+    One pattern, two paths that differ only by which side of ``--root-dir`` they
+    sit on: in-root is refused by the policy, out-of-root is judged by the lists.
+    """
+    inner = ws / "sub" / "secret"
+    inner.mkdir(parents=True)
+    (inner / "a.md").write_text("one\n", encoding="utf-8")
+    write_policy(ws, [{"path": "**/secret", "mode": "ro"}])
+    assert DENIED_WRITE in f.apply_edit(str(inner / "a.md"), EDIT_ONE)
+
+
+def test_a_symlink_cannot_carry_a_path_around_the_workspace_policy(ws: Path):
+    """The bypass is decided on where a file *really* is, and so is the policy.
+
+    A link inside the root pointing at a hidden folder below it still lands on
+    the hidden path, so the verdict is the same one the real spelling gets.
+    """
+    hidden = ws / "vault"
+    hidden.mkdir()
+    target = hidden / "notes.md"
+    target.write_text("one\n", encoding="utf-8")
+    link = ws / "notes.md"
+    link.symlink_to(target)
+    write_policy(ws, [{"path": "vault", "mode": "hidden"}])
+
+    assert DENIED_READ in f.read_file(str(link))
+    assert DENIED_WRITE in f.apply_edit(str(link), EDIT_ONE)
+
+
+def test_an_ordinary_workspace_env_is_still_editable_here(ws: Path):
+    """The documented asymmetry, pinned rather than hidden (task §1 and §8).
+
+    Inside the root, ``.env`` is an ordinary file to a connector: the Editor
+    pane's rule for it is **level A** (benchmarkit regenerates its own ``.env``
+    from the settings template), which is a fact about the pane, not about an
+    agent's edit. If level A is ever applied to the connectors, this is the test
+    that changes -- deliberately, and with the docstrings in both connectors
+    saying so.
+    """
+    env = ws / ".env"
+    env.write_text("MODEL=one\n", encoding="utf-8")
+    assert f.apply_edit(str(env), "<<<<<<< SEARCH\nMODEL=one\n=======\nMODEL=x\n>>>>>>> REPLACE"
+                        ).startswith("Applied")
+    assert "MODEL=x" in env.read_text(encoding="utf-8")
+    # And the workspace may hide it if its owner wants that.
+    write_policy(ws, [{"path": "**/.env", "mode": "hidden"}])
+    connector_policy.invalidate_workspace_policy_cache()
+    assert DENIED_READ in f.read_file(str(env))
+
+
+def test_edit_policy_reports_the_workspace_rules_it_enforces(ws: Path):
+    """A tool that reports a policy it does not enforce is worse than silence."""
+    write_policy(ws, [
+        {"path": ".git", "mode": "hidden"},
+        {"path": "**/__pycache__", "mode": "hidden"},
+        {"path": "**/node_modules", "mode": "ro"},
+        {"path": "**/dist", "mode": "ro"},
+    ])
+    connector_policy.invalidate_workspace_policy_cache()
+    report = f.edit_policy()
+
+    assert "no policy restrictions" not in report
+    assert "the workspace policy of that folder applies" in report
+    assert str(ws / shared.POLICY_DIRNAME / shared.POLICY_FILENAME) in report
+    assert "(4 rules)" in report
+    assert "hidden: .git  **/__pycache__" in report
+    assert "ro:     **/node_modules  **/dist" in report
+    assert f"{shared.POLICY_DIRNAME}: reserved by benchmarkit" in report
+
+
+def test_edit_policy_labels_a_truncated_rule_list(ws: Path):
+    """The list is capped so the caps stay readable -- and the cap is admitted."""
+    rules = [{"path": f"dir{i}", "mode": "ro"} for i in range(9)]
+    for rule in rules:
+        (ws / rule["path"]).mkdir()
+    write_policy(ws, rules)
+    connector_policy.invalidate_workspace_policy_cache()
+
+    report = f.edit_policy()
+    assert "(9 rules)" in report
+    assert "+4 more" in report
+    assert "dir5" not in report
+
+
+def test_edit_policy_names_a_policy_file_it_could_not_load(ws: Path):
+    write_policy(ws, [], raw="nope")
+    connector_policy.invalidate_workspace_policy_cache()
+    report = f.edit_policy()
+    assert "(did not load)" in report
+    assert "writes inside the root are refused" in report
+
+
+def test_the_verdict_and_the_pane_agree_word_for_word(ws: Path):
+    """The acceptance condition, stated as a test.
+
+    The Editor pane refuses a save with ``refusal_message`` over the same
+    ``Rule`` list; the connector refuses with the same function over the same
+    file. Neither paraphrases, so an agent's error and the banner the user sees
+    describe one rule the same way.
+    """
+    (ws / "vendor").mkdir()
+    write_policy(ws, [{"path": "**/vendor", "mode": "ro", "reason": "vendored"}])
+    connector_policy.invalidate_workspace_policy_cache()
+
+    rules, _ = connector_policy.load_workspace_policy(str(ws))
+    expected = shared.refusal_message(
+        shared.Verdict(shared.READ_ONLY, shared.LEVEL_WORKSPACE, "**/vendor",
+                       "vendored"),
+        for_write=True,
+    )
+    out = f.apply_edit(str(ws / "vendor" / "x.md"), EDIT)
+    assert expected in out, out
+    assert "vendored" in out
+    # The pane's own sentence, from the app side, is the same string.
+    from src.core.editorfs import policy_modes
+
+    assert policy_modes.refusal_message(
+        shared.Verdict(shared.READ_ONLY, shared.LEVEL_WORKSPACE, "**/vendor",
+                       "vendored"),
+        for_write=True,
+    ) == expected
+
+
+def test_the_connector_cache_is_keyed_on_the_root_not_just_the_file(ws: Path):
+    """pol-04's rule about the cache key, restated for the connector process.
+
+    Two workspaces with byte-identical policy files (same ``mtime_ns``, same
+    size) are one stamp and two roots. A cache keyed on the stamp alone would
+    answer the second workspace with the first one's rules -- and name the wrong
+    file while doing it.
+    """
+    broken = '{"version": 1, "policies": ['
+    other = ws.parent / "pol08-second-root"
+    for root in (ws, other):
+        folder = root / shared.POLICY_DIRNAME
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / shared.POLICY_FILENAME).write_text(broken, encoding="utf-8")
+    def policy_of(root: Path) -> Path:
+        return root / shared.POLICY_DIRNAME / shared.POLICY_FILENAME
+
+    first = policy_of(ws).stat()
+    os.utime(policy_of(other), ns=(first.st_atime_ns, first.st_mtime_ns))
+    connector_policy.invalidate_workspace_policy_cache()
+
+    # Read the first root (caching its stamp), then the second -- same stamp,
+    # different file. Each answer has to name the file of the root asked about.
+    for root in (ws, other):
+        reason = connector_policy.workspace_policy_reason(
+            "src/a.py", root=str(root), for_write=True
+        )
+        assert reason is not None
+        assert str(policy_of(root)) in reason, (root, reason)
+        assert str(policy_of(ws if root == other else other)) not in reason, root
+

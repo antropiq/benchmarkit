@@ -14,11 +14,18 @@ sibling of ``tree.py``/``files.py``. Entry points:
   into a dated batch under ``constants.TRASH_DIR`` and never ``unlink``ed, so a
   mistaken delete is a ``mv`` away from being undone.
 
-The gate is the one the save goes through — the whole ancestor chain, with the
-**write** flavour of the connector policy — and the same promise holds: this is
-a browser surface, reached from the SPA and from nothing else. No MCP connector,
-LSP tool or chat code path may call it; the guard suite in
-``tests/test_editorfs_write.py`` asserts that instead of trusting the prose.
+The gate is the one the save goes through — the whole ancestor chain, each level
+asked of the policy verdict — and the same promise holds: this is a browser
+surface, reached from the SPA and from nothing else. No MCP connector, LSP tool
+or chat code path may call it; the guard suite in ``tests/test_editorfs_write.py``
+asserts that instead of trusting the prose.
+
+What the verdict means for a *path* operation (pol-00 D3): an ``ro`` folder
+cannot be deleted, emptied, renamed **or added to** — the rule is about its
+subtree *and* about the folder's own directory entries, because a move out of it
+rewrites them just as surely as a move into it. A ``hidden`` name cannot be
+created either: the write gate answers 422 naming the rule, never the 404 that
+would tell the caller the name is free.
 """
 
 import errno
@@ -36,12 +43,13 @@ from .policy import (
     WorkspacePathError,
     missing_path_error,
     normalise_rel,
-    refusal,
     resolve_existing_in_workspace,
     resolve_parent_in_workspace,
     resolve_write_target,
     workspace_root,
 )
+from .policy_modes import mode_for, refusal_message
+from .constants import policy_shared as shared
 
 
 class WorkspacePathExists(WorkspacePathError):
@@ -95,10 +103,10 @@ def create_path(rel: str, *, is_dir: bool) -> Dict[str, Any]:
     Rules, each one mirrored by a test:
 
     * the **write** gate over the whole chain — the parent and its ancestors
-      through :func:`policy.resolve_parent_in_workspace`, the leaf name through
-      the same list — so ``mcp_connectors/x.py``, ``.git/config``, ``.env`` and
-      ``id_rsa`` are refused in the deny-list's own words, before the name is
-      looked for on disk;
+      through :func:`policy.resolve_parent_in_workspace`, the leaf name by its
+      own verdict — so a name a policy hides and a name under a read-only folder
+      are both refused, 422 naming the rule, **before the name is looked for on
+      disk**;
     * the parent must already be a directory; a missing one is **409** naming it.
       A typo in a name input becomes a refusal rather than a stray tree, and a
       deeper path stays the client's decision, one gated request per level —
@@ -114,11 +122,14 @@ def create_path(rel: str, *, is_dir: bool) -> Dict[str, Any]:
     * the payload answers ``path``/``dir``/``size``/``mtime`` — the same shape a
       save answers, so the client re-baselines on one shape.
 
-    ``constants.IGNORED_DIR_NAMES`` is deliberately **not** a write rule: a
-    folder called ``node_modules`` is legal to create and simply invisible
-    afterwards, because the read surface hides that name. It looks like a bug
-    from the browser, so say it plainly — the create landed; the tree just does
-    not show that name.
+    There is one policy model here, not two: **``hidden`` is a write rule** (a
+    name the policy hides cannot be created — D8, and the answer is 422 naming
+    the rule, never the 409 that would confirm the name is free), **``ro`` is a
+    write rule**, and neither is a *read* rule except ``hidden``. The old note
+    explained why the tree's ignored-names set and the connector deny-list
+    disagreed about a folder called ``node_modules``; under one policy there is
+    nothing to disagree about — the seeded file makes that name read-only, so
+    creating it is refused and the answer says so.
     """
     normalised, parent, name = resolve_parent_in_workspace(rel)
 
@@ -182,14 +193,17 @@ def rename_path(frm: str, to: str) -> Dict[str, Any]:
 
     Steps, in this order — the order is the test list:
 
-    * gate ``from`` with the **write** flavour, then resolve it (404 when it is
-      not there), and refuse a top-level **symlink** (400, the delete's
-      argument: the link's target may be outside the workspace, and moving the
-      link is not a rename of a file);
-    * gate ``to`` **and every ancestor of ``to``** with the write flavour. This
-      is the both-ends rule: ``from`` may be perfectly innocent while ``to`` is
-      ``.git/hooks/pre-commit`` or ``mcp_connectors/policy_patch.py``, and the
-      refusal has to arrive from the target's side too;
+    * gate ``from`` — itself **and every ancestor of it** — with the write
+      verdict, then resolve it (404 when it is not there), and refuse a
+      top-level **symlink** (400, the delete's argument: the link's target may be
+      outside the workspace, and moving the link is not a rename of a file);
+    * gate ``to`` **and every ancestor of ``to``** the same way. This is the
+      both-ends rule: ``from`` may be perfectly innocent while ``to`` sits in a
+      folder the policy hides or locks, and the refusal has to arrive from the
+      target's side too. It is also what makes pol-00 D3's "renaming **out** of
+      an ``ro`` folder is refused" need no new code — a move out of a locked
+      folder is refused by its own source end, because a move rewrites that
+      folder's directory entries exactly as a move into one would.
     * the target's parent must already be a directory — **409** naming it, no
       implicit ``mkdir`` (the create's rule, restated for the same reason: a
       typo in a name input becomes a refusal rather than a stray tree);
@@ -241,8 +255,8 @@ def rename_path(frm: str, to: str) -> Dict[str, Any]:
         )
 
     # ``to`` and its whole ancestor chain. The leaf name is not on disk, so it
-    # goes through the deny-list directly (:func:`policy.refusal`) rather than
-    # through the realpath locks — the same split :func:`create_path` uses.
+    # is judged by its own verdict rather than through the realpath locks — the
+    # same split :func:`create_path` relies on.
     _, to_parent, to_name = resolve_parent_in_workspace(to_rel)
 
     if to_rel == from_rel:
@@ -372,20 +386,37 @@ def _walk_descendants(root: Path) -> List[Path]:
     return found
 
 
+def _rel_in_workspace(resolved: Path) -> Optional[str]:
+    """``resolved`` as a workspace-relative path, or ``None`` when it is not in.
+
+    The verdict is written against names inside the workspace, so a subtree
+    check that handed it an absolute path would be answering a different
+    question. ``None`` is a real answer here, not a failure: it means the path —
+    always a symlink's target, since the walk starts at a resolved root — sits
+    where no policy of this workspace reaches, and the caller refuses that.
+    """
+    workspace = workspace_root().rstrip("/") + "/"
+    text = resolved.as_posix()
+    if text == workspace.rstrip("/"):
+        return ""
+    return text[len(workspace) :] if text.startswith(workspace) else None
+
+
 def _subtree_refusal(
     root: Path, descendants: List[Path]
 ) -> Optional[WorkspacePathError]:
-    """The first denied path at or below ``root``, or None when all are writable.
+    """The first path at or below ``root`` that a policy locks away, else None.
 
     All-or-nothing by construction: this runs before a single byte moves, and
     the caller refuses the whole delete on its answer. Deleting ``src/`` because
-    its own name is innocent while it holds ``.env`` is the accident this exists
-    to prevent, so the refusal names the **descendant** — that is the path the
-    user has to move away from.
+    its own name is innocent while it holds a read-only or hidden file is the
+    accident this exists to prevent, so the refusal names the **descendant** —
+    that is the path the user has to move away from.
 
-    A descendant whose policy answer cannot be settled is refused too: an
-    unchecked subtree is not a checked one, and the promise is that nothing
-    denied was moved.
+    Both strict modes count: a folder rule matches everything under it, so this
+    is what makes ``ro`` mean "this subtree does not move", and ``hidden`` mean
+    the same about a subtree the tree never showed. A descendant whose answer
+    cannot be settled is refused too — an unchecked subtree is not a checked one.
 
     ``descendants`` is the caller's walk (the same one that counts ``entries``),
     so a delete of a big folder walks it once, not twice.
@@ -393,10 +424,11 @@ def _subtree_refusal(
     for candidate in [root] + descendants:
         try:
             if candidate.is_symlink():
-                # The link's own *target* is what the policy has to judge: a
-                # link to ``.ssh/id_rsa`` inside an innocent folder is a write
-                # route to a secret, and a link pointing outside the workspace
-                # cannot be vouched for at all.
+                # The link's own *target* is what has to be judged: a link to a
+                # locked path inside an innocent folder is a route to it, and a
+                # link pointing outside the workspace cannot be vouched for at
+                # all — no rule of this workspace reaches it, so nothing here
+                # says it may move.
                 target = Path(os.path.realpath(str(candidate)))
             else:
                 target = candidate
@@ -404,9 +436,17 @@ def _subtree_refusal(
             return WorkspacePathError(
                 422, f"Cannot check the subtree under {root.name}: {candidate}"
             )
-        deny = refusal(target, for_write=True)
-        if deny is not None:
-            return WorkspacePathError(422, f"{deny} — inside {root.name}")
+        rel = _rel_in_workspace(target)
+        if rel is None:
+            return WorkspacePathError(
+                422,
+                f"Path is outside the working location: {target} "
+                f"(a link under {root.name}) — no policy can vouch for it",
+            )
+        verdict = mode_for(rel)
+        if verdict.mode in (shared.HIDDEN, shared.READ_ONLY):
+            message = refusal_message(verdict, for_write=True)
+            return WorkspacePathError(422, f"{message} — inside {root.name}")
     return None
 
 
@@ -430,9 +470,9 @@ def trash_path(rel: str) -> Dict[str, Any]:
 
     Steps, in this order — the order is the test list:
 
-    * the **write** gate over the whole ancestor chain, so ``.git/config``,
-      ``mcp_connectors/x.py``, ``.env`` and a NUL are refused in the deny-list's
-      own words, before the path is looked for on disk;
+    * the **write** gate over the whole ancestor chain, so a path under a hidden
+      folder, one marked read-only, and a NUL are all refused — 422 naming the
+      rule — before the path is looked for on disk;
     * the working location itself is refused outright (400): deleting "" is not
       a thing the tree offers and not a thing a route should ever move;
     * **404** for an absent path — absent is *not* "already deleted, fine". The

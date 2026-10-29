@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
+import { describePolicy } from '../lib/path-location-policy'
 import { loadChatLsp, loadChatMcp } from './useChat'
 import { useWorkspaceTree } from './useWorkspaceTree'
 
@@ -70,6 +71,20 @@ const state = reactive({
   pathLocationLoading: false,
   pathLocationSaving: false,
   pathLocationError: null,
+  // The workspace's own read-write policy file (pol-05). The server seeds a
+  // default ``.nojae/read-write-policy.json`` when a folder becomes the working
+  // location, and reports what happened: ``{state, path, error}`` with
+  // ``created`` / ``existing`` / ``absent`` / ``failed``. Only the block is
+  // kept: the wording is ``lib/path-location-policy``'s, and a ``failed`` seed
+  // is rendered as a *note* — never into ``pathLocationError``, because the
+  // switch itself succeeded and a red line there would claim it had not.
+  pathLocationPolicy: null,
+  // The one sentence that note carries, for the surfaces that must shout rather
+  // than caption: set from ``describePolicy`` only when its tone is ``warn``, so
+  // a ``created``/``existing``/``absent`` report stays the plain caption the
+  // dialog renders from ``pathLocationPolicy``. Cleared on every attempt, so a
+  // note from a switch that has since worked cannot linger.
+  pathLocationPolicyNote: null,
 })
 
 let eventSource = null
@@ -476,6 +491,8 @@ export function useBenchmark() {
       // disappear for the moment loadPathLocation() below takes. The dialog
       // field still re-syncs to it (loadPathLocation assigns both).
       state.pathLocationError = null
+      state.pathLocationPolicy = null
+      state.pathLocationPolicyNote = null
       refreshModelLists()
       loadQuestionSets()
       loadMcp()
@@ -784,6 +801,17 @@ export function useBenchmark() {
       }
       state.pathLocationCurrent = body.path || ''
       state.pathLocation = state.pathLocationCurrent
+      // Read-only on purpose: GET never seeds (a read that writes a folder into
+      // someone's project is the mistake pol-05 forbids), so ``absent`` here is
+      // a real state — a workspace whose seed failed, or one opened before the
+      // feature existed.
+      state.pathLocationPolicy = body.policy || null
+      // Same rule as after a switch: only a ``warn`` tone becomes the note, so
+      // ``absent`` stays the plain caption and a lingering note from an earlier
+      // attempt cannot outlive the read that disproves it.
+      const described = describePolicy(body.policy)
+      state.pathLocationPolicyNote =
+        described && described.tone === 'warn' ? described.text : null
     } catch (exc) {
       state.pathLocationError = `Could not reach the API: ${exc}`
     } finally {
@@ -800,6 +828,7 @@ export function useBenchmark() {
     if (!next || next === state.pathLocationCurrent) return
     state.pathLocationSaving = true
     state.pathLocationError = null
+    state.pathLocationPolicyNote = null
     try {
       const res = await fetch('/api/path-location', {
         method: 'POST',
@@ -818,6 +847,15 @@ export function useBenchmark() {
       // rather than what was typed: field and Set button then agree.
       state.pathLocationCurrent = body.path || ''
       state.pathLocation = state.pathLocationCurrent
+      // pol-05: the switch seeded this workspace's default policy file (or
+      // tried to). A ``failed`` state is a note, not an error — the location is
+      // set and both hubs restarted; only the workspace's own rules are
+      // missing. ``lib/path-location-policy`` is what turns the block into the
+      // sentence the dialog shows (and pol-07's Editor banner reuses it).
+      state.pathLocationPolicy = body.policy || null
+      const described = describePolicy(body.policy)
+      state.pathLocationPolicyNote =
+        described && described.tone === 'warn' ? described.text : null
       // The hubs just restarted: refresh both panels so the tool lists and
       // status dots show the new location.
       if (body.mcp) {

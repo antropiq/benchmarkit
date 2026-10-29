@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test'
+import fs from 'node:fs'
+import path from 'node:path'
 
 // The working location is what every workspace-relative path in the app is
 // measured from, so moving it invalidates all of them at once — including the
@@ -7,10 +9,18 @@ import { expect, test } from '@playwright/test'
 // so the two halves of the Editor disagreed about which project was open. A
 // switch now closes the tabs of the root it leaves.
 //
-// No LLM call is needed. The new root is a folder under `logs/` (already
-// browsed, gitignored, outside every protected name), and the location is
-// restored afterwards so the other specs still see the boot-time root.
-const SCRATCH = 'logs/e2e-ws-root'
+// No LLM call is needed. The new root is a top-level scratch folder (gitignored
+// and out of the way of the repo's own files), and the location is restored
+// afterwards so the other specs still see the boot-time root. It is *not* under
+// `logs/` any more: benchmarkit's own rules hide that tree from the Editor, so
+// a folder in it could not be created through the API at all.
+//
+// The scratch root is removed with node's `fs`, not through `/api/fs/file`:
+// switching into it seeds a `.nojae/read-write-policy.json` there (pol-05), and
+// that folder is reserved — the Editor will not delete a subtree that contains
+// it, by design. So the spec cleans up the way a user would, from outside the
+// app.
+const SCRATCH = 'e2e-ws-root'
 
 async function create(request, path, dir = false) {
   return request.post('/api/fs/create', { data: { path, dir } })
@@ -18,6 +28,10 @@ async function create(request, path, dir = false) {
 
 async function currentRoot(request) {
   return (await (await request.get('/api/path-location')).json()).path
+}
+
+function removeScratch(root) {
+  fs.rmSync(path.join(root, SCRATCH), { recursive: true, force: true })
 }
 
 // The switch as a user performs it: Settings → Working directory → type → Set.
@@ -38,7 +52,7 @@ async function setRoot(page, path) {
 }
 
 test.beforeEach(async ({ request }) => {
-  await request.delete(`/api/fs/file?path=${encodeURIComponent(SCRATCH)}`)
+  removeScratch(await currentRoot(request))
 })
 
 // The root this server booted on, remembered so a spec that fails between its
@@ -49,7 +63,7 @@ test.afterEach(async ({ request }) => {
   if (bootRoot === null) return
   const res = await request.post('/api/path-location', { data: { path: bootRoot } })
   expect(res.ok(), `could not restore the working location: ${await res.text()}`).toBe(true)
-  await request.delete(`/api/fs/file?path=${encodeURIComponent(SCRATCH)}`)
+  removeScratch(bootRoot)
 })
 
 test('a switch closes the tabs of the root it leaves', async ({ page, request }) => {
@@ -85,7 +99,12 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   // The old root is re-rooted too, and listed for real — the forget is not a
   // blank tree.
   await expect(rootRow).toHaveAttribute('title', new RegExp(original))
-  await expect(page.locator('.tree-row[data-path="logs"]')).toBeVisible()
+  // The scratch folder the spec created is back in the listing (it is a
+  // top-level folder of this workspace, and no policy rule names it). What the
+  // root can *not* list is `.nojae` — reserved — and `logs`, which
+  // benchmarkit's own rules hide as the app's backups and trash.
+  await expect(page.locator('.tree-row[data-path="e2e-ws-root"]')).toBeVisible()
+  await expect(page.locator('.tree-row[data-path="logs"]')).toHaveCount(0)
 })
 
 test('unsaved edits are reported when the switch closes their tab', async ({ page, request }) => {

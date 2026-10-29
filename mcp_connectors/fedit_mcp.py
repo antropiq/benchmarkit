@@ -22,10 +22,29 @@ and their environment overrides are reported by ``edit_policy()``.
 Two regions are trusted outright, and the checks below only apply outside them:
 
 * the root directory (``--root-dir``) and everything under it -- that tree is
-  the operator's own workspace, so files and directories inside it are read and
-  edited without any restriction, including the connector's own sources;
+  the operator's own workspace, so the *deny-lists* below do not apply inside
+  it, including to the connector's own sources;
 * scratch directories (``/tmp``, ``/var/tmp``; see ``ALLOW_PREFIXES``) --
   throwaway work, never the operator's secrets.
+
+Inside the root, one policy does apply: the workspace's own
+``<root>/.nojae/read-write-policy.json`` (pol-08). A folder its owner marked
+``ro`` is uneditable here exactly as it is in the Editor pane, and one marked
+``hidden`` is not readable either -- the same file, the same matcher and the
+same refusal sentence, read in this process. Narrowing the agent to what the
+human can see is the point; nothing is added anywhere.
+
+The two rule sources stay **separate lists** on purpose, and a reader tempted
+to merge them will break both. The deny-list answers "is this a
+credential store" and that question means the same thing in every tree, which
+is why it must keep guarding the paths *outside* the root where it is the only
+rule that speaks. The workspace policy answers "which parts of *this* project
+may change" -- a question the operator wrote down, and one the deny-list cannot
+ask. Note the resulting asymmetry rather than "fixing" it: an ordinary
+workspace ``.env`` is editable through this connector while the Editor pane
+cannot read it, because the pane's rule is level A (benchmarkit regenerates its
+own ``.env`` from the settings template), which is a fact about the pane, not
+about an agent's edit. ``edit_policy()`` reports both halves.
 
 Both bypasses are decided on where a path *really* is (``realpath``), not on the
 spelling that reached it: one physical file therefore gets one verdict however it
@@ -62,10 +81,12 @@ from typing import Iterable, Optional
 from mcp.server.mcpserver import MCPServer
 
 try:  # imported as part of the package (tests, `python -m mcp_connectors...`)
-    from . import path_policy
+    from . import path_policy, policy_file, policy_shared
 except ImportError:  # run as a plain script path, as externals.json does
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import path_policy  # type: ignore[no-redef]
+    import policy_file  # type: ignore[no-redef]
+    import policy_shared  # type: ignore[no-redef]
 
 # Root directory the connector is scoped to; set by main() from --root-dir.
 # When None (e.g. module imported without main()), the full policy applies to
@@ -83,8 +104,9 @@ server = MCPServer(
                  "and is rejected (without touching the file) if the context does not match. "
                  "Use preview_edit to check an edit before applying it. The server is scoped "
                  "to a root directory chosen at startup (--root-dir): files inside that root "
-                 "are editable without policy restrictions; paths outside it are judged "
-                 "against the protected-path lists reported by edit_policy().",
+                 "obey that folder's own workspace policy (a read-only or hidden folder is "
+                 "refused, naming the rule); paths outside it are judged against the "
+                 "protected-path lists. Both sets of rules are reported by edit_policy().",
 )
 
 # ---------------------------------------------------------------------------
@@ -834,6 +856,57 @@ def _system_prefix_hit(path: Path) -> Optional[str]:
     return path_policy.prefix_hit(path.as_posix(), path_policy.DENY_PREFIXES)
 
 
+def _workspace_rel(real: Path) -> Optional[str]:
+    """``real`` as a workspace-relative POSIX path, or None when outside the root.
+
+    The connector's root *is* the workspace (``externals.json`` passes
+    ``--root-dir ${BENCHMARKIT_PATH_LOCATION}``), so the workspace policy's rules
+    -- which are written relative to that folder -- are matched against this.
+    ``None`` (outside the root, or an unrooted server) means "the workspace policy
+    has nothing to say here", which is the documented domain split: outside the
+    root the connector deny-list is what speaks.
+
+    Judged on the **resolved** path, exactly like the root bypass is: one physical
+    file gets one verdict however it was addressed (mount point vs its alias), and
+    a link planted in the workspace cannot point at a ``ro`` folder elsewhere and
+    have it read as one here.
+    """
+    if ROOT_DIR is None:
+        return None
+    try:
+        rel = real.relative_to(ROOT_DIR)
+    except ValueError:
+        return None
+    text = rel.as_posix()
+    return "" if text == "." else text
+
+
+def _workspace_policy_reason(resolved: Path, *, for_write: bool) -> Optional[str]:
+    """The workspace's own policy refusal for an in-root path, or None.
+
+    pol-08: a folder the user marked ``ro`` in
+    ``<root>/.nojae/read-write-policy.json`` is uneditable by an agent too, and a
+    folder marked ``hidden`` is not readable either -- the same answer the Editor
+    pane gives for the same path, from the same file and the same matcher
+    (``policy_file.workspace_policy_reason``).
+
+    What this does NOT apply is level A, benchmarkit's own rules about the files
+    it regenerates: those exist because the pane fights the settings dialog over
+    a generated file, which is not a property of an agent's edit. And the
+    connector's own deny-list stays where it was -- the name-based floor that
+    keeps a private key out of a context window -- because that floor guards a
+    different trust surface, outside the root, where it is the only rule that
+    means anything.
+    """
+    rel = _workspace_rel(resolved)
+    if rel is None:
+        return None
+    return policy_file.workspace_policy_reason(
+        rel, root=str(ROOT_DIR) if ROOT_DIR is not None else None,
+        for_write=for_write,
+    )
+
+
 def _deny_reason(resolved: Path, *, for_write: bool) -> Optional[str]:
     """Explain why ``resolved`` is off-limits, or None if it is allowed.
 
@@ -853,8 +926,12 @@ def check_target_path(path: str, *, for_write: bool) -> Path:
 
     Root scoping: when the server runs with --root-dir, a path whose literal
     and real (symlink-resolved) forms both stay inside that root bypasses the
-    policy entirely -- the root is the operator's workspace. Everything below
-    only constrains paths outside the root. Relative paths anchor at the root.
+    *deny-lists* -- the root is the operator's workspace -- but not that
+    workspace's own policy (pol-08): ``<root>/.nojae/read-write-policy.json`` is
+    consulted for an in-root path, so a folder its owner marked ``ro`` or
+    ``hidden`` is refused here exactly as it is in the Editor tab. Everything
+    below only constrains paths outside the root. Relative paths anchor at the
+    root.
 
     Traversal is judged where it *lands*, not on the token: the path is
     normalised (``abspath``) and fully resolved (``realpath``), and both forms
@@ -872,6 +949,22 @@ def check_target_path(path: str, *, for_write: bool) -> Path:
 
     absolute = Path(os.path.abspath(str(candidate)))
     real = absolute.resolve()
+
+    # The workspace's own policy, asked of the resolved target and *before* the
+    # root bypass is reached (pol-08): that file is the user's answer to "which
+    # parts of my project may change", and it constrains an agent exactly as it
+    # constrains the Editor pane. It is asked about ``real`` for the same reason
+    # the bypass is decided on it: one physical file, one verdict -- so a link
+    # planted in a system prefix cannot reach a hidden workspace folder through
+    # an address that never mentions it. It answers None for anything outside the
+    # root, which is where the deny-lists below speak instead.
+    reason = _workspace_policy_reason(real, for_write=for_write)
+    if reason:
+        action = "written" if for_write else "read"
+        raise PathDenied(
+            f"{absolute} may not be {action} by this connector: {reason}. "
+            "Call edit_policy() to see the workspace policy."
+        )
 
     # Inside the root the policy is bypassed; the operator chose that tree.
     # That decision is made on ``real`` -- where the file actually is -- and not
@@ -893,6 +986,12 @@ def check_target_path(path: str, *, for_write: bool) -> Path:
     # allowed (only the write is blocked), matching the rule that a link to a
     # benign outside file is readable but never writable.
     if _within_root(real) and not _system_prefix_hit(absolute):
+        # The deny-lists are bypassed here -- the operator chose that tree. That
+        # bypass is what keeps an ordinary workspace ``.env`` editable through
+        # this connector while the Editor pane cannot read it: the pane's rule
+        # for it is **level A** (benchmarkit regenerates its own ``.env`` from
+        # the settings template), a fact about the pane rather than about an
+        # agent's edit, and connectors do not consult level A.
         return absolute
 
     action = "written" if for_write else "read"
@@ -1439,13 +1538,70 @@ def make_diff(path_a: str, path_b: str, context: int = 3) -> str:
         fromfile=str(a), tofile=str(b), lineterm="", n=max(0, int(context))))
 
 
+# How many patterns one mode may list in `edit_policy()`. The model acts on this
+# text, so its shape matters more than its completeness: a full dump of a
+# 40-rule file pushes the caps and the deny-lists out of the answer, and a
+# truncated list that *says* it is truncated still tells the agent where to ask.
+POLICY_PATTERNS_PER_MODE = 5
+
+
+def _workspace_policy_lines() -> str:
+    """The workspace policy block of `edit_policy()` -- what this connector enforces *in the root*.
+
+    A tool that reports a policy it does not enforce is worse than one that
+    reports nothing, so this block is the rules the checks in
+    :func:`_workspace_policy_reason` actually applied, read through the same
+    loader, in the same words the Editor's own policy panel uses (pol-07): the
+    pattern verbatim grouped by mode.
+    """
+    if ROOT_DIR is None:
+        return (
+            "  policy file     : (no root dir, so no workspace policy applies)\n"
+        )
+    path = policy_file.workspace_policy_path(str(ROOT_DIR))
+    rules, findings = policy_file.load_workspace_policy(str(ROOT_DIR))
+    errors = [f for f in findings if f.kind == policy_shared.KIND_ERROR]
+
+    if errors:
+        # pol-00 D4, connector edition: an unparseable file contributes no rules,
+        # so every write inside the root is refused until it loads -- and the
+        # agent has to be told that, or it reads "no rules" and keeps trying.
+        return (
+            f"  policy file     : {path} (did not load)\n"
+            f"                    {errors[0].message}\n"
+            f"                    writes inside the root are refused until it does\n"
+        )
+    if not rules:
+        return (
+            f"  policy file     : {path} (no rules)\n"
+            f"                    nothing inside the root is restricted beyond the\n"
+            f"                    reserved {policy_shared.POLICY_DIRNAME} folder\n"
+        )
+
+    lines = [f"  policy file     : {path} ({len(rules)} rules)"]
+    for mode in (policy_shared.HIDDEN, policy_shared.READ_ONLY):
+        patterns = [rule.pattern for rule in rules if rule.mode == mode]
+        if not patterns:
+            continue
+        shown = patterns[:POLICY_PATTERNS_PER_MODE]
+        extra = len(patterns) - len(shown)
+        tail = f" +{extra} more" if extra else ""
+        lines.append(f"                    {mode + ':':<8}{'  '.join(shown)}{tail}")
+    lines.append(
+        f"                    {policy_shared.POLICY_DIRNAME}: reserved by benchmarkit "
+        f"(hidden, and no rule can unlock it)"
+    )
+    return "\n".join(lines) + "\n"
+
+
 @server.tool()
 def edit_policy() -> str:
     """Report the connector's own limits and protected paths (no guessing needed).
 
     Returns:
-        Backup directory, size caps, fuzz level and the deny-lists, separated
-        into what reads and writes are each refused
+        Backup directory, size caps, fuzz level, the workspace policy this
+        connector enforces inside the root (its rules by mode), and the
+        deny-lists it applies outside the root
 
     Example:
         edit_policy()
@@ -1453,11 +1609,13 @@ def edit_policy() -> str:
     return (
         f"fedit-mcp policy\n"
         f"  root dir        : {ROOT_DIR if ROOT_DIR is not None else '(unset -- full policy on every path)'}\n"
-        f"  inside the root : no policy restrictions (paths fully bypass the lists below)\n"
+        f"  inside the root : the workspace policy of that folder applies (see below);\n"
+        f"                    the connector deny-list below does not\n"
         f"  backup dir      : {BACKUP_DIR.resolve()}\n"
         f"  backups kept    : {BACKUP_KEEP}\n"
         f"  max file bytes  : {MAX_FILE_BYTES}\n"
         f"  max edit bytes  : {MAX_EDIT_BYTES}\n"
+        + _workspace_policy_lines() +
         f"  fuzz            : default {MAX_FUZZ}, ceiling {FUZZ_CEILING} (a higher "
         f"request is reduced)\n"
         f"  backup retention: {BACKUP_KEEP} per file, swept after {BACKUP_PRUNE_DAYS} days\n"
@@ -1494,8 +1652,10 @@ def main():
         type=str,
         required=True,
         help="Root directory the connector starts in and is scoped to (required). "
-             "Files and directories inside it bypass the path policy; paths "
-             "outside it are checked against the protected-path lists."
+             "Files and directories inside it bypass the protected-path lists "
+             "but obey that folder's own workspace policy "
+             "(.nojae/read-write-policy.json); paths outside it are checked "
+             "against the protected-path lists."
     )
     parser.add_argument(
         "--transport", "-t",

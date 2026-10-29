@@ -16,9 +16,11 @@ Four rules the two endpoints share:
 
 * **the same gate as the tree.** Every requested path goes through
   :func:`~editorfs.policy.resolve_in_workspace`, and every path *git* reported
-  is re-filtered with the tree's two omission rules (an ignored directory
-  name, the connector deny-list). Otherwise ``/api/fs/status`` would be a way
-  to learn that a denied path holds a modified file the tree refuses to show.
+  is re-filtered with the tree's one omission rule — a path whose verdict is
+  ``hidden``. Otherwise ``/api/fs/status`` would be a way to learn that a hidden
+  path holds a modified file the tree refuses to show. The consequence worth
+  knowing: an ``ro`` folder's dirty files **do** get their rows, because they are
+  visible in the tree — the marker and the row appear or disappear together.
 * **one definition of "unstaged"**: the *worktree* column of ``porcelain v1``
   is not clean. A tracked file modified, deleted, type-changed or unmerged, and
   an untracked file, are listed. A change that lives only in the index
@@ -38,12 +40,14 @@ Four rules the two endpoints share:
 
 import os
 import subprocess
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import constants
 from .files import language_for, read_file
-from .policy import WorkspacePathError, listable, resolve_in_workspace, workspace_root
+from .policy import WorkspacePathError, resolve_in_workspace, workspace_root
+from .policy_modes import mode_for
+from .constants import policy_shared as shared
+
 
 def _git(args: List[str], cwd: str) -> subprocess.CompletedProcess:
     """Run one git command in ``cwd``, capturing bytes; a non-zero exit is the
@@ -112,13 +116,13 @@ def _to_workspace_rel(path: str, prefix: str) -> Optional[str]:
 def _displayable(rel: str) -> bool:
     """True when ``rel`` may appear in a payload the navigator renders.
 
-    The tree's two omission rules, applied to a path *git* chose: without them
-    a status list would name files the tree deliberately hides, which is the
-    leak ``editorfs.policy`` exists to prevent.
+    The tree's one omission rule, applied to a path *git* chose, on the same
+    workspace-relative form the listing asks: without it a status list would name
+    files the tree deliberately prunes, which is the leak the policy exists to
+    prevent. Read-only paths are *not* omitted — they are browsable, and their
+    changed rows are the pairing the navigator depends on.
     """
-    if any(part in constants.IGNORED_DIR_NAMES for part in rel.split("/")):
-        return False
-    return listable(Path(os.path.join(workspace_root(), rel)))
+    return mode_for(rel).mode != shared.HIDDEN
 
 
 def _records(raw: bytes) -> List[str]:

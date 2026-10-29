@@ -65,7 +65,7 @@ progress through it.
 | `core/chat.py` | One streamed chat reply, including the shared tool-call loop. |
 | `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
 | `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
-| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call reusing the connector path policy. Reads are bounded; writes go through the policy's write flavour and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. |
+| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call answering from the workspace policy's verdict. Reads are bounded; writes are refused by `ro`/`hidden` and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. |
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
 | `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |
@@ -130,10 +130,12 @@ Measurement rules hold across every stream:
 | `results.json` | Run output, written once when a run ends. |
 | `mcp_connectors/externals.json` | MCP connectors: `remote` (HTTP) or `local` (stdio). |
 | `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
+| `<working location>/.nojae/read-write-policy.json` | The workspace's own read-write rules; seeded when a folder becomes the working location, edited only outside the app. |
 
 Any new file in `resources/` becomes a selectable set. The `.env`, `.env.test`
 and the hub declaration files are gitignored, may hold secrets, and each has a
-committed template. These rules tie them together:
+committed template; `.nojae/` is gitignored too (machine-local per checkout) and
+has no template — it is written by the seeding code. These rules tie them together:
 
 - **`.env` is regenerated from a fixed template on every save** (`SETTING_KEYS`
   and `_render_env()` in `src/config.py`): fixed key set and order, empty
@@ -156,6 +158,25 @@ committed template. These rules tie them together:
   invalidates them all at once: the Editor's tree re-roots (cached listings,
   branches and selection are forgotten, not re-listed) and every tab of the root
   it leaves closes, unsaved edits reported rather than negotiated with.
+- **A targeted workspace gets a `.nojae/read-write-policy.json`** — seeded with
+  a default at the two moments a folder becomes the working location (boot, and
+  the settings switch), by exclusive create so an edited file is never
+  clobbered. Seeding failure is a note, never a refused switch. The folder is
+  **reserved by code**: hidden from the tree, the read and git status, and it is
+  edited only outside the app.
+- **Path rules come from two levels, one verdict.** Level A is the app's own
+  rules about files it writes (`**/.env**`, `logs/**`), live only while the
+  working location *is* the install dir — so another project's `.env` is an
+  ordinary file. Level B is the workspace's file, always live. The strictest
+  match wins, so B tightens but never loosens A. A hidden path answers 404 to a
+  read and 422 naming the rule to a write; `ro` answers 422 to a write only.
+- **The connectors answer level B for their own root.** Each local connector reads
+  that workspace file in its own process, so an `ro` folder is uneditable by an
+  agent too; the two stdio connector processes and the app share one parser, one
+  matcher and one refusal sentence. They do not apply level A (a rule about the
+  pane fighting the settings dialog over a generated file), and the connector
+  deny-list still guards everything outside the root — the lists stay separate
+  on purpose, and merging them would move secrets into a per-project file.
 
 ## Key patterns
 

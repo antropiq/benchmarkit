@@ -1,7 +1,9 @@
 """FastAPI application entry point."""
 
+import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Any, Dict
 
 import uvicorn
 from fastapi import FastAPI
@@ -13,16 +15,43 @@ from src.config import (
     ENV_PATH,
     load_dotenv_once,
     PROJECT_ROOT,
+    path_location,
     questions_path,
     register_configured_models,
     setup_path_location,
 )
 from src.core.mcphub import McpManager, load_externals
 from src.core.lsphub import LspManager, all_servers
+from src.core.editorfs import policy_seed
 from src.core.termhub import TerminalHub
 from src.config import lsp_enabled_ids
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
+
+_log = logging.getLogger("benchmarkit")
+
+
+def _seed_workspace_policy() -> Dict[str, Any]:
+    """Leave the workspace's default policy file behind; never raise.
+
+    ``ensure_policy_file`` already answers a dict instead of raising, so this
+    wrapper only guards the *unexpected* — and its one job is that a policy file
+    this app could not write must not take the boot down with it: an unseeded
+    workspace simply has no level-B rules yet (level A, the app's own rules, is
+    built in and still applies).
+    """
+    try:
+        result = policy_seed.ensure_policy_file(path_location())
+    except Exception as exc:  # noqa: BLE001 — boot must survive anything here
+        _log.warning("could not seed the workspace policy: %s", exc)
+        return {"state": "failed", "path": None, "error": str(exc)}
+    if result["state"] == "failed":
+        _log.warning(
+            "could not seed the workspace policy at %s: %s",
+            result["path"],
+            result["error"],
+        )
+    return result
 
 
 def create_app() -> FastAPI:
@@ -47,6 +76,20 @@ def create_app() -> FastAPI:
     # always lands on the install directory unless the environment already
     # carries a value.
     setup_path_location()
+    # Seed the workspace policy for whichever location that chose — the second
+    # of the two entry points ``POST /api/path-location`` is the other. This is
+    # how benchmarkit gets its own ``.nojae/read-write-policy.json`` on first
+    # launch, and why a project opened from the settings dialog arrives with a
+    # tree already filtered by rules the user can read.
+    #
+    # Called from here rather than from inside ``setup_path_location()`` on
+    # purpose: ``src/config.py`` sits at the bottom of the dependency graph
+    # (``editorfs`` imports ``path_location`` *from* it), so a call there would
+    # need an import cycle or a local import in a config module. The app is the
+    # only thing that boots, so one line beside the line it follows is the
+    # honest place. Failure is a note in the log, never a boot failure: an
+    # unseeded workspace still works, it just has no level-B rules yet.
+    _seed_workspace_policy()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

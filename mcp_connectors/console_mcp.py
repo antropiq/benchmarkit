@@ -27,6 +27,27 @@ same lists as the fedit connector -- see ``mcp_connectors/path_policy.py``. A
 secret read by ``cat`` does as much damage as one read by ``read_file``, so the
 two connectors must not drift apart.
 
+Inside the root, one policy does apply (pol-08): the workspace's own
+``<root>/.nojae/read-write-policy.json``. A path its owner marked ``hidden`` is
+refused as an argument (and as the ``cwd``); one marked ``ro`` is refused for the
+commands that would create or rewrite it (see ``WRITE_ALL_PATHS_COMMANDS`` /
+``WRITE_DEST_LAST_COMMANDS``), which is the whole of this connector's write side
+-- there is no shell, so the token scan *is* the check, and a tool that writes
+through its own flags (``tar -czf``) is out of its reach. The rule is the one the
+Editor pane applies to the same path, read from the same file with the same
+matcher, and a refusal names the pattern so the model can ask differently instead
+of retrying the same command.
+
+That narrows the agent; it adds no power anywhere. The two rule sources stay
+separate lists and must not be merged: ``path_policy`` answers "is this a
+credential store" -- a question with the same answer in every tree, and the only
+rule that speaks for paths *outside* the root -- while the workspace policy
+answers "which parts of this project may change", a question the operator wrote
+down. The resulting asymmetry is documented rather than fixed: inside the root a
+``.env`` is reachable through ``cat`` here (the root bypass, and the pane's own
+``.env`` rule is level A -- benchmarkit regenerates that file, which is not a
+fact about an agent's edit) unless the workspace policy says otherwise.
+
 Usage:
     python -m mcp_connectors.console_mcp --root-dir /path/to/root              # default port 9999
     python -m mcp_connectors.console_mcp --root-dir /path --port 8080          # custom port
@@ -40,14 +61,16 @@ import subprocess
 import shlex
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from mcp.server.mcpserver import MCPServer
 
 try:  # imported as part of the package (tests, `python -m mcp_connectors...`)
-    from . import path_policy
+    from . import path_policy, policy_file, policy_shared
 except ImportError:  # run as a plain script path, as externals.json does
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import path_policy  # type: ignore[no-redef]
+    import policy_file  # type: ignore[no-redef]
+    import policy_shared  # type: ignore[no-redef]
 
 # Root directory the console is scoped to; set by main() from --root-dir.
 # When None (e.g. module imported without main()), the full policy applies to
@@ -60,8 +83,11 @@ server = MCPServer(
     name="console-mcp",
     instructions="A server that allows LLMs to execute console commands, scoped to a root "
                  "directory chosen at startup (--root-dir). Commands that only touch paths "
-                 "inside that root run without policy restrictions; commands referencing "
-                 "paths outside the root must pass the allow/block policy. "
+                 "inside that root skip the allow/block lists, but they still obey that "
+                 "folder's own workspace policy (.nojae/read-write-policy.json): a path "
+                 "marked hidden is not readable, one marked ro cannot be written to, and "
+                 "both refusals name the rule. Commands referencing paths outside the root "
+                 "must pass the allow/block policy. "
                  "There is NO shell: each call runs one command, split into arguments and "
                  "executed directly, so pipes, ';'/'&&' chains, redirections, backgrounding "
                  "and $( ) / $VAR expansion are refused rather than re-interpreted -- issue "
@@ -408,36 +434,47 @@ def parse_shell_statements(command: str) -> list[ShellStatement]:
     return statements
 
 
-def resolve_as_path(token: str) -> Path:
-    """Resolve a command token as a path; relative paths anchor at ROOT_DIR."""
+def resolve_as_path(token: str, base: Optional[Path] = None) -> Path:
+    """Resolve a command token as a path; relative paths anchor at ``base``.
+
+    ``base`` defaults to the server root, which is where the connector starts. It
+    is a parameter because of the tool's ``cwd`` argument: a command run with
+    ``cwd="vendor"`` resolves its relative arguments in ``vendor``, so a policy
+    check that anchored them at the root would judge ``x.txt`` as a file that is
+    not being written at all (pol-08's write gate would then wave a create inside
+    a read-only folder past).
+    """
     expanded = os.path.expanduser(token)
     path = Path(expanded)
     if not path.is_absolute():
-        path = (ROOT_DIR or Path.cwd()) / path
+        path = (base or ROOT_DIR or Path.cwd()) / path
     try:
         return path.resolve()
     except OSError:
         return Path(os.path.normpath(str(path)))
 
 
-def absolute_as_written(token: str) -> Path:
+def absolute_as_written(token: str, base: Optional[Path] = None) -> Path:
     """The absolute path a token names, as written (nothing collapsed).
 
     ``os.path.abspath`` would fold ``~/.ssh/../../etc`` into an ordinary
     ``/home`` path and hide the store it walks out of, so the components are
     kept as given; the symlink-resolved target is checked separately.
+
+    ``base`` is the directory the command will actually run in (the tool's
+    ``cwd`` argument), for the same reason as :func:`resolve_as_path`'s.
     """
     path = Path(os.path.expanduser(token))
     if not path.is_absolute():
-        path = (ROOT_DIR or Path.cwd()) / path
+        path = (base or ROOT_DIR or Path.cwd()) / path
     return path
 
 
-def is_within_root(token: str) -> bool:
+def is_within_root(token: str, base: Optional[Path] = None) -> bool:
     """True when the token resolves to a path inside (or equal to) ROOT_DIR."""
     if ROOT_DIR is None:
         return False
-    resolved = resolve_as_path(token)
+    resolved = resolve_as_path(token, base)
     return resolved == ROOT_DIR or ROOT_DIR in resolved.parents
 
 
@@ -480,7 +517,117 @@ def _trusted_prefix_hit(path: Path) -> Optional[str]:
     return path_policy.prefix_hit(path.as_posix(), path_policy.ALLOW_PREFIXES)
 
 
-def protected_path_error(token: str) -> Optional[str]:
+def _workspace_rel(real: Path) -> Optional[str]:
+    """``real`` as a workspace-relative POSIX path, or None when outside the root.
+
+    The connector's root *is* the workspace (``externals.json`` passes
+    ``--root-dir ${BENCHMARKIT_PATH_LOCATION}``), and the workspace policy's
+    patterns are written relative to that folder, so this is the form they are
+    matched against. ``None`` -- a path outside the root, or an unrooted server
+    -- means the workspace policy has nothing to say here, which is the domain
+    split this task pins: outside the root the connector deny-list answers, and
+    it answers by *name*, so ``~/.ssh`` is refused in every workspace.
+    """
+    if ROOT_DIR is None:
+        return None
+    try:
+        rel = real.relative_to(ROOT_DIR)
+    except ValueError:
+        return None
+    text = rel.as_posix()
+    return "" if text == "." else text
+
+
+def workspace_policy_error(real: Path, *, for_write: bool) -> Optional[str]:
+    """The workspace policy's refusal for an in-root path token, or None (pol-08).
+
+    The same file the Editor pane reads, matched by the same matcher, and answered
+    with the same sentence -- a pane and an agent disagreeing about one folder is
+    the state this prevents. ``hidden`` refuses reading and writing; ``ro`` refuses
+    only what would change the path, because *browsing* an ``ro`` folder is the
+    reason the mode exists (``**/node_modules`` is listed read-only so its README
+    stays readable).
+
+    Level A (benchmarkit's own rules about the files it regenerates) is not
+    consulted here, deliberately: it exists because the pane fights the settings
+    dialog over a generated ``.env``, which is not a property of an agent's edit.
+    The reserved ``.nojae`` folder *is* enforced, and it is checked on the
+    component list before the policy file is opened at all -- an agent rewriting
+    the rules that constrain it is the same accident ``DENY_COMPONENTS`` includes
+    ``mcp_connectors`` to prevent, and that refusal has to survive a corrupt
+    file. (A *write* is refused whether or not the name exists; a *read* of a name
+    that does not is skipped by the rule below, which is what a hidden path is
+    supposed to look like anyway.)
+
+    A policy file that does not parse refuses **writes** naming the cause and
+    leaves reads alone (pol-00 D4), matching what the app does with the same file.
+    """
+    rel = _workspace_rel(real)
+    if rel is None:
+        return None
+    # ``path_argument_tokens`` cannot tell a path from an argument word -- ``git
+    # status`` yields the token ``status``, resolving to <root>/status, and a
+    # ``hidden`` rule would then refuse a command that touches no file. So the
+    # read half is asked only of a name that is actually on disk: a token naming
+    # nothing discloses nothing. A **write** is never skipped, because ``touch x``
+    # inside a read-only folder creates the name -- its verdict comes from the
+    # rule, not from whether the path exists yet.
+    if not for_write and not os.path.lexists(real):
+        return None
+    root = str(ROOT_DIR) if ROOT_DIR is not None else ""
+    reason = policy_file.workspace_policy_reason(
+        rel, root=root or None, for_write=for_write
+    )
+    if reason is None:
+        return None
+    return (
+        f"{real} is off-limits in this workspace: {reason}. The folder's own "
+        "policy decides what an agent may read or change there, with the same "
+        f"rules the Editor tab follows; it is edited outside benchmarkit, in "
+        f"{policy_file.workspace_policy_path(root)}."
+    )
+
+
+# Which path tokens a command would *change*, as opposed to only look at. This is
+# what makes an ``ro`` folder mean something to an agent: ``cat`` and ``ls`` stay
+# allowed inside it, and the commands that create, rewrite or remove a name do not.
+#
+# The grammar is deliberately narrow and its limit is named rather than hidden.
+# ``cp``/``ln`` name their destination last, so only that token is a write --
+# copying *out* of a read-only folder changes nothing in it. ``mv`` counts every
+# path token as a write: a move rewrites the **source** folder's directory
+# entries too, which is why the Editor's rename gate refuses a move out of an
+# ``ro`` folder (pol-00 D3). The destructive names are blocked by name only
+# outside the root, so inside it they are real writes and are judged as such.
+#
+# A tool that reaches its output through its *own* flags (``tar -czf out``,
+# ``zip``, ``git commit``, ``npm install``) is not parsed here at all: ``ro`` is
+# the operator's rule about the paths they and their agent name, not a sandbox
+# claim, and a scan that pretended otherwise would be a promise this connector
+# cannot keep.
+WRITE_ALL_PATHS_COMMANDS: frozenset[str] = frozenset({
+    "mkdir", "touch", "gzip", "mv", "rm", "rmdir", "truncate", "shred",
+})
+WRITE_DEST_LAST_COMMANDS: frozenset[str] = frozenset({"cp", "ln"})
+
+
+def write_target_tokens(base_command: str, path_tokens: list[str]) -> frozenset[str]:
+    """The path tokens a command would create or rewrite, out of its path tokens.
+
+    Empty for a command that only looks (``cat``, ``ls``, ``grep``, ``head``),
+    which is what keeps a read-only folder browsable -- reading it is the reason
+    the mode is called ``ro`` rather than ``hidden``.
+    """
+    if base_command in WRITE_ALL_PATHS_COMMANDS:
+        return frozenset(path_tokens)
+    if base_command in WRITE_DEST_LAST_COMMANDS and path_tokens:
+        return frozenset({path_tokens[-1]})
+    return frozenset()
+
+
+def protected_path_error(
+    token: str, base: Optional[Path] = None
+) -> Optional[str]:
     """Refuse a path token that names a credential store (C-6).
 
     fedit refused ``~/.ssh``, ``~/.git-credentials`` and ``.env`` through any
@@ -498,13 +645,19 @@ def protected_path_error(token: str) -> Optional[str]:
 
     A token is judged both as written and as its symlink-resolved target, so
     ``~/.ssh/../../etc`` cannot read as an ordinary home path.
-    """
-    as_written = absolute_as_written(token)
-    real = resolve_as_path(token)
 
-    inside_root = is_within_root(token)
+    ``base`` is the directory the command will run in -- the tool's ``cwd``
+    argument -- because that is where a relative token lands: judging ``x``
+    against the root when the command runs in ``<root>/vendor`` would ask about
+    a file the command never touches.
+    """
+    as_written = absolute_as_written(token, base)
+    real = resolve_as_path(token, base)
+
+    inside_root = is_within_root(token, base)
     if inside_root and (real == as_written or _within_root_or_none(real)):
         return None
+
     if _trusted_prefix_hit(as_written) and _trusted_prefix_hit(real):
         return None
 
@@ -614,15 +767,24 @@ def describe_statement(statement: ShellStatement) -> str:
     return shlex.join(statement.argv)
 
 
-def statement_policy_error(statement: ShellStatement) -> Optional[str]:
+def statement_policy_error(
+    statement: ShellStatement, work_dir: Optional[Path] = None
+) -> Optional[str]:
     """Run the list/path policy on ONE statement, or None when it passes.
 
     The verdict is per statement, not per command string: the old code looked
     at ``parts[0]`` of the whole string, so a `..` anywhere retro-actively
     changed the verdict of every other part, and no command past the first
     separator was ever examined (C-5).
+
+    ``work_dir`` is the directory the statement will be executed in (the tool's
+    ``cwd`` argument, defaulting to the root). Every path token is anchored
+    there, because that is where the child resolves it: judging ``notes.md``
+    against the root while the command runs in ``<root>/vendor`` asks about a
+    file nobody touches and lets a create land in a read-only folder.
     """
     base_command = statement.argv[0]
+    base = work_dir if work_dir is not None else ROOT_DIR
 
     # Privilege / power / disk / service commands are blocked everywhere.
     if base_command in ALWAYS_BLOCKED_COMMANDS:
@@ -639,13 +801,40 @@ def statement_policy_error(statement: ShellStatement) -> Optional[str]:
     # (C-6): the lists below answer "may this command run", never "is this
     # target allowed", so an allow-listed `cat` used to reach ~/.ssh.
     for token in path_tokens:
-        protected = protected_path_error(token)
+        protected = protected_path_error(token, base)
         if protected:
             return protected
 
+    # The workspace's own policy, asked of every path token and *before* the
+    # in-root bypass below (pol-08): a folder its owner marked ``ro`` or
+    # ``hidden`` constrains an agent exactly as it constrains the Editor pane.
+    # It answers None for a path outside the root, where the deny-list above is
+    # what spoke -- so this neither extends the policy beyond the workspace nor
+    # loosens the floor. Whether a token is a *write* comes from the command
+    # word, because ``ro`` must leave a folder browsable -- that is the whole
+    # difference between it and ``hidden``.
+    #
+    # This is a sibling of :func:`protected_path_error` rather than a line inside
+    # it for that one reason: the write/read mode is a property of the *command*,
+    # and ``protected_path_error`` is called with a bare token. Same coverage --
+    # both run over every path token of every statement, and neither is subject to
+    # the root bypass.
+    write_tokens = write_target_tokens(base_command, path_tokens)
+    for token in path_tokens:
+        refusal = workspace_policy_error(
+            resolve_as_path(token, base), for_write=token in write_tokens
+        )
+        if refusal:
+            return refusal
+
     # A statement whose path arguments all stay inside the root is ordinary
-    # workspace work and is not list-checked.
-    if ROOT_DIR is not None and path_tokens and all(is_within_root(t) for t in path_tokens):
+    # workspace work and is not list-checked. Anchored at ``base`` for the same
+    # reason as every other question above: with ``cwd`` set, a relative token
+    # resolves under that directory, and "does this reach outside the root" has
+    # to be asked about the file the child will touch.
+    if ROOT_DIR is not None and path_tokens and all(
+        is_within_root(t, base) for t in path_tokens
+    ):
         return None
 
     if base_command in BLOCKED_COMMANDS:
@@ -691,7 +880,40 @@ def shell_feature_error(statements: list[ShellStatement]) -> Optional[str]:
     return None
 
 
-def validate_command(command: str) -> tuple[bool, str]:
+def resolve_work_dir(
+    cwd: Optional[str],
+) -> Tuple[Optional[Path], Optional[str]]:
+    """``(working directory, error)`` for a tool call's ``cwd`` argument.
+
+    One copy of the rules, because :func:`check_command_allowed` promises to be
+    the verdict :func:`execute_command` applies: the working directory decides
+    where every relative path token lands, so an oracle that resolved it
+    differently would be lying about a command it never runs.
+
+    Three questions, in order of who owns them: the server must be rooted (the
+    root is what every scope here is relative to); the directory must stay inside
+    it (the tool's own contract, predating pol-08); and it must be a directory the
+    workspace policy will let this connector use -- a command started *inside* a
+    folder lists its contents without ever naming a path, which is the observation
+    ``hidden`` exists to refuse, and the only way the reserved policy folder would
+    be reachable from here.
+    """
+    if ROOT_DIR is None:
+        return (None, "server is not rooted; start it with --root-dir")
+    if cwd is None:
+        return (ROOT_DIR, None)
+    candidate = resolve_as_path(cwd)
+    if candidate != ROOT_DIR and ROOT_DIR not in candidate.parents:
+        return (None, f"cwd '{cwd}' is outside the server root directory")
+    refusal = workspace_policy_error(candidate, for_write=False)
+    if refusal is not None:
+        return (None, refusal)
+    return (candidate, None)
+
+
+def validate_command(
+    command: str, work_dir: Optional[Path] = None
+) -> tuple[bool, str]:
     """
     Validate if a command is safe to execute.
 
@@ -703,6 +925,12 @@ def validate_command(command: str) -> tuple[bool, str]:
     workspace), anything reaching outside the root must pass the block list and
     the allow list, which is NOT a whitelist of what may run but what is
     additionally tolerated outside the root.
+
+    ``work_dir`` is the directory the command will be executed in -- the same
+    value ``execute_command`` hands to ``Popen(cwd=...)`` -- so a relative path
+    token is judged where the child resolves it, not where the server started.
+    Passing the root here while running the child elsewhere would check one file
+    and execute another.
 
     Anything that needs the shell to have a meaning -- separators,
     redirections, substitution -- is refused, because what runs is exactly the
@@ -747,7 +975,7 @@ def validate_command(command: str) -> tuple[bool, str]:
         return False, structure_error
 
     for index, statement in enumerate(statements, start=1):
-        error = statement_policy_error(statement)
+        error = statement_policy_error(statement, work_dir)
         if error:
             return False, error + statement_position(index, total)
 
@@ -774,7 +1002,9 @@ def execute_command(
              accepted but needs no writing. Quoting is honoured.
         timeout: Maximum execution time in seconds (default: 30)
         cwd: Working directory for command execution (optional, must stay
-             inside the server's --root-dir; defaults to the root)
+             inside the server's --root-dir and inside a folder the workspace
+             policy does not hide; defaults to the root). Relative path
+             arguments resolve against it, so the directory is checked too.
 
     Returns:
         Command output as a string, or error message if execution fails.
@@ -790,18 +1020,18 @@ def execute_command(
     Example:
         execute_command("ls -la sub/dir", timeout=10)
     """
-    if ROOT_DIR is None:
-        return "Error: server is not rooted; start it with --root-dir"
+    work_dir_path, work_dir_error = resolve_work_dir(cwd)
+    if work_dir_error is not None:
+        return f"Error: {work_dir_error}"
+    assert work_dir_path is not None  # resolve_work_dir returns one or the other
+    work_dir = str(work_dir_path)
 
-    work_dir = str(ROOT_DIR)
-    if cwd is not None:
-        candidate = resolve_as_path(cwd)
-        if candidate != ROOT_DIR and ROOT_DIR not in candidate.parents:
-            return f"Error: cwd '{cwd}' is outside the server root directory"
-        work_dir = str(candidate)
-
-    # Validate the command
-    is_valid, error_msg = validate_command(command)
+    # Validate the command **with the working directory it will run in**: the
+    # child resolves a relative argument against its own cwd, so a check that
+    # anchored those arguments at the server root would judge one file and
+    # execute another -- `execute_command("touch x", cwd="vendor")` writes
+    # <root>/vendor/x, and an ``ro`` rule on ``vendor`` has to see that.
+    is_valid, error_msg = validate_command(command, work_dir_path)
     if not is_valid:
         return f"Error: {error_msg}"
 
@@ -895,33 +1125,50 @@ def list_allowed_commands() -> str:
     # Say what the list actually decides (C-2): inside the root no list is
     # consulted at all, so an agent hunting here for the "allowed spelling" of
     # a refused in-root command is wasting its turns.
+    policy_note = (
+        f"  Inside the root the rules are the workspace's own policy file\n"
+        f"  ({policy_file.workspace_policy_path(str(ROOT_DIR)) if ROOT_DIR else '(no root)'}):\n"
+        f"  a folder marked hidden is not readable, one marked ro cannot be written\n"
+        f"  into, and {policy_shared.POLICY_DIRNAME} itself is reserved. Those "
+        f"refusals name the rule.\n"
+    )
     return (
         f"Commands accepted for work OUTSIDE the root ({len(sorted_commands)} total).\n"
         f"  This list is only consulted when the command references a path outside\n"
         f"  the server root ({ROOT_DIR}); inside the root, commands run without a\n"
         f"  list check, so a refusal there has a different reason (a blocked\n"
-        f"  command, or a shell operator). Privilege/power commands stay blocked\n"
-        f"  everywhere.\n\n"
+        f"  command, a shell operator, or the workspace policy below).\n"
+        + policy_note +
+        f"  Privilege/power commands stay blocked everywhere.\n\n"
         + "\n".join(f"  - {cmd}" for cmd in sorted_commands)
     )
 
 
 @server.tool()
-def check_command_allowed(command: str) -> str:
+def check_command_allowed(command: str, cwd: Optional[str] = None) -> str:
     """
     Check if a specific command is allowed to be executed.
 
     Args:
         command: The command to check
+        cwd: The working directory the command would be run in, exactly as it
+             would be passed to execute_command. Pass it when the real call
+             would: relative path arguments are resolved against it, so a
+             command whose tokens land in a read-only or hidden folder is
+             judged there rather than at the root.
 
     Returns:
         Whether the command is allowed and any restrictions. The verdict is the
-        one execute_command applies (same parse, same policy), so it can be used
-        as an oracle without running anything. Note this tool takes no timeout:
-        when the command does run, execute_command's default of 30 seconds
-        applies, and a timeout returns whatever the command had already printed.
+        one execute_command applies (same parse, same policy, same working
+        directory), so it can be used as an oracle without running anything.
+        Note this tool takes no timeout: when the command does run,
+        execute_command's default of 30 seconds applies, and a timeout returns
+        whatever the command had already printed.
     """
-    is_valid, error_msg = validate_command(command)
+    work_dir, work_dir_error = resolve_work_dir(cwd)
+    if work_dir_error is not None:
+        return f"Command '{command}' is NOT ALLOWED: {work_dir_error}"
+    is_valid, error_msg = validate_command(command, work_dir)
     if is_valid:
         return f"Command '{command}' is ALLOWED for execution"
     else:
@@ -949,7 +1196,9 @@ def main():
         type=str,
         required=True,
         help="Root directory the console starts in and is scoped to (required). "
-             "Commands touching only paths inside it bypass the security policy."
+             "Commands touching only paths inside it bypass the block/allow "
+             "lists, but still obey that folder's own workspace policy "
+             "(.nojae/read-write-policy.json)."
     )
     parser.add_argument(
         "--transport", "-t",

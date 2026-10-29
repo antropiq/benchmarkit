@@ -99,15 +99,18 @@ describe('useEditorFiles: diff tabs in the same strip', () => {
     expect(files.state.open.map((item) => item.key)).toEqual(['a.js'])
   })
 
-  it('shows a refusal as a message, without a tab', async () => {
+  it('shows an absent path as a message, without a tab', async () => {
+    // pol-06: a hidden path answers a *look* with 404, not with the refusal it
+    // used to answer. Either way the pane shows the server's sentence and opens
+    // nothing — what matters here is that no half-loaded diff tab appears.
     vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
-      jsonResponse({ detail: 'Path is refused by the connector path policy' }, false, 422),
+      jsonResponse({ detail: 'Path does not exist: .env' }, false, 404),
     )
     const record = await files.openDiff('.env')
     expect(record).toBeNull()
     expect(files.state.open).toHaveLength(0)
     expect(files.state.message.tone).toBe('error')
-    expect(files.state.message.text).toContain('connector path policy')
+    expect(files.state.message.text).toContain('does not exist')
     expect(files.state.message.path).toBe('.env')
   })
 

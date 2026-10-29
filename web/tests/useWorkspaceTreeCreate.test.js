@@ -163,8 +163,9 @@ describe('useEditorCreate: the request and its answers', () => {
     ).toHaveLength(0)
   })
 
-  // The one that surprises people: a name that looks fine and sits on the
-  // connector deny-list. The server's sentence is the answer, verbatim.
+  // The one that surprises people: a name that looks fine and sits under a rule
+  // the workspace wrote. The server's sentence is the answer, verbatim — and it
+  // quotes the pattern, so the user can go find that line (pol-06).
   it('a 422 from the server surfaces its own wording, with no local rule added', async () => {
     stubListing('', [])
     tree.startCreate('', false)
@@ -173,8 +174,7 @@ describe('useEditorCreate: the request and its answers', () => {
       jsonResponse(
         {
           detail:
-            "Path is refused by the connector path policy: inside 'mcp_connectors', " +
-            'which connectors never write to it',
+            'Refused by the workspace policy: "**/.env**" (hidden)',
         },
         false,
         422,
@@ -184,14 +184,13 @@ describe('useEditorCreate: the request and its answers', () => {
     const result = await creator.submitCreate()
     expect(result.ok).toBe(false)
     expect(result.reason).toBe('refused')
-    expect(tree.state.editing.error).toContain('connector path policy')
+    expect(tree.state.editing.error).toContain('workspace policy')
     // The input stays open with the refusal under the caret: the fix is to type
     // another name. The notice stack carries the same refusal for a user whose
     // eyes are on the code pane, prefixed by what was attempted (D9).
     expect(tree.state.editing).not.toBeNull()
     expect(notices.noticeForPath('.env').text).toBe(
-      "Could not create .env: Path is refused by the connector path policy: " +
-        "inside 'mcp_connectors', which connectors never write to it",
+      'Could not create .env: Refused by the workspace policy: "**/.env**" (hidden)',
     )
   })
 

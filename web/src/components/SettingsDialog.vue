@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import ApiKeyField from './ApiKeyField.vue'
+import { describePolicy } from '../lib/path-location-policy'
 import { useBenchmark } from '../composables/useBenchmark'
 
 const {
@@ -36,6 +37,14 @@ const SECTIONS = [
 // spuriously enabled.
 const pathLocationChanged = computed(
   () => (state.pathLocation || '').trim() !== state.pathLocationCurrent,
+)
+
+// The policy line that is *not* a warning: what the file is, in the app's own
+// words (``lib/path-location-policy``). The warning half of that block lives in
+// ``state.pathLocationPolicyNote`` and is rendered above this one, so the two
+// never say the same thing twice.
+const policySentence = computed(
+  () => describePolicy(state.pathLocationPolicy)?.text ?? '',
 )
 
 const MCP_STATUS_CLASS = {
@@ -180,6 +189,21 @@ function serverDetail(server) {
             </label>
             <p v-if="state.pathLocationError" class="alert-error" role="alert">
               {{ state.pathLocationError }}
+            </p>
+            <!-- The workspace's own policy file (pol-05): the server seeds a
+                 default one the moment a folder becomes the working location,
+                 and reports what happened. A seed that could not happen is a
+                 note, not an error — the location *is* set and both hubs
+                 restarted; only that project's tree stays unfiltered. -->
+            <p
+              v-if="state.pathLocationPolicyNote"
+              class="path-location-policy-note path-location-policy-note--warn"
+              role="status"
+            >
+              {{ state.pathLocationPolicyNote }}
+            </p>
+            <p v-else-if="state.pathLocationPolicy" class="caption path-location-policy-note">
+              {{ policySentence }}
             </p>
           </section>
 

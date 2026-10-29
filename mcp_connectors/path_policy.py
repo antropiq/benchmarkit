@@ -8,6 +8,27 @@ single module is the point: when ``fedit`` carefully refused ``~/.ssh`` while
 ``console`` ran ``cat .env``, the careful policy was worth nothing -- the agent
 simply used the sibling connector that was enabled in the same session.
 
+**Do not merge this with the workspace policy** (``policy_file.py`` and the
+``.nojae/read-write-policy.json`` it reads, which both connectors honour *inside*
+their root since pol-08). They answer different questions and their domains do
+not overlap, and a contributor who reads "two rule lists, one connector" will be
+tempted to unify them:
+
+* this module asks *"is this a credential store?"* -- the same answer in every
+  tree, which is why it is hardcoded and env-overridable rather than authored
+  per workspace, and why it is the only rule that speaks for paths **outside**
+  ``--root-dir``;
+* the workspace policy asks *"which parts of this project may change?"* -- a
+  question the operator wrote down, and one no list here can ask.
+
+Inside the root these deny-lists are bypassed, because the operator chose that
+tree; pol-08 narrowed the agent there by adding the workspace's rules, not by
+extending these. So one asymmetry is expected and must not be "fixed" by making
+``editorfs`` import this module again, or by making these lists read the
+workspace file: an ordinary workspace ``.env`` is editable through ``fedit``
+while the Editor pane cannot read it, because the pane's rule is about who owns
+and regenerates that file, not about its name.
+
 The lists are env-overridable so a deployment can tighten or relax them without
 a code edit. The shared names (``BENCHMARKIT_DENY_*``) win over the historical
 fedit names (``FEDIT_DENY_*``), which keep working.

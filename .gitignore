@@ -14,9 +14,17 @@ web/dist
 .playwright-mcp/
 .kilo/plans/
 logs/
+# e2e scratch folders. They are top-level (not under `logs/`) because the app's
+# own rules hide `logs/**` from the Editor, and the specs need a scratch the
+# pane can actually see and write.
+/e2e-write/
+/e2e-ws-root/
 mcp_connectors/externals.json
 # LSP declaration file: may carry secrets in its per-entry `env` maps.
 lsp_connectors/lsp_servers.json
+# The workspace policy folder: machine-local per checkout, and the app reserves
+# it (hidden and unwritable from the Editor), so it is never source.
+.nojae/
 resources/memory_registration.json
 pyrightconfig.json
 # Upstream font drops (a full Nerd Fonts family is hundreds of MB). The build

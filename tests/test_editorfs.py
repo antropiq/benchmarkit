@@ -3,12 +3,19 @@ shared policy.
 
 The workspace is always a throw-away ``tmp_path`` pointed at by
 ``BENCHMARKIT_PATH_LOCATION`` (the pattern ``tests/test_batch.py`` uses), so
-nothing here reads the repository's own checkout. Caps and the ignored-names
-set are exercised by patching ``editorfs.constants`` — the module attributes
-exist for exactly that.
+nothing here reads the repository's own checkout. Caps are exercised by patching
+``editorfs.constants``; **visibility is exercised by writing rules**, because a
+rule is the only mechanism the tree consults now (pol-00 D7 deleted the
+hardcoded ignored-names set).
+
+Two answers from pol-00 D8 shape every policy row in this file: a ``hidden`` path
+is **absent** to anything that only looks (404, ``exists: false``, an omitted
+sibling), and a ``ro`` one is perfectly ordinary until something tries to change
+it.
 """
 
 import os
+import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -17,6 +24,28 @@ from fastapi.testclient import TestClient
 
 from src.api.server import create_app
 from src.core import editorfs
+from src.core.editorfs import policy_file, policy_seed
+
+
+def write_policy(root: Path, rules: List[Dict[str, str]]) -> Path:
+    """Leave ``root`` a policy file of exactly ``rules``, as a user would have.
+
+    The one way to change what this suite's listings show: there is no
+    ignored-names set to patch any more. The cache is invalidated so a test that
+    wrote a policy earlier in the same ``tmp_path`` is not answered from it.
+    """
+    folder = root / editorfs.constants.POLICY_DIRNAME
+    folder.mkdir(exist_ok=True)
+    path = folder / editorfs.constants.POLICY_FILENAME
+    path.write_text(
+        json.dumps(
+            {"version": editorfs.constants.POLICY_VERSION, "policies": rules},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    policy_file.invalidate_policy_cache()
+    return path
 
 
 @pytest.fixture
@@ -24,7 +53,11 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A small tree, pointed at as the working location.
 
     ``BENCHMARKIT_PATH_LOCATION`` is monkeypatched, so the value is restored
-    after every test.
+    after every test. The folder also gets the policy file pol-05 leaves behind
+    when a folder becomes the working location, so every listing here answers
+    with the rules a real project starts with — and the workspace is *foreign*
+    (it is not the install directory), so benchmarkit's own level A is dormant
+    and ``.env`` in it is an ordinary file.
     """
     monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
     (tmp_path / "src" / "core").mkdir(parents=True)
@@ -34,6 +67,10 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / "empty-dir").mkdir()
     (tmp_path / "node_modules" / "left-pad").mkdir(parents=True)
     (tmp_path / ".venv").mkdir()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "src" / "__pycache__").mkdir()
+    policy_seed.ensure_policy_file(str(tmp_path))
+    policy_file.invalidate_policy_cache()
     return tmp_path
 
 
@@ -94,23 +131,78 @@ class TestRootListing:
         assert isinstance(readme["mtime"], float)
         assert "children" not in readme
 
-    def test_ignored_names_are_absent(self, client):
-        assert not {"node_modules", ".venv"} & set(names(tree(client).json()))
-
-    def test_ignored_set_is_patchable_through_constants(
-        self, client, monkeypatch: pytest.MonkeyPatch
+    def test_the_seeded_rules_hide_the_noise_and_leave_the_rest_visible(
+        self, client
     ):
-        monkeypatch.setattr(editorfs.constants, "IGNORED_DIR_NAMES", frozenset({"src"}))
+        """The listing answers from the file pol-05 seeded, not from a constant.
+
+        ``hidden`` for derived noise nobody browses, ``ro`` for the dependency
+        and build trees whose documentation is the reason they stay visible — so
+        ``node_modules`` is listed here where the deleted constant used to prune
+        it, and ``.git`` is pruned because a *rule* says so.
+        """
+        listed = set(names(tree(client).json()))
+        assert not {".git", ".nojae"} & listed
+        assert {"node_modules", ".venv", "src", "README.md"} <= listed
+        assert "__pycache__" not in set(names(tree(client, "src").json()))
+
+    def test_the_rules_come_from_this_workspaces_file(
+        self, workspace: Path, client, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The file *is* the mechanism: the same code, one rule apart.
+
+        Replaces the old patch-the-constant test. A rule that hides ``src`` makes
+        it absent from this workspace's root listing, and pointing the location at
+        a folder with no policy file lists its ``src`` again — which is the whole
+        point of D7: nothing else can decide visibility, so nothing else can
+        override the user's file.
+        """
+        write_policy(workspace, [{"path": "src", "mode": "hidden"}])
         assert "src" not in names(tree(client).json())
 
-    def test_only_ignored_children_counts_as_childless(
-        self, workspace: Path, client
-    ):
-        """``children`` uses the same two filters as the listing itself."""
+        other = workspace / "no-rule-here"
+        (other / "src").mkdir(parents=True)
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(other))
+        assert "src" in names(tree(client).json())
+
+    def test_only_hidden_children_counts_as_childless(self, workspace: Path, client):
+        """``children`` asks the same one question the listing asks."""
         (workspace / "mostly-cache" / "__pycache__").mkdir(parents=True)
         by_name = {entry["name"]: entry for entry in tree(client).json()["entries"]}
         assert by_name["mostly-cache"]["children"] is False
         assert tree(client, "mostly-cache").json()["entries"] == []
+
+    def test_a_read_only_folder_is_listed_readable_and_not_empty(
+        self, workspace: Path, client
+    ):
+        """``ro`` is a *write* rule: the listing and the read do not move."""
+        (workspace / "node_modules" / "left-pad" / "index.js").write_text(
+            "module.exports = 1\n", encoding="utf-8"
+        )
+        by_name = {entry["name"]: entry for entry in tree(client).json()["entries"]}
+        assert by_name["node_modules"]["children"] is True
+        assert "left-pad" in names(tree(client, "node_modules").json())
+        assert read(client, "node_modules/left-pad/index.js").status_code == 200
+
+    def test_a_hidden_folder_is_pruned_so_nothing_below_it_is_reachable(
+        self, workspace: Path, client
+    ):
+        """Pruning, not marking — and no carve-out survives it (pol-00).
+
+        The rule names ``secret-vault`` and nothing under it, yet a path two
+        levels down is unreachable all the same: the folder is never walked, so
+        there is no listing that could offer the descendant and no verdict the
+        subtree rule of the matcher could be argued past.
+        """
+        write_policy(workspace, [{"path": "secret-vault", "mode": "hidden"}])
+        vault = workspace / "secret-vault" / "deep"
+        vault.mkdir(parents=True)
+        (vault / "ledger.txt").write_text("x\n", encoding="utf-8")
+
+        assert "secret-vault" not in names(tree(client).json())
+        assert tree(client, "secret-vault").status_code == 404
+        assert tree(client, "secret-vault/deep").status_code == 404
+        assert read(client, "secret-vault/deep/ledger.txt").status_code == 404
 
 
 class TestPathLocks:
@@ -148,18 +240,46 @@ class TestPathLocks:
         assert "outside the working location" in response.json()["detail"]
         assert tree(client, "link/secret.txt").status_code == 422
 
-    def test_denied_names_are_refused_and_never_listed(
+    def test_a_hidden_name_is_absent_and_a_path_below_it_is_unreachable(
         self, workspace: Path, client
     ):
+        """Hidden siblings are omitted, not marked — no lock icon, no leak."""
+        write_policy(workspace, [
+            {"path": ".env", "mode": "hidden"},
+            {"path": ".ssh", "mode": "hidden"},
+        ])
         (workspace / ".env").write_text("SECRET=1\n", encoding="utf-8")
         (workspace / ".ssh").mkdir()
         (workspace / ".ssh" / "id_ed25519").write_text("priv\n", encoding="utf-8")
-        assert tree(client, ".env").status_code == 422
-        assert tree(client, ".ssh").status_code == 422
-        assert tree(client, ".ssh/id_ed25519").status_code == 422
-        # Denied siblings are omitted, not marked — no lock icon, no leak.
+        assert tree(client, ".env").status_code == 404
+        assert tree(client, ".ssh").status_code == 404
+        assert tree(client, ".ssh/id_ed25519").status_code == 404
         listed = names(tree(client).json())
         assert ".env" not in listed and ".ssh" not in listed
+
+    def test_a_foreign_workspaces_dotenv_is_an_ordinary_file(
+        self, workspace: Path, client
+    ):
+        """The fix this lot exists for, end to end.
+
+        The rule that used to refuse ``.env`` was ``path_policy``'s name check —
+        right for benchmarkit, whose ``.env`` the settings dialog rebuilds on
+        every save, and wrong for any other project, where it is a file the user
+        edits by hand. This workspace is not the install directory, so level A is
+        dormant and nothing hides it.
+        """
+        (workspace / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        (workspace / ".env.local").write_text("SECRET=2\n", encoding="utf-8")
+        assert editorfs.builtin_policy.is_self_workspace() is False
+
+        listed = names(tree(client).json())
+        assert ".env" in listed and ".env.local" in listed
+        body = read(client, ".env")
+        assert body.status_code == 200
+        assert body.json()["text"] == "SECRET=1\n"
+        assert client.get("/api/fs/stat", params={"path": ".env"}).json()["paths"][0][
+            "exists"
+        ] is True
 
     def test_workspace_root_on_the_lsp_deny_list_is_422(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -175,6 +295,91 @@ class TestPathLocks:
             response = denied_client.get("/api/fs/tree")
         assert response.status_code == 422
         assert "deny-list" in response.json()["detail"]
+
+
+class TestReservedFolderIsAbsentEverywhere:
+    """``.nojae`` is reserved by code (D5), not by a rule — and not only at the root.
+
+    It holds the rules, so a rule about it is a contradiction and no rule can
+    un-reserve it: the folder is absent from the listing, and a read of anything
+    under it is indistinguishable from absence, in a foreign workspace and in
+    benchmarkit's own.
+    """
+
+    DEEP = ["nested/.nojae", "nested/.nojae/read-write-policy.json"]
+
+    def test_absent_at_the_root_and_at_any_depth(self, workspace: Path, client):
+        for rel in self.DEEP:
+            (workspace / rel).mkdir(parents=True, exist_ok=True)
+            (workspace / rel / "notes.md").write_text("x\n", encoding="utf-8")
+        assert ".nojae" not in names(tree(client).json())
+        assert editorfs.constants.POLICY_DIRNAME not in names(
+            tree(client, "nested").json()
+        )
+        for rel in self.DEEP + [f"{self.DEEP[0]}/notes.md"]:
+            assert tree(client, rel).status_code == 404, rel
+            assert read(client, rel).status_code == 404, rel
+
+    def test_absent_in_benchmarks_own_workspace_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The mixed state is the normal one: the default location is the app."""
+        root = tmp_path / "app"
+        (root / "src").mkdir(parents=True)
+        (root / editorfs.constants.POLICY_DIRNAME).mkdir()
+        (root / editorfs.constants.POLICY_DIRNAME / "x.md").write_text("x\n")
+        monkeypatch.setattr(editorfs.constants, "PROJECT_ROOT", root)
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
+        policy_file.invalidate_policy_cache()
+        with TestClient(create_app()) as own_client:
+            assert editorfs.constants.POLICY_DIRNAME not in names(
+                tree(own_client).json()
+            )
+            assert own_client.get(
+                "/api/fs/file",
+                params={"path": f"{editorfs.constants.POLICY_DIRNAME}/x.md"},
+            ).status_code == 404
+
+
+class TestBenchmarksOwnWorkspaceAtTheRoutes:
+    """Level A through the read surface: the app's own ``.env`` is not there.
+
+    The mirror of ``test_a_foreign_workspaces_dotenv_is_an_ordinary_file``. Both
+    halves matter: the same file name answers differently in the two workspaces,
+    and within the app's own it answers *absent* to a look and *refused* to a
+    touch (404/422, pol-00 D8) — the write routes of that pair live in
+    ``tests/test_editorfs_write.py``.
+    """
+
+    @pytest.fixture
+    def own(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        root = tmp_path / "app"
+        (root / "src").mkdir(parents=True)
+        (root / ".env").write_text("ENDPOINT=x\n", encoding="utf-8")
+        (root / "src" / ".env.local").write_text("SECRET=1\n", encoding="utf-8")
+        (root / "logs" / "trash").mkdir(parents=True)
+        (root / "logs" / "trash" / "x").write_text("kept\n", encoding="utf-8")
+        monkeypatch.setattr(editorfs.constants, "PROJECT_ROOT", root)
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
+        policy_file.invalidate_policy_cache()
+        return root
+
+    def test_its_env_and_logs_are_absent_from_everything_that_only_looks(
+        self, own: Path
+    ):
+        with TestClient(create_app()) as own_client:
+            assert ".env" not in names(tree(own_client).json())
+            assert "logs" not in names(tree(own_client).json())
+            for rel in (".env", "src/.env.local", "logs/trash/x"):
+                assert tree(own_client, rel).status_code == 404, rel
+                assert read(own_client, rel).status_code == 404, rel
+                probed = own_client.get(
+                    "/api/fs/stat", params={"path": rel}
+                ).json()["paths"][0]
+                assert probed["exists"] is False, rel
+                assert own_client.get(
+                    "/api/fs/diff", params={"path": rel}
+                ).status_code in (404, 504), rel
 
 
 class TestMissingAndFile:
@@ -221,12 +426,40 @@ class TestStatEndpoint:
             "dir": False,
         }
 
-    def test_denied_path_is_a_refusal_not_exists_false(
-        self, workspace: Path, client
-    ):
-        """Otherwise the probe would leak that a secret file exists."""
+    def test_hidden_path_is_absent_not_a_refusal(self, workspace: Path, client):
+        """A *look* at a hidden path must be indistinguishable from absence.
+
+        The premise of this test used to be the opposite — a refusal rather than
+        ``exists: false``, because the connector deny-list was a secret kept from
+        the browser. Under a policy the user wrote (and pol-07 shows them), the
+        asymmetry that matters is the other one: 404 to look, 422 to touch.
+        """
+        write_policy(workspace, [{"path": ".env**", "mode": "hidden"}])
         (workspace / ".env").write_text("SECRET=1\n", encoding="utf-8")
-        assert client.get("/api/fs/stat", params={"path": ".env"}).status_code == 422
+        response = client.get("/api/fs/stat", params={"path": ".env"})
+        assert response.status_code == 200
+        assert response.json()["paths"][0] == {
+            "path": ".env",
+            "exists": False,
+            "mtime": None,
+            "size": None,
+            "dir": False,
+        }
+
+    def test_a_read_only_path_answers_the_probe_normally(self, workspace: Path, client):
+        """``ro`` is not a read rule: the probe reports the file, mtime and all."""
+        (workspace / ".venv" / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+        item = client.get(
+            "/api/fs/stat", params={"path": ".venv/pyvenv.cfg"}
+        ).json()["paths"][0]
+        assert item["exists"] is True
+        assert item["size"] == len("home = /x\n")
+
+    def test_an_escape_attempt_is_still_a_refusal_not_an_absence(
+        self, client
+    ):
+        """A lock about the *request* travels; only a hidden name answers absent."""
+        assert client.get("/api/fs/stat", params={"path": "../hosts"}).status_code == 422
 
 
 class TestReadEndpoint:
@@ -265,49 +498,49 @@ class TestReadEndpoint:
         (workspace / name).write_text("hello\n", encoding="utf-8")
         assert read(client, name).json()["language"] == language
 
-    @pytest.mark.parametrize(
-        "rel",
-        [
-            ".env",                       # secrets/config file by prefix
-            ".env.local",                 # …any spelling of it
-            "deploy/id_ed25519",          # a credential file
-            "keys/server.pem",            # a private key by extension
-            ".git/config",                # version-control internals
-            ".ssh/config",                # a secret store
-        ],
-    )
-    def test_denied_files_are_refused_and_name_the_rule(
+    @pytest.mark.parametrize("rel", ["deploy/id_ed25519", "keys/server.pem"])
+    def test_a_hidden_file_is_absent_and_its_bytes_are_never_shown(
         self, workspace: Path, client, rel: str
     ):
-        """The same gate as the tree: the UI never asks for what the connectors
-        refuse (decision D3), and the body says which rule fired."""
+        """The same gate as the tree, answering 404 (pol-00 D8).
+
+        The tree prunes these names, so a read that answered *anything* about
+        them — a refusal included — would be the leak. The names are hidden by
+        rules this test wrote, because the pane no longer carries the connector
+        floor's private-key and credential-name lists: those guard a different
+        trust surface (an agent's context window), and here the workspace decides.
+        """
+        write_policy(workspace, [
+            {"path": "deploy", "mode": "hidden"},
+            {"path": "keys", "mode": "hidden"},
+        ])
         target = workspace / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("SECRET=never-shown\n", encoding="utf-8")
         response = read(client, rel)
-        assert response.status_code == 422
-        assert "connector path policy" in response.json()["detail"]
+        assert response.status_code == 404
+        assert "does not exist" in response.json()["detail"]
         assert "never-shown" not in response.text
+        assert rel not in names(tree(client).json())
 
-    def test_connector_sources_use_the_same_read_flavour(
+    def test_a_read_only_file_is_readable_exactly_as_the_tree_promised(
         self, workspace: Path, client
     ):
-        """``mcp_connectors/`` is read-denied *for writes* only, so the editor
-        reads its sources exactly as the tree already lists them — and a secret
-        *name* inside that folder stays refused. Refusing the folder for reads
-        too would make the read endpoint disagree with the tree, which decision
-        D3 exists to prevent."""
+        """The tree lists it, so the read owes it a body — one answer, two surfaces.
+
+        This is the row that used to prove the *connector's* two flavours were two
+        lists (read a connector's source, never rewrite it). Under the policy the
+        same pair is ``ro``: browsable and readable, and refused the moment a
+        route tries to change it — which is ``tests/test_editorfs_write.py``'s
+        half of the same promise.
+        """
         scripts = workspace / "mcp_connectors"
         scripts.mkdir()
         (scripts / "console_mcp.py").write_text("# the policy itself\n", encoding="utf-8")
-        (scripts / "id_ed25519").write_text("priv\n", encoding="utf-8")
+        write_policy(workspace, [{"path": "**/mcp_connectors", "mode": "ro"}])
+
         assert read(client, "mcp_connectors/console_mcp.py").status_code == 200
-        # …and it is a listed file, so the tree promised it.
-        listed = names(tree(client, "mcp_connectors").json())
-        assert "console_mcp.py" in listed
-        denied = read(client, "mcp_connectors/id_ed25519")
-        assert denied.status_code == 422
-        assert "credential file" in denied.json()["detail"]
+        assert "console_mcp.py" in names(tree(client, "mcp_connectors").json())
 
     @pytest.mark.parametrize("raw", ["../etc/hosts", "/etc/hosts", "~/x", "..", "a/../../b"])
     def test_escape_attempts_are_422(self, client, raw: str):
@@ -457,8 +690,27 @@ class TestSurfaceShape:
         in ``editorfs.mutate`` and are re-exported through the package because
         the routes call them. What stays forbidden is anything *beyond* those
         four — a second spelling of a write, or a helper that skips the gate.
+
+        pol-06 widened the **gate** half deliberately: the three write gates and
+        the verdict they consult are public, because a caller outside the package
+        (the batch listing, later the connectors' parity check) has to be able to
+        ask the same question the pane does. The predicates the verdict replaced
+        are asserted absent — a second spelling of "is this allowed" is how two
+        surfaces start disagreeing.
         """
         for name in ("write_file", "create_path", "trash_path", "rename_path"):
             assert hasattr(editorfs, name)
         for name in ("save_file", "delete_file", "move_path", "write_text", "unlink"):
             assert not hasattr(editorfs, name)
+
+        gates = (
+            "resolve_in_workspace", "resolve_write_target", "resolve_save_target",
+            "resolve_existing_in_workspace", "resolve_parent_in_workspace",
+            "normalise_rel", "workspace_root",
+            "policy_blocking_error", "mode_for", "refusal_message", "Verdict",
+            "MODES", "WorkspacePathError",
+        )
+        for name in gates:
+            assert hasattr(editorfs, name), name
+        for name in ("listable", "writable", "refusal"):
+            assert not hasattr(editorfs, name), name

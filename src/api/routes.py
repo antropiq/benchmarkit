@@ -43,6 +43,7 @@ from src.config import (
 from src.core.mcphub import load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
 from src.core import editorfs
+from src.core.editorfs import policy_seed
 from src.core import termhub
 from src.core.termhub import policy as term_policy
 from src.core.bench import run_benchmark
@@ -1142,6 +1143,19 @@ def build_router(state: RunState) -> APIRouter:
             "default": default_path_location(),
         }
 
+    def _policy_block() -> Dict[str, Any]:
+        """What the workspace's policy file looks like, **read-only**.
+
+        pol-05 seeds a default ``.nojae/read-write-policy.json`` at the two
+        moments a folder becomes the working location (boot, and the switch
+        below), so a GET must not write one: the settings dialog is opened far
+        more often than a workspace is switched, and a read that leaves a folder
+        in someone's project is the mistake the seeding rules forbid. ``state``
+        is ``existing`` / ``absent`` / ``failed`` here, and the dialog turns
+        ``absent`` into "this project has no policy file yet".
+        """
+        return policy_seed.policy_file_state(path_location())
+
     @router.get("/path-location")
     def get_path_location() -> Dict[str, Any]:
         """Effective working location of the MCP/LSP hubs.
@@ -1151,7 +1165,7 @@ def build_router(state: RunState) -> APIRouter:
         — read live from the environment, so it reflects a change made through
         ``POST /path-location`` rather than a stale startup snapshot.
         """
-        return _path_location_payload()
+        return _path_location_payload() | {"policy": _policy_block()}
 
     @router.post("/path-location")
     async def post_path_location(
@@ -1231,7 +1245,24 @@ def build_router(state: RunState) -> APIRouter:
             else:
                 os.environ[PATH_LOCATION_KEY] = previous
             raise
-        return _path_location_payload() | {"mcp": mcp, "lsp": lsp}
+        # Seed the new root's default policy file here — the second of pol-05's
+        # two entry points (the other is boot, ``api/server.py``). It goes
+        # *after* the two hub restarts on purpose: a seeding hiccup must not be
+        # mistaken for a hub failure, because the except above would then roll
+        # the environment back for a reason that has nothing to do with the
+        # switch. And it goes before the response is built, so the Editor's
+        # tree re-roots onto a workspace whose rules already exist.
+        #
+        # A failure is a note in the payload, never an error: an unseeded
+        # workspace opens fine, it just has no level-B rules to filter it.
+        return (
+            _path_location_payload()
+            | {
+                "mcp": mcp,
+                "lsp": lsp,
+                "policy": policy_seed.ensure_policy_file(expanded),
+            }
+        )
 
     @router.get("/fs/tree")
     def get_fs_tree(path: str = "") -> Dict[str, Any]:
@@ -1243,11 +1274,13 @@ def build_router(state: RunState) -> APIRouter:
         first paint at one ``listdir`` however big the checkout is.
 
         All the rules live in ``core/editorfs`` (the three locks on the path,
-        the entry cap, the ignored names, the deny-list); this route only turns
-        a :class:`~src.core.editorfs.policy.WorkspacePathError` into its HTTP
-        status. This route reads: every write route under ``/api/fs`` is gated
-        by the *write* flavour of the same policy, belongs to the browser alone,
-        and no hub or tool may ever gain one.
+        the entry cap, and one policy verdict per path — built in for the app's
+        own files, and read from the workspace's ``.nojae/read-write-policy.json``
+        for everyone else's); this route only turns a
+        :class:`~src.core.editorfs.policy.WorkspacePathError` into its HTTP
+        status. This route reads: every write route under ``/api/fs`` is gated by
+        the same verdict, belongs to the browser alone, and no hub or tool may
+        ever gain one.
         """
         try:
             return editorfs.list_dir(path)
@@ -1259,9 +1292,10 @@ def build_router(state: RunState) -> APIRouter:
         """The whole text of one workspace-relative file, for the Editor tab.
 
         The same gate as the tree — ``editorfs`` resolves the path inside the
-        working location and applies the connector deny-list — so the browser
-        can never ask for a file the connectors refuse: one policy per surface
-        that touches disk. Past ``editorfs.constants.MAX_EDITOR_BYTES``
+        working location and asks the policy verdict — so a name the listing
+        pruned answers this read as absent (404), never as a refusal that would
+        confirm it exists. One verdict, every surface that touches disk. Past
+        ``editorfs.constants.MAX_EDITOR_BYTES``
         the answer is 413 naming the size; a binary file answers ``binary: true``
         with no ``text`` key rather than an error, so the pane can label it.
 
@@ -1283,12 +1317,13 @@ def build_router(state: RunState) -> APIRouter:
         """One whole editor buffer, back to disk (``PUT /api/fs/file``).
 
         The rules all live in :func:`src.core.editorfs.files.write_file` —
-        the write flavour of the gate over the whole ancestor chain, the
-        ``mtime`` guard (409 whose ``detail`` is an object carrying both
-        mtimes), the size cap on the way in *and* on the file on disk (413:
-        a buffer we never fully read is never written back), a pre-save
-        backup, and an atomic temp-file + ``os.replace`` that keeps the file's
-        mode and its exact bytes (CRLF included, no normalisation).
+        the write gate on the leaf (a path the policy hides or marks read-only
+        is refused 422, naming the level and the rule), the ``mtime`` guard
+        (409 whose ``detail`` is an object carrying both mtimes), the size cap
+        on the way in *and* on the file on disk (413: a buffer we never fully
+        read is never written back), a pre-save backup, and an atomic temp-file
+        + ``os.replace`` that keeps the file's mode and its exact bytes (CRLF
+        included, no normalisation).
 
         Refused while a chat reply streams: that reply may be editing these
         very files through its tools, so a save landing in the middle of one
@@ -1316,10 +1351,11 @@ def build_router(state: RunState) -> APIRouter:
         """One new file or folder inside the working location.
 
         The rules live in :func:`src.core.editorfs.mutate.create_path` — the
-        write gate over the parent chain *and* the leaf name (422 in the
-        deny-list's words), the parent must already be a directory (409 naming
-        it: a typo becomes a refusal, never a stray tree — there is no
-        ``mkdir -p`` here), and never over an existing name, dangling symlink
+        write gate over the parent chain *and* the leaf name (422 naming the
+        policy level and the rule that matched, never the 404 a caller would
+        read as "the name is free"), the parent must already be a directory
+        (409 naming it: a typo becomes a refusal, never a stray tree — there is
+        no ``mkdir -p`` here), and never over an existing name, dangling symlink
         included (409 whose ``detail`` is ``{"reason": "exists", …}``, closed
         against a race with ``mkdir``/``O_EXCL`` rather than checked).
 
@@ -1343,13 +1379,14 @@ def build_router(state: RunState) -> APIRouter:
         """One file or one whole folder, moved to the trash (``DELETE /api/fs/file``).
 
         The rules live in :func:`src.core.editorfs.mutate.trash_path` — the
-        write gate over the chain (422 in the deny-list's words), the working
+        write gate over the chain (422 naming the policy rule), the working
         location itself refused outright (400), an absent path answered **404**
         rather than "already deleted, fine", a top-level symlink refused (400,
         its target may be outside the workspace), and the **all-or-nothing
-        subtree check**: one denied descendant refuses the whole delete and
-        nothing at all moves. What is deleted is never ``unlink``ed — it lands
-        in ``logs/trash/<batch>/<the relative path>`` and is swept after
+        subtree check**: one hidden or read-only descendant refuses the whole
+        delete, naming that descendant, and nothing at all moves. What is
+        deleted is never ``unlink``ed — it lands in
+        ``logs/trash/<batch>/<the relative path>`` and is swept after
         ``TRASH_RETENTION_DAYS``, which is why the payload names the batch.
 
         Refused while a chat reply streams, like every other write. The answer

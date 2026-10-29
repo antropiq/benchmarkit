@@ -1082,6 +1082,23 @@ body {
   margin-bottom: var(--bi-space-2);
 }
 
+/* The workspace policy file's status under the working-directory field
+   (pol-05). The note is the one the seed *failed*: the switch succeeded, so it
+   reads as a warning rather than the red refusal above it. */
+.path-location-policy-note {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.path-location-policy-note code {
+  word-break: break-all;
+}
+
+.path-location-policy-note--warn {
+  color: var(--bi-warning);
+  font-size: 0.8rem;
+}
+
 /* Password input with an inline show/hide (eye) toggle. */
 .password-field {
   position: relative;

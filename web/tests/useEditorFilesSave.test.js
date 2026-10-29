@@ -137,13 +137,19 @@ describe('useEditorFiles.saveFile', () => {
 
   it('keeps a policy or size refusal as a message-shaped answer', async () => {
     await openRecord('mcp_connectors/x.py')
+    // The policy's sentence, since pol-06: level, mode, and the pattern that
+    // matched — shown verbatim, because it names the line the user can edit.
     vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() =>
-      jsonResponse({ detail: 'Path is refused by the connector path policy' }, false, 422),
+      jsonResponse(
+        { detail: 'Refused by the workspace policy: "**/mcp_connectors" (read-only)' },
+        false,
+        422,
+      ),
     )
     const result = await files.saveFile('mcp_connectors/x.py')
     expect(result.ok).toBe(false)
     expect(result.reason).toBe('refused')
-    expect(result.text).toContain('connector path policy')
+    expect(result.text).toContain('workspace policy')
   })
 
   // Line endings are the editor's, never the server's (D5): Monaco's model

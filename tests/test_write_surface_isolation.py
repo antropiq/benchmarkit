@@ -25,6 +25,7 @@ that cannot fail is not a guard: that is the same "assert the invariant, not
 the intent" style as the file-icons sync test.
 """
 
+import ast
 import asyncio
 import json
 from pathlib import Path
@@ -49,6 +50,15 @@ ALLOWED_HOMES = {
     Path("web/src/composables/useEditorCreate.js"),  # create
     Path("web/src/composables/useEditorRename.js"),  # rename
 }
+
+# A connector that could speak HTTP could call a route it never names in a
+# string, so the marker scan alone would miss it. These are the clients that
+# would carry one: the top-level module name is enough (``urllib.parse`` builds
+# URLs and reaches nothing, ``urllib.request`` does).
+HTTP_CLIENTS: frozenset[str] = frozenset({
+    "httpx", "requests", "urllib3", "aiohttp", "socket",
+    "urllib.request",
+})
 
 
 def scan_roots() -> List[Path]:
@@ -86,6 +96,32 @@ def offenders_for(markers, roots, allowed=ALLOWED_HOMES) -> List[str]:
                 )
                 if Path(label) not in allowed:
                     found.append(label)
+    return found
+
+
+def http_import_offenders(roots: List[Path]) -> List[str]:
+    """Every ``*.py`` under ``roots`` that imports an HTTP client, by file name.
+
+    One implementation, used by the guard on the connector tree and by its
+    self-check below — the same reason ``offenders_for`` is shared.
+    """
+    found: List[str] = []
+    for root in roots:
+        candidates = [root] if root.is_file() else sorted(root.glob("*.py"))
+        for path in candidates:
+            try:
+                parsed = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+            names: List[str] = []
+            for node in ast.walk(parsed):
+                if isinstance(node, ast.Import):
+                    names.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    names.append(node.module or "")
+            for name in names:
+                if name in HTTP_CLIENTS or name.split(".")[0] in HTTP_CLIENTS:
+                    found.append(f"{path.name}: {name}")
     return found
 
 
@@ -212,6 +248,58 @@ class TestNoCodePathCallsThem:
         assert callers == [str(Path("src") / "api" / "routes.py")]
 
 
+class TestTheConnectorsWorkspacePolicyChecksStayInTheirLane:
+    """pol-08 gave the connectors a new reason to refuse a path — not a new route.
+
+    The two checks (``fedit_mcp._workspace_policy_reason`` and
+    ``console_mcp.workspace_policy_error``, both built on
+    ``mcp_connectors.policy_file.workspace_policy_reason``) answer the same
+    question the Editor pane answers, and the tempting shortcut is to ask the
+    *app* — an HTTP call to a `/api/fs` route, which would hand a connector a
+    write surface it has never had. Pinned three ways: the functions are still
+    there (a rename that drops the check would otherwise pass every other test
+    in this file), the shared loader reads a file rather than a socket, and no
+    connector module can reach a route at all.
+    """
+
+    def test_the_three_new_functions_exist(self):
+        from mcp_connectors import console_mcp, fedit_mcp, policy_file
+
+        assert callable(fedit_mcp._workspace_policy_reason)
+        assert callable(console_mcp.workspace_policy_error)
+        assert callable(policy_file.workspace_policy_reason)
+
+    def test_no_connector_module_imports_an_http_client(self):
+        """A refusal path that cannot speak HTTP cannot reach a write route.
+
+        The marker scan looks for a route *named in a string*; this one looks for
+        the transport that could call a route without ever naming it. pol-08 is
+        the moment that matters: the connectors now answer a question the app
+        also answers, and "just ask the running app" is the shortcut that would
+        turn a refusal path into a client of the write surface.
+        """
+        assert http_import_offenders([REPO_ROOT / "mcp_connectors"]) == []
+
+    def test_the_verdict_comes_from_a_file_on_disk_not_from_a_transport(self):
+        """The check answers locally: an unreadable root yields no verdict.
+
+        A root with no policy file is the state a connector reaches when its
+        workspace was never seeded, and the answer is "no rules" — a None, not a
+        refusal fetched from the app. If the connector ever asked the running app
+        instead, this is where it would show up.
+        """
+        from mcp_connectors import policy_file as connector_policy
+
+        assert connector_policy.workspace_policy_reason(
+            "web/vendor/x.js", root="/definitely-not-a-workspace", for_write=True,
+        ) is None
+        text = (REPO_ROOT / "mcp_connectors" / "policy_file.py").read_text(
+            encoding="utf-8"
+        )
+        for marker in ("httpx", "requests.", "urllib.request", "socket"):
+            assert marker not in text, marker
+
+
 class TestTheTerminalStaysHumanOnly:
     def test_neither_hub_mentions_the_terminal(self):
         """The shell is one WebSocket per session, reached from the SPA."""
@@ -274,6 +362,19 @@ class TestTheGuardsActuallyFail:
             for tool in poisoned
         )
         assert any(marker in haystack for marker in WRITE_MARKERS)
+
+    def test_the_http_import_scan_catches_a_poisoned_connector(self, tmp_path):
+        """The new guard sees an HTTP client, and the marker scan sees the route."""
+        fake = tmp_path / "cheeky_connector.py"
+        fake.write_text(
+            "import httpx\n\n"
+            "def save(rel, text):  # a refusal path wired to PUT /api/fs\n"
+            "    return httpx.put('http://127.0.0.1:8000/api/fs/file',\n"
+            "                   json={'path': rel, 'text': text})\n",
+            encoding="utf-8",
+        )
+        assert http_import_offenders([tmp_path]) == [f"{fake.name}: httpx"]
+        assert offenders_for(WRITE_MARKERS, [tmp_path], allowed=set()) == [str(fake)]
 
     def test_the_lsp_method_guard_catches_a_write_shaped_spec(self, monkeypatch):
         spec = {

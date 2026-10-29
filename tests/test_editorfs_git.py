@@ -6,9 +6,15 @@ Every test builds its own throw-away repository under ``tmp_path`` and points
 checkout. The git runs are hermetic: the global/system config is ignored and
 the identity comes from the environment, so a developer's ``~/.gitconfig``
 (signing, ``core.autocrlf``, a rename threshold) cannot change an answer.
+
+The policy rows here assert one rule, not two (pol-00 D7 deleted the tree's
+hardcoded ignored-names set): a path whose verdict is ``hidden`` gets no row. An
+``ro`` folder's dirty files **do** — they are visible in the tree, and a marker
+with no row (or a row with no marker) would be the disagreement to avoid.
 """
 
 import os
+import json
 import subprocess
 from pathlib import Path
 from typing import Dict, List
@@ -18,6 +24,23 @@ from fastapi.testclient import TestClient
 
 from src.api.server import create_app
 from src.core import editorfs
+from src.core.editorfs import policy_file
+
+
+def write_policy(root: Path, rules: List[Dict[str, str]]) -> Path:
+    """Give ``root`` exactly ``rules`` — the only way to change visibility now."""
+    folder = root / editorfs.constants.POLICY_DIRNAME
+    folder.mkdir(exist_ok=True)
+    path = folder / editorfs.constants.POLICY_FILENAME
+    path.write_text(
+        json.dumps(
+            {"version": editorfs.constants.POLICY_VERSION, "policies": rules},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    policy_file.invalidate_policy_cache()
+    return path
 
 
 def git(repo: Path, *args: str) -> str:
@@ -170,20 +193,56 @@ class TestStatusClassification:
 class TestStatusFollowsTheTreePolicy:
     """The status list may never name a file the tree refuses to show."""
 
-    def test_ignored_directory_names_are_dropped(self, ws, client):
-        (ws / "node_modules" / "left-pad").mkdir(parents=True)
-        (ws / "node_modules" / "left-pad" / "index.js").write_text("x\n", encoding="utf-8")
-        assert status(client)["entries"] == []
+    def test_a_hidden_paths_row_is_dropped(self, ws, client):
+        """One omission rule, and it is the one the tree uses.
 
-    def test_secret_store_paths_are_dropped(self, ws, client):
+        ``.env`` and ``.ssh`` are hidden by rules written here rather than by the
+        connector floor's name lists — which is what makes the pairing exact: the
+        row disappears with the tree row, because they consult one verdict.
+        """
+        write_policy(ws, [
+            {"path": "**/.ssh", "mode": "hidden"},
+            {"path": "**/.env**", "mode": "hidden"},
+        ])
         (ws / ".ssh").mkdir()
         (ws / ".ssh" / "notes.txt").write_text("public\n", encoding="utf-8")
         (ws / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
         assert status(client)["entries"] == []
+        # The very same call lists a name no rule hides, so the emptiness above
+        # is the policy and not a broken query.
+        (ws / "outer.txt").write_text("shown\n", encoding="utf-8")
+        assert [entry["path"] for entry in status(client)["entries"]] == ["outer.txt"]
 
-    def test_ignored_set_is_patchable_through_constants(self, ws, client, monkeypatch):
+    def test_a_read_only_folders_dirty_file_keeps_its_row(self, ws, client):
+        """``ro`` is a write rule: the tree shows the file, so status marks it."""
+        write_policy(ws, [{"path": "**/vendor", "mode": "ro"}])
+        (ws / "vendor").mkdir()
+        (ws / "vendor" / "lib.js").write_text("x\n", encoding="utf-8")
+        git(ws, "add", "-A")
+        git(ws, "commit", "-qm", "vendor")
+        (ws / "vendor" / "lib.js").write_text("changed\n", encoding="utf-8")
+        assert [entry["path"] for entry in status(client)["entries"]] == ["vendor/lib.js"]
+        listed = [
+            entry["name"]
+            for entry in client.get("/api/fs/tree", params={"path": "vendor"}).json()[
+                "entries"
+            ]
+        ]
+        assert listed == ["lib.js"]
+
+    def test_visibility_is_the_workspaces_file_to_change(
+        self, ws, client, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Replaces the old patch-the-constant test: the rule is the mechanism.
+
+        ``pkg`` is listed while no rule names it, and its rows vanish the moment a
+        rule hides it — with the same file written either way, so what changed is
+        the policy and not the tree.
+        """
         (ws / "pkg" / "mod.py").write_text("changed\n", encoding="utf-8")
-        monkeypatch.setattr(editorfs.constants, "IGNORED_DIR_NAMES", frozenset({"pkg"}))
+        assert "pkg/mod.py" in [entry["path"] for entry in status(client)["entries"]]
+
+        write_policy(ws, [{"path": "pkg", "mode": "hidden"}])
         assert status(client)["entries"] == []
 
 
@@ -292,13 +351,29 @@ class TestDiffPayload:
         body = client.get("/api/fs/diff", params={"path": "blob.dat"}).json()
         assert body["binary"] is True
 
-    def test_a_denied_path_is_refused_exactly_as_the_file_endpoint_is(
+    def test_a_hidden_path_is_absent_exactly_as_the_file_endpoint_is(
         self, client, ws
     ):
+        """A diff is an observation, so it answers absence — never the rule (D8).
+
+        The pair this replaces stated the same rule as a 422 naming the
+        deny-list; the policy inverts the number on purpose, and the two read
+        endpoints stay identical to each other either way.
+        """
+        write_policy(ws, [{"path": "**/.env**", "mode": "hidden"}])
         (ws / ".env").write_text("A=1\n", encoding="utf-8")
         response = client.get("/api/fs/diff", params={"path": ".env"})
-        assert response.status_code == 422
-        assert "connector path policy" in response.json()["detail"]
+        assert response.status_code == 404
+        assert "does not exist" in response.json()["detail"]
+        assert "A=1" not in response.text
+
+    def test_a_read_only_path_diffs_normally(self, client, ws):
+        """``ro`` says nothing may change, not that nothing may be seen."""
+        write_policy(ws, [{"path": "keep.py", "mode": "ro"}])
+        (ws / "keep.py").write_text("a = 1\nB = 2\nc = 3\n", encoding="utf-8")
+        response = client.get("/api/fs/diff", params={"path": "keep.py"})
+        assert response.status_code == 200
+        assert response.json()["modified"] == "a = 1\nB = 2\nc = 3\n"
 
     @pytest.mark.parametrize("raw", ["../outside", "/etc/hosts", "~/x", ".."])
     def test_the_same_three_locks_apply(self, client, ws, raw: str):

@@ -9,9 +9,18 @@ size caps, the backup chain, the never-overwrite rule of a create — plus the
 cross-cutting rows that only make sense stated once for all four routes, and
 the promise that no tool can reach any of it (the wider form of which lives in
 ``tests/test_write_surface_isolation.py``).
+
+What the gate answers with, since pol-06: a **policy verdict**, from two levels.
+So the refusals below are arranged by writing rules (``write_policy``), and every
+one of them names the level, the mode and the pattern that fired — the sentence
+is the point as much as the status code, because it is what the pane shows and
+what tells the user which line of their own file to change. A **mutation never
+answers 404**: absence is the green light for ``O_CREAT | O_EXCL``, so a hidden
+name is a 422 that says so (pol-00 D8).
 """
 
 import os
+import json
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +32,23 @@ from fastapi.testclient import TestClient
 from src.api import routes
 from src.api.server import create_app
 from src.core import editorfs
+from src.core.editorfs import builtin_policy, policy_file, policy_seed
+
+
+def write_policy(root: Path, rules: List[Dict[str, str]]) -> Path:
+    """Give ``root`` exactly ``rules``, the way its owner would have edited them."""
+    folder = root / editorfs.constants.POLICY_DIRNAME
+    folder.mkdir(exist_ok=True)
+    path = folder / editorfs.constants.POLICY_FILENAME
+    path.write_text(
+        json.dumps(
+            {"version": editorfs.constants.POLICY_VERSION, "policies": rules},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    policy_file.invalidate_policy_cache()
+    return path
 
 
 @pytest.fixture
@@ -43,12 +69,22 @@ def trash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A small tree, pointed at as the working location."""
+    """A small tree, pointed at as the working location, with the seeded policy.
+
+    The file pol-05 leaves behind when a folder becomes the working location is
+    what makes these answers the *default* ones — ``.git`` hidden, dependency
+    folders read-only — and the workspace is foreign (not the install directory),
+    so benchmarkit's own level A is dormant here.
+    """
     monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
     (tmp_path / "src" / "core").mkdir(parents=True)
     (tmp_path / "src" / "config.py").write_text("x = 1\n", encoding="utf-8")
     (tmp_path / "src" / "core" / "job.py").write_text("y = 2\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("# hi\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "node_modules" / "left-pad").mkdir(parents=True)
+    policy_seed.ensure_policy_file(str(tmp_path))
+    policy_file.invalidate_policy_cache()
     return tmp_path
 
 
@@ -185,27 +221,31 @@ class TestWriteGate:
         assert response.status_code == 422
         assert "NUL" in response.json()["detail"]
 
-    # (path, is it readable?) — the two flavours of one list, not two lists.
-    # ``mcp_connectors/`` is the entry that differs: reading a connector's
-    # source is legitimate debugging, rewriting the policy that constrains the
-    # agent is not. Everything else here is a secret store and is denied both
-    # ways, which the read suite already asserts.
-    DENIED = [
-        ("mcp_connectors/console_mcp.py", True),   # the connectors' own sources
-        (".git/config", False),                    # version-control internals
-        (".env", False),                           # the app's own secrets
-        (".env.local", False),
-        ("deploy/id_rsa", False),                  # a credential file
-        ("keys/server.pem", False),                # a private key by extension
-        (".ssh/config", False),                    # a secret store
+    # ``(rule, path, is the path readable?)`` — the two modes, and the two
+    # answers that go with them. ``ro`` is a *write* rule, so the read stays
+    # open and the save does not; ``hidden`` is both, so the read answers absent
+    # and the write answers 422 (never the 404 a create would treat as a free
+    # name). The seeded file already carries the ``.git`` and ``node_modules``
+    # rows; the rest are written by the test.
+    LOCKED = [
+        # (rules to write, path to try, readable?, fragment of the message)
+        ([], ".git/config", False, '".git"'),               # from the seed
+        ([], "node_modules/left-pad/index.js", True, '"**/node_modules"'),
+        ([{"path": "**/.ssh", "mode": "hidden"}], ".ssh/config", False, '"**/.ssh"'),
+        ([{"path": "deploy/id_rsa", "mode": "hidden"}], "deploy/id_rsa", False,
+         '"deploy/id_rsa"'),
+        ([{"path": "keys", "mode": "ro"}], "keys/server.pem", True, '"keys"'),
+        ([{"path": ".env.local", "mode": "ro"}], ".env.local", True, '".env.local"'),
     ]
 
-    @pytest.mark.parametrize(("rel", "readable"), DENIED)
-    def test_write_denied_paths_are_refused_naming_the_write_rule(
-        self, workspace: Path, client, rel: str, readable: bool
+    @pytest.mark.parametrize(("rules", "rel", "readable", "quoted"), LOCKED)
+    def test_a_locked_path_is_refused_naming_the_rule_that_matched(
+        self, workspace: Path, client, rules: List[Dict[str, str]], rel: str,
+        readable: bool, quoted: str,
     ):
-        """Refused for writing, in the deny-list's own words, disk untouched —
-        and the read answer for the same path does not move."""
+        """422 naming the level, the mode and the pattern — disk untouched."""
+        if rules:
+            write_policy(workspace, rules)
         target = workspace / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("original\n", encoding="utf-8")
@@ -213,8 +253,8 @@ class TestWriteGate:
         response = save(client, rel, "overwritten\n")
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "connector path policy" in detail
-        assert "never write to it" in detail
+        assert "workspace policy" in detail, detail
+        assert quoted in detail, detail
         assert target.read_text(encoding="utf-8") == "original\n"
 
         read_response = client.get("/api/fs/file", params={"path": rel})
@@ -222,34 +262,42 @@ class TestWriteGate:
             assert read_response.status_code == 200
             assert read_response.json()["text"] == "original\n"
         else:
-            assert read_response.status_code == 422
-            assert "never read from it" in read_response.json()["detail"]
+            assert read_response.status_code == 404
+            assert "does not exist" in read_response.json()["detail"]
 
-    def test_mcp_connectors_is_readable_but_never_writable(
+    def test_an_ro_folder_is_browsable_and_readable_but_never_writable(
         self, workspace: Path, client
     ):
-        """The one pair that proves the two flavours are different lists."""
-        scripts = workspace / "mcp_connectors"
-        scripts.mkdir()
-        (scripts / "console_mcp.py").write_text("# the policy itself\n", encoding="utf-8")
+        """The pair that proves ``ro`` is one mode with two answers."""
+        (workspace / "mcp_connectors").mkdir()
+        (workspace / "mcp_connectors" / "console_mcp.py").write_text(
+            "# the policy itself\n", encoding="utf-8"
+        )
+        write_policy(workspace, [{"path": "**/mcp_connectors", "mode": "ro"}])
         assert client.get(
             "/api/fs/file", params={"path": "mcp_connectors/console_mcp.py"}
         ).status_code == 200
         response = save(client, "mcp_connectors/console_mcp.py", "# rewritten\n")
         assert response.status_code == 422
-        assert "'mcp_connectors'" in response.json()["detail"]
+        assert '"**/mcp_connectors"' in response.json()["detail"]
 
-    def test_a_denied_parent_refuses_an_innocent_leaf(
+    def test_a_folder_rule_refuses_an_innocent_descendant(
         self, workspace: Path, client
     ):
-        """The ancestor chain: a folder whose *name* is a secret file."""
+        """The subtree rule, on a leaf whose own name says nothing.
+
+        ``.env.local`` is locked by a rule about *it*, and the matcher's subtree
+        rule is what reaches ``notes.txt`` — so the refusal quotes the folder's
+        pattern, which is the line the user would go and change.
+        """
+        write_policy(workspace, [{"path": ".env.local", "mode": "ro"}])
         hidden = workspace / ".env.local"
         hidden.mkdir()
         (hidden / "notes.txt").write_text("original\n", encoding="utf-8")
         response = save(client, ".env.local/notes.txt", "overwritten\n")
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "secrets/config file" in detail
+        assert '".env.local"' in detail
         assert (hidden / "notes.txt").read_text(encoding="utf-8") == "original\n"
 
     def test_a_symlink_inside_the_workspace_pointing_outside_is_422(
@@ -371,13 +419,35 @@ class TestGateHelpers:
         assert caught.value.status_code == 404
         assert "does not exist" in caught.value.detail
 
-    def test_the_exists_shape_uses_the_write_flavour(self, workspace: Path):
-        (workspace / ".ssh").mkdir()
-        (workspace / ".ssh" / "config").write_text("Host *\n", encoding="utf-8")
+    def test_the_exists_shape_refuses_a_read_only_leaf(self, workspace: Path):
+        """``node_modules`` is ``ro`` in the seeded file — no test rule needed."""
+        (workspace / "node_modules" / "left-pad" / "index.js").write_text(
+            "x\n", encoding="utf-8"
+        )
         with pytest.raises(editorfs.WorkspacePathError) as caught:
-            editorfs.resolve_existing_in_workspace(".ssh/config")
+            editorfs.resolve_existing_in_workspace("node_modules/left-pad/index.js")
         assert caught.value.status_code == 422
-        assert "never write to it" in caught.value.detail
+        assert '"**/node_modules"' in caught.value.detail
+
+    def test_the_exists_shape_refuses_a_hidden_leaf_by_name_not_by_absence(
+        self, workspace: Path
+    ):
+        """D8, at the gate: a mutation of a hidden path is 422 naming the rule.
+
+        The read gate answers 404 for the same path — that asymmetry lives here,
+        in one branch, rather than in each route that could get it wrong.
+        """
+        (workspace / ".git").mkdir(exist_ok=True)
+        (workspace / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+        with pytest.raises(editorfs.WorkspacePathError) as caught:
+            editorfs.resolve_existing_in_workspace(".git/config")
+        assert caught.value.status_code == 422
+        assert '".git"' in caught.value.detail
+
+        # And the read gate of the very same path is the 404 that hides it.
+        with pytest.raises(editorfs.WorkspacePathError) as read_gate:
+            editorfs.resolve_in_workspace(".git/config")
+        assert read_gate.value.status_code == 404
 
     def test_the_create_shape_resolves_the_parent_not_the_leaf(
         self, workspace: Path
@@ -408,14 +478,31 @@ class TestGateHelpers:
             editorfs.resolve_parent_in_workspace("")
         assert caught.value.status_code == 400
 
-    def test_the_create_shape_gates_the_parent_with_the_write_flavour(
+    def test_the_create_shape_gates_the_parent_with_the_write_verdict(
         self, workspace: Path
     ):
+        """An ``ro`` folder may not be added to, and the message says which rule."""
         (workspace / "mcp_connectors").mkdir()
+        write_policy(workspace, [{"path": "**/mcp_connectors", "mode": "ro"}])
         with pytest.raises(editorfs.WorkspacePathError) as caught:
             editorfs.resolve_parent_in_workspace("mcp_connectors/new.py")
         assert caught.value.status_code == 422
-        assert "'mcp_connectors'" in caught.value.detail
+        assert '"**/mcp_connectors"' in caught.value.detail
+
+    def test_the_create_shape_refuses_a_hidden_name_before_the_parent_is_statted(
+        self, workspace: Path
+    ):
+        """The leaf check happens on the name, so no answer confirms the name is free.
+
+        The parent here also does not exist: without the pre-``stat`` leaf check,
+        this would be the 409 "parent folder does not exist", which is exactly the
+        green light for ``O_CREAT | O_EXCL`` that D8 forbids.
+        """
+        with pytest.raises(editorfs.WorkspacePathError) as caught:
+            editorfs.resolve_parent_in_workspace(".git/HEAD")
+        assert caught.value.status_code == 422
+        assert '".git"' in caught.value.detail
+        assert not (workspace / ".git" / "HEAD").exists()
 
     def test_the_chain_helper_reports_each_level(self, workspace: Path):
         chain = editorfs.resolve_write_target("src/core/job.py")
@@ -423,23 +510,42 @@ class TestGateHelpers:
             "src", "src/core", "src/core/job.py",
         ]
 
-    def test_the_two_predicates_are_the_two_flavours_of_one_list(self):
-        """``listable``/``writable`` answer the same question the gate asks, in
-        boolean form — and they differ exactly where the lists do."""
-        from pathlib import PurePosixPath
+    def test_a_content_write_and_a_listing_write_are_two_different_questions(
+        self, workspace: Path
+    ):
+        """The split pol-06 draws, and the carve-out it buys.
 
-        scripts = PurePosixPath("/w/mcp_connectors/console_mcp.py")
-        assert editorfs.listable(scripts) is True
-        assert editorfs.writable(scripts) is False
+        :func:`resolve_write_target` insists every folder above the name is
+        read-write — that is what D3 means by an ``ro`` folder whose own listing
+        may not change. A save replaces bytes in a file that is already there and
+        changes no listing at all, so it asks the leaf alone (:func:`resolve_save_target`).
+        That is the only way a later rule can carve one file back to ``rw`` under
+        a folder rule, and this asserts both halves of that in one workspace.
+        """
+        write_policy(workspace, [
+            {"path": "**/node_modules", "mode": "ro"},
+            {"path": "**/node_modules/**/README.md", "mode": "rw"},
+        ])
+        pkg = workspace / "node_modules" / "left-pad"
+        (pkg / "README.md").write_text("docs\n", encoding="utf-8")
+        (pkg / "index.js").write_text("x\n", encoding="utf-8")
 
-        for name in (".git/config", ".ssh/id_rsa", ".env", "secrets/id_ed25519"):
-            path = PurePosixPath(f"/w/{name}")
-            assert editorfs.listable(path) is False, name
-            assert editorfs.writable(path) is False, name
+        # The carve-out saves…
+        assert editorfs.resolve_save_target("node_modules/left-pad/README.md")[0] == (
+            "node_modules/left-pad/README.md"
+        )
+        # …and its sibling, which no later rule touched, is refused by the folder.
+        with pytest.raises(editorfs.WorkspacePathError) as caught:
+            editorfs.resolve_save_target("node_modules/left-pad/index.js")
+        assert caught.value.status_code == 422
+        assert '"**/node_modules"' in caught.value.detail
 
-        ordinary = PurePosixPath("/w/src/config.py")
-        assert editorfs.listable(ordinary) is True
-        assert editorfs.writable(ordinary) is True
+        # The listing itself stays locked: adding a name there is refused even
+        # though a *file* inside that folder is individually writable.
+        with pytest.raises(editorfs.WorkspacePathError) as listing:
+            editorfs.resolve_parent_in_workspace("node_modules/left-pad/new.js")
+        assert listing.value.status_code == 422
+        assert '"**/node_modules"' in listing.value.detail
 
 
 def create(client: TestClient, path: str, *, is_dir: bool = False):
@@ -526,35 +632,52 @@ class TestCreate:
         assert response.status_code == 400
         assert "not a folder" in response.json()["detail"]
 
-    # The leaf name and its folder go through the same write-flavour list the
-    # save goes through — one list, no second copy of it.
-    DENIED_NAMES = [
-        ("mcp_connectors/new.py", "the connectors' own sources"),
-        (".git/config", "version-control internals"),
-        (".env", "the app's own secrets"),
-        (".env.local", "a secrets/config file"),
-        ("deploy/id_rsa", "a credential file"),
-        ("keys/server.pem", "a private key by extension"),
-        ("sub/.ssh/y", "a secret store below an ordinary folder"),
+    # ``(rules, path, pattern quoted in the refusal)`` — the leaf name and every
+    # folder above it go through the same verdict the save does; one policy, no
+    # second copy of it. ``.git`` needs no rule: the seeded file already hides it.
+    LOCKED_NAMES = [
+        ([{"path": "**/mcp_connectors", "mode": "ro"}], "mcp_connectors/new.py",
+         '"**/mcp_connectors"'),
+        ([], ".git/config", '".git"'),
+        ([{"path": "**/.env**", "mode": "hidden"}], ".env", '"**/.env**"'),
+        ([{"path": "**/.env**", "mode": "hidden"}], ".env.local/notes.txt",
+         '"**/.env**"'),
+        ([{"path": "deploy/id_rsa", "mode": "hidden"}], "deploy/id_rsa",
+         '"deploy/id_rsa"'),
+        ([{"path": "keys", "mode": "ro"}], "keys/server.pem", '"keys"'),
+        ([{"path": "**/.ssh", "mode": "hidden"}], "sub/.ssh/y", '"**/.ssh"'),
     ]
 
-    @pytest.mark.parametrize(("rel", "why"), DENIED_NAMES)
-    def test_a_denied_name_is_422_naming_the_rule(
-        self, workspace: Path, client, rel: str, why: str
+    @pytest.mark.parametrize(("rules", "rel", "quoted"), LOCKED_NAMES)
+    def test_a_locked_name_is_422_naming_the_rule(
+        self, workspace: Path, client, rules: List[Dict[str, str]], rel: str,
+        quoted: str,
     ):
+        if rules:
+            write_policy(workspace, rules)
         response = create(client, rel)
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "connector path policy" in detail
-        assert "never write to it" in detail
-        assert not os.path.lexists(workspace / rel.split("/")[0])
+        assert quoted in detail, detail
+        assert "workspace policy" in detail
+        # Nothing landed: not the leaf, and not a locked folder on the way to it
+        # — a stray ``.ssh`` or ``keys`` directory would be worse than the file
+        # this call was refused for.
+        assert not os.path.lexists(workspace / rel)
+        for locked in (".env.local", "deploy", "keys", "sub", ".ssh"):
+            assert not (workspace / locked).exists(), locked
 
-    def test_a_denied_folder_name_refuses_a_whole_new_subtree(
+    def test_a_hidden_folder_name_refuses_a_whole_new_subtree(
         self, workspace: Path, client
     ):
-        response = create(client, ".git", is_dir=True)
+        """The name is the rule's subject, so nothing below it may be made."""
+        write_policy(workspace, [{"path": "**/.private", "mode": "hidden"}])
+        response = create(client, ".private", is_dir=True)
         assert response.status_code == 422
-        assert not (workspace / ".git").exists()
+        assert not (workspace / ".private").exists()
+        response = create(client, ".private/deep/inner.txt")
+        assert response.status_code == 422
+        assert not (workspace / ".private").exists()
 
     def test_a_leaf_carrying_a_slash_is_a_path_so_the_parent_rule_answers(
         self, client
@@ -573,19 +696,33 @@ class TestCreate:
     def test_an_escape_attempt_is_422(self, client, raw: str):
         assert create(client, raw).status_code == 422
 
-    def test_a_name_the_tree_hides_is_created_and_stays_hidden(
+    def test_a_name_the_policy_locks_cannot_be_made(
         self, workspace: Path, client
     ):
-        """``IGNORED_DIR_NAMES`` is a read rule, not a write rule — both halves.
+        """The old "created but invisible" pair is gone: one policy, one answer.
 
-        Creating ``node_modules`` is legal, and the tree then does not show it.
-        From the browser that looks like the create failed, so the pair is
-        asserted together: the folder is on disk, the listing omits it.
+        There used to be *two* mechanisms — the tree's hardcoded ignore-list (a
+        read rule) and the connector deny-list (a write rule) — and they
+        disagreed about ``node_modules``: the folder could be created and then
+        vanished from the listing, so the browser saw a create that had not
+        happened. Under one verdict that disagreement cannot exist: the seeded
+        file marks that name ``ro``, so the create is **refused** and the answer
+        says which rule. A user who wants the folder changes the rule, and the
+        message names the file to change it in.
         """
-        assert create(client, "node_modules", is_dir=True).status_code == 200
-        assert (workspace / "node_modules").is_dir()
-        entries = client.get("/api/fs/tree").json()["entries"]
-        assert "node_modules" not in [entry["name"] for entry in entries]
+        response = create(client, "vendor/node_modules", is_dir=True)
+        assert response.status_code == 422
+        assert '"**/node_modules"' in response.json()["detail"]
+        assert not (workspace / "vendor" / "node_modules").exists()
+        # A name no rule mentions is created normally and listed normally.
+        assert create(client, "vendor", is_dir=True).status_code == 200
+        assert create(client, "vendor/pkgs", is_dir=True).status_code == 200
+        assert "pkgs" in [
+            entry["name"]
+            for entry in client.get(
+                "/api/fs/tree", params={"path": "vendor"}
+            ).json()["entries"]
+        ]
 
     def test_the_race_is_closed_by_the_open_flag_not_by_the_check(
         self, workspace: Path, client, monkeypatch: pytest.MonkeyPatch
@@ -677,54 +814,71 @@ class TestRename:
 
     # The both-ends rule, from the direction that a leaf-only gate would miss:
     # an innocent source moving into a protected place.
-    @pytest.mark.parametrize(
-        "to",
-        [
-            ".git/hooks/pre-commit",
-            "mcp_connectors/policy_patch.py",
-            ".env",
-            "keys/id_ed25519",
-            "deploy/server.pem",
-            "sub/.ssh/config",
-        ],
-    )
-    def test_a_denied_target_is_422_and_nothing_moved(
-        self, workspace: Path, client, to: str
+    # ``(rules, target, pattern the refusal quotes)`` — the both-ends rule, from
+    # the direction a leaf-only gate would miss: an innocent source moving into a
+    # folder the policy hides or locks. ``.git`` needs no rule (the seeded file
+    # hides it); a ``ro`` target refuses at the *destination*, and the message
+    # names the line the user wrote.
+    LOCKED_TARGETS = [
+        ([], ".git/hooks/pre-commit", '".git"'),
+        ([{"path": "**/mcp_connectors", "mode": "ro"}], "mcp_connectors/policy_patch.py",
+         '"**/mcp_connectors"'),
+        ([{"path": "**/.env**", "mode": "hidden"}], ".env", '"**/.env**"'),
+        ([{"path": "keys", "mode": "ro"}], "keys/id_ed25519", '"keys"'),
+        ([{"path": "deploy", "mode": "hidden"}], "deploy/server.pem", '"deploy"'),
+        ([{"path": "**/.ssh", "mode": "hidden"}], "sub/.ssh/config", '"**/.ssh"'),
+    ]
+
+    @pytest.mark.parametrize(("rules", "to", "quoted"), LOCKED_TARGETS)
+    def test_a_locked_target_is_422_and_nothing_moved(
+        self, workspace: Path, client, rules: List[Dict[str, str]], to: str,
+        quoted: str,
     ):
+        if rules:
+            write_policy(workspace, rules)
         response = rename(client, "src/config.py", to)
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "connector path policy" in detail
-        assert "never write to it" in detail
+        assert "workspace policy" in detail, detail
+        assert quoted in detail, detail
         assert (workspace / "src" / "config.py").read_text(encoding="utf-8") == "x = 1\n"
-        assert not os.path.lexists(workspace / to.split("/")[0])
+        assert not os.path.lexists(workspace / to)
 
-    def test_a_denied_target_folder_refuses_a_whole_tree_move(
+    def test_a_locked_target_folder_refuses_a_whole_tree_move(
         self, workspace: Path, client
     ):
-        """The source is a folder, so every moved path would be denied too."""
+        """The source is a folder, so every moved path would be locked too."""
+        write_policy(workspace, [{"path": "**/mcp_connectors", "mode": "ro"}])
+        (workspace / "mcp_connectors").mkdir()
         response = rename(client, "src", "mcp_connectors/src")
         assert response.status_code == 422
-        assert "'mcp_connectors'" in response.json()["detail"]
+        assert '"**/mcp_connectors"' in response.json()["detail"]
         assert (workspace / "src" / "config.py").is_file()
 
-    def test_an_innocent_name_under_a_denied_folder_is_refused(
+    def test_an_innocent_name_under_a_locked_folder_is_refused(
         self, workspace: Path, client
     ):
-        """The leaf name is fine; its *parent* is the protected one."""
+        """The leaf name is fine; its *parent* is the one the rule names."""
+        write_policy(workspace, [{"path": ".env.local", "mode": "ro"}])
         (workspace / ".env.local").mkdir()
         response = rename(client, "README.md", ".env.local/notes.txt")
         assert response.status_code == 422
-        assert "secrets/config file" in response.json()["detail"]
+        assert '".env.local"' in response.json()["detail"]
         assert (workspace / "README.md").is_file()
 
-    def test_a_denied_source_is_refused_by_its_own_end(self, workspace: Path, client):
-        """The other direction: ``to`` is innocent, ``from`` is not."""
-        (workspace / ".git").mkdir()
+    def test_a_locked_source_is_refused_by_its_own_end(self, workspace: Path, client):
+        """The other direction — and D3's rename-out case: ``to`` is innocent.
+
+        No new code enforces that: a move *out* of a locked folder rewrites that
+        folder's directory entries, so the source end of the gate is already the
+        rule, which is why both ends were gated from the start.
+        """
         (workspace / ".git" / "config").write_text("[core]\n", encoding="utf-8")
         response = rename(client, ".git/config", "config.txt")
         assert response.status_code == 422
-        assert "never write to it" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert '".git"' in detail
+        assert "hidden" in detail
         assert (workspace / ".git" / "config").is_file()
         assert not (workspace / "config.txt").exists()
 
@@ -935,16 +1089,25 @@ class TestDeleteToTrash:
         assert (batch / "src" / "config.py").read_text(encoding="utf-8") == "x = 1\n"
         assert (batch / "src" / "core" / "job.py").read_text(encoding="utf-8") == "y = 2\n"
 
-    def test_a_folder_holding_a_denied_path_is_refused_and_survives_whole(
+    def test_a_folder_holding_a_hidden_file_is_refused_and_survives_whole(
         self, workspace: Path, client, trash: Path
     ):
         """The rule the whole subtree check exists for: the *innocent* name is
-        not what decides — every descendant is checked first, all-or-nothing."""
+        not what decides — every descendant is checked first, all-or-nothing.
+
+        The descendant here is one the tree would never even have shown, which is
+        the same protection from the other side: an innocent folder cannot be
+        deleted *through* a hidden file it happens to hold.
+        """
+        write_policy(workspace, [
+            {"path": "**/.env**", "mode": "hidden"},
+            {"path": "**/vendor", "mode": "ro"},
+        ])
         (workspace / "src" / ".env").write_text("SECRET=1\n", encoding="utf-8")
         response = trash_path(client, "src")
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "never write to it" in detail
+        assert '"**/.env**"' in detail
         # The refusal names the offending descendant, not the innocent parent.
         assert "inside src" in detail
         assert (workspace / "src" / "config.py").is_file()
@@ -953,23 +1116,40 @@ class TestDeleteToTrash:
         # Nothing at all was moved.
         assert not trash.exists()
 
-    def test_a_folder_holding_the_connectors_sources_is_refused(
+    def test_a_folder_holding_a_read_only_subtree_is_refused(
         self, workspace: Path, client, trash: Path
     ):
-        scripts = workspace / "project" / "mcp_connectors"
+        """``ro`` means the subtree does not move — visible in the tree or not.
+
+        The row that used to be about the connectors' own sources (a name the
+        deny-list carried) is now about a workspace rule: same refusal, and it
+        quotes the line the user wrote.
+        """
+        write_policy(workspace, [
+            {"path": "**/.env**", "mode": "hidden"},
+            {"path": "**/vendor", "mode": "ro"},
+        ])
+        scripts = workspace / "project" / "vendor"
         scripts.mkdir(parents=True)
-        (scripts / "console_mcp.py").write_text("# policy\n", encoding="utf-8")
+        (scripts / "left-pad.js").write_text("# vendored\n", encoding="utf-8")
         response = trash_path(client, "project")
         assert response.status_code == 422
-        assert "'mcp_connectors'" in response.json()["detail"]
-        assert (scripts / "console_mcp.py").is_file()
+        assert '"**/vendor"' in response.json()["detail"]
+        assert (scripts / "left-pad.js").is_file()
 
-    def test_a_denied_path_deleted_directly_is_422(self, workspace: Path, client, trash: Path):
-        (workspace / ".git").mkdir()
+    def test_a_hidden_path_deleted_directly_is_422(
+        self, workspace: Path, client, trash: Path
+    ):
+        """A mutation never answers 404, and this is the row that says so.
+
+        The read gate answers "does not exist" for the very same path; the delete
+        says which rule hid it, because an absent-sounding answer is what a
+        caller would take as permission to create the name again.
+        """
         (workspace / ".git" / "config").write_text("[core]\n", encoding="utf-8")
         response = trash_path(client, ".git/config")
         assert response.status_code == 422
-        assert "never write to it" in response.json()["detail"]
+        assert '".git"' in response.json()["detail"]
         assert (workspace / ".git" / "config").is_file()
         assert not trash.exists()
 
@@ -1016,17 +1196,32 @@ class TestDeleteToTrash:
         assert (outside / "hosts").read_text(encoding="utf-8") == "127.0.0.1\n"
         assert not trash.exists()
 
-    def test_a_folder_holding_a_link_to_a_denied_target_is_refused(
+    def test_a_folder_holding_a_link_to_a_locked_target_is_refused(
         self, workspace: Path, client, trash: Path
     ):
         """The subtree walk does not *follow* links, but it does judge them:
-        a link to ``~/.ssh`` inside an innocent folder is a route to a secret."""
+        a link to a locked path inside an innocent folder is a route to it."""
+        write_policy(workspace, [{"path": "**/.ssh", "mode": "hidden"}])
         (workspace / "deploy").mkdir()
         (workspace / "deploy" / "key").symlink_to(workspace / ".ssh" / "id_rsa")
         response = trash_path(client, "deploy")
         assert response.status_code == 422
-        assert "never write to it" in response.json()["detail"]
+        assert '"**/.ssh"' in response.json()["detail"]
         assert (workspace / "deploy" / "key").is_symlink()
+        assert not trash.exists()
+
+    def test_a_link_pointing_outside_the_workspace_is_refused_by_the_subtree_walk(
+        self, workspace: Path, client, trash: Path, tmp_path: Path
+    ):
+        """No policy of this workspace reaches it, so nothing says it may move."""
+        outside = tmp_path.parent / f"{tmp_path.name}-elsewhere"
+        outside.mkdir(exist_ok=True)
+        (outside / "notes.txt").write_text("x\n", encoding="utf-8")
+        (workspace / "project").mkdir()
+        (workspace / "project" / "link").symlink_to(outside / "notes.txt")
+        response = trash_path(client, "project")
+        assert response.status_code == 422
+        assert "outside the working location" in response.json()["detail"]
         assert not trash.exists()
 
     @pytest.mark.parametrize(
@@ -1289,13 +1484,24 @@ class TestWritesStayBrowserOnly:
 
 ESCAPES = ["../etc/hosts", "/etc/hosts", "~/x", "a/../../b", "src/../../etc", "a\0b"]
 
-# (path, a fragment of the deny-list's own sentence for it)
-DENIED = [
-    (".env", "secrets/config file"),
-    (".git/config", "inside '.git'"),
-    ("deploy/id_rsa", "credential file"),
-    ("keys/server.pem", "private key"),
-    ("mcp_connectors/new_entry.py", "inside 'mcp_connectors'"),
+# ``(path, a fragment of the rule the refusal quotes)``. The seeded file carries
+# the ``.git`` and ``**/node_modules`` rows; the test writes the rest. Every
+# write route has to refuse every one of them, in the same words — the pattern
+# being quoted is what makes a refusal actionable instead of a shrug.
+LOCKED = [
+    (".env", '"**/.env**"'),
+    (".git/config", '".git"'),
+    ("deploy/id_rsa", '"deploy/id_rsa"'),
+    ("keys/server.pem", '"keys"'),
+    ("mcp_connectors/new_entry.py", '"**/mcp_connectors"'),
+]
+
+POLICY_FOR_LOCKED = [
+    {"path": ".git", "mode": "hidden"},
+    {"path": "**/.env**", "mode": "hidden"},
+    {"path": "deploy/id_rsa", "mode": "hidden"},
+    {"path": "keys", "mode": "ro"},
+    {"path": "**/mcp_connectors", "mode": "ro"},
 ]
 
 
@@ -1330,16 +1536,19 @@ class TestWriteMatrix:
         assert call_write(client, kind, raw).status_code == 422
 
     @pytest.mark.parametrize("kind", WRITE_KINDS)
-    @pytest.mark.parametrize(("rel", "phrase"), DENIED)
-    def test_the_write_flavour_deny_list_refuses_on_every_route(
-        self, workspace: Path, client, kind: str, rel: str, phrase: str
+    @pytest.mark.parametrize(("rel", "quoted"), LOCKED)
+    def test_a_locked_path_is_refused_on_every_route_in_the_same_words(
+        self, workspace: Path, client, kind: str, rel: str, quoted: str
     ):
-        """The same list, the same sentence, whichever route was asked.
+        """One verdict, asked once, whichever route was asked.
 
-        ``mcp_connectors`` is the entry the two flavours disagree on, and the
-        refusal must still be the write flavour's ("write to") here: every one
-        of these calls is a write whatever the read answer for the path is.
+        A ``hidden`` row and an ``ro`` row both arrive here: every one of these
+        calls is a **mutation**, so both answer 422 naming the rule, and neither
+        is allowed the 404 that a read of the hidden one answers. The pattern
+        travels through the message because the refusal has to point at the line
+        of ``.nojae/read-write-policy.json`` that decides it.
         """
+        write_policy(workspace, POLICY_FOR_LOCKED)
         target = workspace / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
@@ -1348,9 +1557,8 @@ class TestWriteMatrix:
         response = call_write(client, kind, rel)
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "connector path policy" in detail
-        assert "never write to it" in detail
-        assert phrase in detail, (kind, rel, detail)
+        assert "workspace policy" in detail, (kind, rel, detail)
+        assert quoted in detail, (kind, rel, detail)
         assert target.read_text(encoding="utf-8") == "original\n"
 
     @pytest.mark.parametrize("kind", ["create", "rename", "delete"])
@@ -1465,7 +1673,11 @@ class TestTrashIsNotASideDoor:
 
     What has to hold — and what this class asserts — is that being browsable
     does not make it readable: the trash cannot become a side door around the
-    read gate, because the gate judges the *name*, wherever it sits.
+    gate, because the verdict judges the *name*, wherever it sits. In
+    benchmarkit's own workspace level A hides ``logs/**`` outright, so there is
+    nothing to browse; the shape exercised here is the one a *foreign* workspace
+    creates by moving the artefact folders inside itself, where the workspace's
+    own rules are all that stands between a batch and the pane.
     """
 
     @pytest.fixture
@@ -1478,6 +1690,10 @@ class TestTrashIsNotASideDoor:
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
         monkeypatch.setattr(editorfs.constants, "TRASH_DIR", root / "logs" / "trash")
         monkeypatch.setattr(editorfs.constants, "BACKUP_DIR", root / "logs" / "editor_backups")
+        # The rule that used to be the connector floor's ``.env`` name check:
+        # here it is a rule of this workspace, which is what makes the promise
+        # below about the *gate* rather than about a built-in list.
+        write_policy(root, [{"path": "**/.env**", "mode": "hidden"}])
         return root
 
     # The batch name a delete would produce, minus the digest — a planted one
@@ -1487,7 +1703,7 @@ class TestTrashIsNotASideDoor:
 
     @pytest.fixture
     def planted_batch(self, repo_like: Path) -> Path:
-        """``logs/trash/<batch>/.env`` — a denied name inside the trash."""
+        """``logs/trash/<batch>/.env`` — a hidden name inside the trash."""
         batch = repo_like / "logs" / "trash" / self.PLANTED
         batch.mkdir()
         (batch / ".env").write_text("SECRET=planted\n", encoding="utf-8")
@@ -1509,25 +1725,27 @@ class TestTrashIsNotASideDoor:
         assert editorfs.constants.BACKUP_DIR == root / "logs" / "editor_backups"
         assert editorfs.constants.TRASH_DIR == root / "logs" / "trash"
 
-    def test_a_trashed_copy_of_a_refused_name_is_still_refused_to_read(
+    def test_a_trashed_copy_of_a_hidden_name_is_still_absent_to_a_read(
         self, repo_client, planted_batch: Path
     ):
-        """A denied name inside the trash is still denied — the read gate judges
-        the name, not the folder it happens to sit in.
+        """A hidden name inside the trash stays hidden — the verdict judges the
+        whole relative path, wherever the folder happens to sit.
 
         A delete can never *produce* this (the subtree rule below refuses the
         delete before anything moves), so the state is planted: an older build's
         copy, or a human's own ``mv``. The promise is that browsing the trash
-        leaks nothing the original path would have kept private.
+        leaks nothing the original path would have kept private — and it answers
+        the way any hidden path answers a look: absent (D8).
         """
         response = repo_client.get(
             "/api/fs/file", params={"path": f"logs/trash/{self.PLANTED}/.env"}
         )
-        assert response.status_code == 422
-        assert "never read from it" in response.json()["detail"]
+        assert response.status_code == 404
+        assert "does not exist" in response.json()["detail"]
+        assert "SECRET=planted" not in response.text
 
         # The tree omits it rather than marking it: the branch is browsable and
-        # its name is harmless, but a denied entry is never published at all.
+        # its name is harmless, but a hidden entry is never published at all.
         listing = repo_client.get("/api/fs/tree", params={"path": "logs/trash"}).json()
         assert self.PLANTED in [entry["name"] for entry in listing["entries"]]
         inner = repo_client.get(
@@ -1535,25 +1753,214 @@ class TestTrashIsNotASideDoor:
         ).json()["entries"]
         assert inner == []  # an empty-looking branch, not a list of secrets
 
-    def test_a_delete_of_a_batch_holding_a_denied_name_is_refused_whole(
+    def test_a_delete_of_a_batch_holding_a_hidden_name_is_refused_whole(
         self, repo_client, planted_batch: Path
     ):
         """The trash cannot launder a protected path either.
 
-        The same subtree rule that protects an innocent folder holding ``.env``
-        protects one that already sits in the trash: the route answers 422 and
-        nothing moves, so a denied name can only reach the trash from outside
-        the route — never through it.
+        The same subtree check that protects an innocent folder holding a hidden
+        file protects one that already sits in the trash: the route answers 422
+        naming the rule *and* the batch the entry lives in, and nothing moves —
+        so a hidden name can only reach the trash from outside the route.
         """
         response = repo_client.request(
             "DELETE", "/api/fs/file", params={"path": f"logs/trash/{self.PLANTED}"}
         )
         assert response.status_code == 422
         detail = response.json()["detail"]
-        assert "never write to it" in detail
+        assert '"**/.env**"' in detail
         assert self.PLANTED in detail
         assert (planted_batch / ".env").is_file()
         assert editorfs.trash_batches() == [planted_batch]
+
+
+class TestPolicyFileIsBroken:
+    """D4 at the surface: writes off, everything else on, until the file loads."""
+
+    def test_every_write_route_is_refused_with_pol_04s_message(
+        self, workspace: Path, client, trash: Path, backups: Path
+    ):
+        """The message is pol-04's whole answer: the file, and what is wrong in it."""
+        path = write_policy(workspace, [{"path": "**/node_modules", "mode": "hidden"}])
+        path.write_text('{"version": 1, "policies": [{"path": "src", "mode": "hidd"}',
+                        encoding="utf-8")
+        policy_file.invalidate_policy_cache()
+
+        expected = str(path)
+        for which, extra in (("save", {"token": None}), ("create", None),
+                             ("rename-src", None), ("rename-dst", None),
+                             ("delete", None)):
+            response = call_write(client, which, "src/config.py", extra)
+            assert response.status_code == 422, which
+            detail = response.json()["detail"]
+            assert "did not load" in detail, (which, detail)
+            assert expected in detail, which
+
+    def test_a_read_still_answers_so_the_file_can_be_diagnosed(
+        self, workspace: Path, client
+    ):
+        """Refusing the read too would leave nothing to look at the mistake with."""
+        path = write_policy(workspace, [{"path": "src", "mode": "hidden"}])
+        path.write_text('{"version": 1, "policies": [', encoding="utf-8")
+        policy_file.invalidate_policy_cache()
+
+        assert client.get("/api/fs/file", params={"path": "README.md"}).status_code == 200
+        assert client.get("/api/fs/tree").status_code == 200
+        assert save(client, "README.md", "no\n").status_code == 422
+        # The rules that *would* have protected a folder are not applied either:
+        # an unfiltered tree is the honest state of an unloaded policy.
+        assert "src" in [
+            entry["name"] for entry in client.get("/api/fs/tree").json()["entries"]
+        ]
+
+    def test_fixing_the_file_opens_the_writes_again(
+        self, workspace: Path, client, backups: Path
+    ):
+        write_policy(workspace, [{"path": "src", "mode": "ro"}])
+        assert save(client, "README.md", "blocked by nothing\n").status_code == 200
+
+
+class TestBuiltInRulesInBenchmarksOwnWorkspace:
+    """Level A at the routes: live only while the workspace *is* the install dir.
+
+    The same paths, the same routes, two workspaces: benchmarkit editing itself
+    refuses them with the app's own wording, and a project that merely *has*
+    those names treats them as ordinary files. That is the whole difference
+    between a rule about who owns a file and a rule about its name.
+    """
+
+    @pytest.fixture
+    def app_like(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """A scratch folder standing in for the install directory.
+
+        Both sides of :func:`is_self_workspace` are read at call time, so moving
+        ``constants.PROJECT_ROOT`` beside the location makes a self workspace out
+        of a temp folder — which is what lets this test exist at all instead of
+        editing the real checkout.
+        """
+        root = tmp_path / "app"
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "config.py").write_text("x = 1\n", encoding="utf-8")
+        (root / ".env").write_text("ENDPOINT=x\n", encoding="utf-8")
+        (root / "logs" / "trash").mkdir(parents=True)
+        (root / "web" / "dist").mkdir(parents=True)
+        (root / "web" / "dist" / "index.html").write_text("<html></html>\n",
+                                                          encoding="utf-8")
+        monkeypatch.setattr(editorfs.constants, "PROJECT_ROOT", root)
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
+        policy_file.invalidate_policy_cache()
+        assert builtin_policy.is_self_workspace() is True
+        yield root
+        policy_file.invalidate_policy_cache()
+
+    @pytest.fixture
+    def app_client(self, app_like: Path):
+        with TestClient(create_app()) as test_client:
+            yield test_client
+
+    def test_the_apps_own_env_and_logs_are_writable_by_nobody(
+        self, app_like: Path, app_client, trash: Path, backups: Path
+    ):
+        """``.env`` and ``logs/…`` are the app's own, and the refusal says so."""
+        assert builtin_policy.is_self_workspace() is True
+        response = save(app_client, ".env", "ENDPOINT=evil\n")
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "benchmarkit's own rules" in detail
+        assert '"**/.env**"' in detail
+        assert (app_like / ".env").read_text(encoding="utf-8") == "ENDPOINT=x\n"
+
+        response = save(app_client, "logs/trash/x", "planted\n")
+        assert response.status_code == 422
+        assert "benchmarkit's own rules" in response.json()["detail"]
+
+    def test_the_apps_own_build_output_is_readable_but_not_writable(
+        self, app_like: Path, app_client, backups: Path
+    ):
+        """Level A's ``ro`` rows: vite's output is browsable and never hand-edited."""
+        assert app_client.get(
+            "/api/fs/file", params={"path": "web/dist/index.html"}
+        ).status_code == 200
+        response = save(app_client, "web/dist/index.html", "<html>mine</html>\n")
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "benchmarkit's own rules" in detail
+        assert "vite build output" in detail
+
+    def test_the_same_paths_in_a_foreign_workspace_are_ordinary(
+        self, workspace: Path, client, backups: Path
+    ):
+        """The pair that makes the condition real rather than decorative."""
+        assert builtin_policy.is_self_workspace() is False
+        (workspace / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        (workspace / "logs").mkdir()
+        (workspace / "logs" / "notes.txt").write_text("a log\n", encoding="utf-8")
+
+        assert save(client, ".env", "SECRET=2\n").status_code == 200
+        assert save(client, "logs/notes.txt", "edited\n").status_code == 200
+        assert (workspace / ".env").read_text(encoding="utf-8") == "SECRET=2\n"
+        assert (workspace / "logs" / "notes.txt").read_text(encoding="utf-8") == (
+            "edited\n"
+        )
+
+
+class TestReadOnlyFolderBlocksEveryWrite:
+    """D3 in full: an ``ro`` folder cannot be deleted, emptied, renamed or added to.
+
+    Five routes, five refusals, and the rename is the one that reads like a new
+    rule and is not: both ends were always gated, which is why moving *out* of a
+    locked folder is refused by its own source end.
+    """
+
+    def test_each_write_under_or_around_an_ro_folder_is_refused(
+        self, workspace: Path, client, trash: Path, backups: Path
+    ):
+        pkg = workspace / "node_modules" / "left-pad"
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "index.js").write_text("x\n", encoding="utf-8")
+
+        # save: refused by the folder's own rule.
+        assert save(client, "node_modules/left-pad/index.js", "y\n").status_code == 422
+        # create inside: refused, and nothing was added.
+        assert create(client, "node_modules/left-pad/new.js").status_code == 422
+        assert not (pkg / "new.js").exists()
+        # delete: refused, naming the locked descendant.
+        response = trash_path(client, "node_modules/left-pad")
+        assert response.status_code == 422
+        assert '"**/node_modules"' in response.json()["detail"]
+        assert (pkg / "index.js").is_file()
+        assert not trash.exists()
+        # rename-out: refused at the source end.
+        assert rename(client, "node_modules/left-pad", "vendored").status_code == 422
+        assert (pkg / "index.js").is_file()
+        # rename-in: refused at the destination end.
+        assert rename(client, "README.md", "node_modules/README.md").status_code == 422
+        assert (workspace / "README.md").is_file()
+
+    def test_a_carve_out_saves_one_file_and_not_its_sibling(
+        self, workspace: Path, client, backups: Path
+    ):
+        """The last-match-wins idiom, at the route that uses it.
+
+        The README is individually ``rw`` under a folder rule; its sibling is not,
+        and is refused by the folder. This is the row pol-00's example file is
+        written to teach.
+        """
+        write_policy(workspace, [
+            {"path": "**/node_modules", "mode": "ro"},
+            {"path": "**/node_modules/**/README.md", "mode": "rw"},
+        ])
+        pkg = workspace / "node_modules" / "left-pad"
+        (pkg / "README.md").write_text("docs\n", encoding="utf-8")
+        (pkg / "index.js").write_text("x\n", encoding="utf-8")
+
+        assert save(client, "node_modules/left-pad/README.md", "new docs\n").status_code == 200
+        assert (pkg / "README.md").read_text(encoding="utf-8") == "new docs\n"
+
+        response = save(client, "node_modules/left-pad/index.js", "tampered\n")
+        assert response.status_code == 422
+        assert '"**/node_modules"' in response.json()["detail"]
+        assert (pkg / "index.js").read_text(encoding="utf-8") == "x\n"
 
 
 class TestReadSurfaceUnmoved:
@@ -1569,9 +1976,23 @@ class TestReadSurfaceUnmoved:
             "exists"
         ] is True
 
-    def test_a_denied_path_still_answers_the_read_flavour(self, workspace: Path, client):
-        """The read refusal keeps its own wording — only writes say "write to"."""
+    def test_a_hidden_path_answers_a_read_as_absent_and_a_write_as_a_refusal(
+        self, workspace: Path, client
+    ):
+        """The asymmetry, on one path, in one place: 404 to look, 422 to touch.
+
+        This is the pair the old suite stated as two wordings of one refusal
+        ("read from" / "write to"). The policy answers differently on purpose —
+        an observation of a hidden name must look like absence, a mutation must
+        name the rule — and every write route keeps that promise (the matrix).
+        """
+        write_policy(workspace, [{"path": "**/.env**", "mode": "hidden"}])
         (workspace / ".env").write_text("SECRET=1\n", encoding="utf-8")
-        response = client.get("/api/fs/file", params={"path": ".env"})
-        assert response.status_code == 422
-        assert "never read from it" in response.json()["detail"]
+        read = client.get("/api/fs/file", params={"path": ".env"})
+        assert read.status_code == 404
+        assert "SECRET=1" not in read.text
+
+        write = save(client, ".env", "overwritten\n")
+        assert write.status_code == 422
+        assert '"**/.env**"' in write.json()["detail"]
+        assert (workspace / ".env").read_text(encoding="utf-8") == "SECRET=1\n"

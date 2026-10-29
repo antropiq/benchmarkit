@@ -3,21 +3,38 @@
 Driven through ``validate_command()`` -- that is ``check_command_allowed``
 without the ``subprocess.run`` -- so the bypass cases below are testable
 without executing anything.
+
+The last section is pol-08: inside the root, a path token is also judged against
+the workspace's own ``.nojae/read-write-policy.json``, the file the Editor tab
+applies to the same path. Those tests pin the split too -- the policy speaks
+inside the root, the connector deny-list outside it.
 """
+import json
 from pathlib import Path
 
 import pytest
 
 from mcp_connectors import console_mcp as c
+from mcp_connectors import policy_file as connector_policy
+from mcp_connectors import policy_shared as shared
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
-def _rooted(tmp_path, monkeypatch):
-    """Pin the connector to a throw-away root, like --root-dir does."""
+def root(tmp_path, monkeypatch):
+    """Pin the connector to a throw-away root, like --root-dir does.
+
+    Named (and not merely autouse) because the pol-08 tests below write a policy
+    file into that root and need to name it: the connector's ``ROOT_DIR`` *is*
+    the workspace it consults, so the file and the paths must be under one root.
+    The cache is per-process and keyed on the root, so it is cleared both sides
+    of every test rather than letting one test's parsed rules answer the next.
+    """
     monkeypatch.setattr(c, "ROOT_DIR", tmp_path.resolve())
-    return tmp_path.resolve()
+    connector_policy.invalidate_workspace_policy_cache()
+    yield tmp_path.resolve()
+    connector_policy.invalidate_workspace_policy_cache()
 
 
 def refused(command: str) -> str:
@@ -368,5 +385,275 @@ def test_the_creating_names_are_allowed_only_as_path_scoped_workspace_work():
     ):
         assert "off-limits" in refused(command), command
 
+
+# --- pol-08: the workspace policy constrains the agent inside the root -------
+
+
+def write_policy(root: Path, rules, *, raw: str = None) -> Path:
+    """Leave a ``.nojae/read-write-policy.json`` in the rooted workspace."""
+    folder = root / shared.POLICY_DIRNAME
+    folder.mkdir(exist_ok=True)
+    path = folder / shared.POLICY_FILENAME
+    text = raw if raw is not None else json.dumps(
+        {"version": shared.POLICY_VERSION, "policies": list(rules)}, indent=2
+    )
+    path.write_text(text, encoding="utf-8")
+    connector_policy.invalidate_workspace_policy_cache()
+    return path
+
+
+def test_a_hidden_folder_is_not_readable_through_a_command(root: Path):
+    """The half that makes the seeded ``**/__pycache__`` rule unsearchable."""
+    (root / "a" / "__pycache__").mkdir(parents=True)
+    (root / "a" / "__pycache__" / "job.pyc").write_text("one\n", encoding="utf-8")
+    write_policy(root, [{"path": "**/__pycache__", "mode": "hidden"}])
+
+    msg = refused("cat a/__pycache__/job.pyc")
+    assert "off-limits" in msg, msg
+    assert '"**/__pycache__"' in msg and "(hidden)" in msg
+    assert "the workspace policy" in msg
+    assert refused("grep x a/__pycache__")
+
+
+def test_a_read_only_folder_stays_browsable_and_refuses_its_writes(root: Path):
+    """``ro`` for an agent means exactly what it means in the pane.
+
+    Listing and reading stay allowed -- that is why the mode is not ``hidden``
+    -- and the commands that would create or rewrite inside it are refused,
+    naming the pattern.
+    """
+    (root / "vendor").mkdir()
+    (root / "vendor" / "README.md").write_text("one\n", encoding="utf-8")
+    write_policy(root, [{"path": "**/vendor", "mode": "ro", "reason": "vendored"}])
+
+    for command in ("ls vendor", "cat vendor/README.md", "head -5 vendor/README.md"):
+        ok, msg = c.validate_command(command)
+        assert ok, f"{command!r} should be allowed: {msg}"
+
+    msg = refused("touch vendor/README.md")
+    assert "off-limits" in msg and '"**/vendor"' in msg, msg
+    assert "(read-only)" in msg and "vendored" in msg
+    assert refused("mkdir vendor/new")
+    assert refused("cp notes.md vendor/notes.md")
+    # A move *out* rewrites the read-only folder's entries too (D3), so all of
+    # the command's paths are judged as writes.
+    assert refused("mv vendor/README.md notes.md")
+    # The destructive names are blocked by name only outside the root, so inside
+    # it they are ordinary writes and the policy is what refuses them.
+    assert "off-limits" in refused("rm vendor/README.md")
+
+
+def test_a_carve_out_below_a_folder_rule_is_writable(root: Path):
+    (root / "web" / "node_modules").mkdir(parents=True)
+    (root / "web" / "node_modules" / "README.md").write_text("one\n", encoding="utf-8")
+    write_policy(root, [
+        {"path": "**/node_modules", "mode": "ro"},
+        {"path": "**/node_modules/**/README.md", "mode": "rw"},
+    ])
+    ok, msg = c.validate_command("touch web/node_modules/README.md")
+    assert ok, msg
+    assert refused("touch web/node_modules/other.md")
+
+
+def test_the_reserved_policy_folder_is_out_of_reach(root: Path):
+    """An agent editing the rules that constrain it is refused by code (D5)."""
+    policy = write_policy(root, [{"path": "src", "mode": "ro"}])
+    rel = f"{shared.POLICY_DIRNAME}/{shared.POLICY_FILENAME}"
+    assert "off-limits" in refused(f"cat {rel}")
+    assert "off-limits" in refused(f"touch {rel}")
+    assert "reserved by benchmarkit" in refused(f"cat {rel}")
+    # And it survives a corrupt file, because the check is on the components.
+    write_policy(root, [], raw='{"version": 1, "policies": [')
+    assert "off-limits" in refused(f"cat {rel}")
+    assert str(policy) != ""
+
+
+def test_a_corrupt_policy_file_refuses_writes_and_leaves_reads_open(root: Path):
+    (root / "src").mkdir()
+    (root / "src" / "job.py").write_text("one\n", encoding="utf-8")
+    write_policy(root, [], raw="{ not json at all")
+
+    msg = refused("touch src/job.py")
+    assert "did not load" in msg, msg
+    assert str(root / shared.POLICY_DIRNAME / shared.POLICY_FILENAME) in msg
+    ok, why = c.validate_command("cat src/job.py")
+    assert ok, why
+
+
+def test_the_policy_speaks_inside_the_root_and_the_deny_list_outside_it(root: Path):
+    """The asymmetry of task section 1, documented by a test rather than hidden.
+
+    ``**/.env`` hidden in the workspace policy: refused inside the root, and
+    outside it the *deny-list* is what refuses it -- a different sentence, and
+    one that does not depend on this workspace's file. With no policy mentioning
+    ``.env``, the in-root command runs (the root bypass, which is a fact about
+    the pane's generated file rather than about an agent's edit) while the same
+    name outside the root stays refused. If level A is ever applied to the
+    connectors, this is the test that changes.
+    """
+    (root / "sub").mkdir()
+    (root / "sub" / ".env").write_text("A=1\n", encoding="utf-8")
+
+    ok, msg = c.validate_command("cat sub/.env")
+    assert ok, f"no policy mentions it, so the in-root bypass applies: {msg}"
+    assert "off-limits" in refused(f"cat {Path.home() / 'sub' / '.env'}")
+
+    write_policy(root, [{"path": "**/.env", "mode": "hidden"}])
+    msg = refused("cat sub/.env")
+    assert "off-limits" in msg and '"**/.env"' in msg, msg
+
+
+def test_a_path_outside_the_root_is_left_to_the_deny_list(root: Path):
+    """The root's rules are written relative to the root, so they say nothing there."""
+    outside = root.parent / "console-pol08-sibling"
+    (outside / "secret").mkdir(parents=True, exist_ok=True)
+    (outside / "secret" / "notes.md").write_text("one\n", encoding="utf-8")
+    write_policy(root, [{"path": "secret", "mode": "hidden"}])
+
+    ok, msg = c.validate_command(f"cat {outside / 'secret' / 'notes.md'}")
+    assert ok, f"outside the root, this workspace's rules do not apply: {msg}"
+
+
+def test_a_relative_token_is_judged_where_the_command_runs(root: Path):
+    """The tool's ``cwd`` argument moves where a relative path lands.
+
+    The child resolves ``x.txt`` against its own working directory, so a check
+    anchored at the server root would judge ``<root>/x.txt`` and execute
+    ``<root>/vendor/x.txt`` -- one verdict asked about one file, one write
+    performed on another.
+    """
+    (root / "vendor").mkdir()
+    write_policy(root, [{"path": "vendor", "mode": "ro"}])
+
+    assert "off-limits" in c.execute_command("touch x.txt", cwd="vendor")
+    assert not (root / "vendor" / "x.txt").exists()
+    # The same command from the root is ordinary workspace work.
+    assert "Error" not in c.execute_command("touch x.txt")
+    assert (root / "x.txt").exists()
+
+
+def test_a_working_directory_inside_a_hidden_folder_is_refused(root: Path):
+    """``cwd`` is a path the connector uses, and it is asked the same question.
+
+    Starting a command *inside* a folder would list it without naming it -- the
+    observation ``hidden`` exists to refuse, and the only way the reserved
+    policy folder could be read through this connector.
+    """
+    (root / "vault").mkdir()
+    write_policy(root, [{"path": "vault", "mode": "hidden"}])
+    out = c.execute_command("ls", cwd="vault")
+    assert "Error" in out and '"vault"' in out, out
+
+    out = c.execute_command("ls", cwd=shared.POLICY_DIRNAME)
+    assert "Error" in out and "reserved by benchmarkit" in out, out
+
+
+def test_the_oracle_answers_for_the_working_directory_the_run_would_use(root: Path):
+    """``check_command_allowed`` is the run's oracle, so it resolves ``cwd`` too.
+
+    A relative argument names a different file depending on where the command
+    runs, so an oracle that ignored ``cwd`` would green-light a write the run
+    then refuses -- and the model trusts the oracle precisely because asking it
+    costs nothing.
+    """
+    (root / "vendor").mkdir()
+    write_policy(root, [{"path": "vendor", "mode": "ro"}])
+
+    msg = c.check_command_allowed("touch x.txt", cwd="vendor")
+    assert "NOT ALLOWED" in msg and "off-limits" in msg, msg
+    assert "ALLOWED for execution" in c.check_command_allowed("touch x.txt")
+
+
+def test_the_policy_refusal_and_the_panes_are_one_sentence(root: Path):
+    """pol-08's acceptance: same rule, same words, on both surfaces."""
+    (root / "vendor").mkdir()
+    write_policy(root, [{"path": "**/vendor", "mode": "ro", "reason": "vendored"}])
+
+    expected = shared.refusal_message(
+        shared.Verdict(shared.READ_ONLY, shared.LEVEL_WORKSPACE, "**/vendor",
+                       "vendored"),
+        for_write=True,
+    )
+    assert expected in refused("touch vendor/x")
+
+    from src.core.editorfs import policy_modes
+
+    assert policy_modes.refusal_message(
+        shared.Verdict(shared.READ_ONLY, shared.LEVEL_WORKSPACE, "**/vendor",
+                       "vendored"),
+        for_write=True,
+    ) == expected
+
+
+def test_one_workspace_answers_the_pane_and_the_agent_identically(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The acceptance condition, run against real rules rather than a stub.
+
+    The Editor pane answers with ``policy_modes.mode_for`` plus
+    ``refusal_message``; this connector answers with
+    ``policy_file.workspace_policy_reason``, reading the same ``.nojae`` file in
+    its own process. Pointing both at *one* workspace means any difference in the
+    reader, the cache, the matcher or the merge shows up as two sentences about
+    the same folder -- the failure pol-08 exists to prevent. (The connector's own
+    ``workspace_policy_error`` adds a skip for reading a name that is not on
+    disk; that is its token-scan business, not the shared verdict, so the
+    comparison here is the verdict against the verdict.)
+    """
+    from src.core.editorfs import policy_file as app_policy_file
+    from src.core.editorfs import policy_modes
+
+    (root / "vendor").mkdir()
+    (root / "vendor" / "a.txt").write_text("one\n", encoding="utf-8")
+    write_policy(root, [
+        {"path": ".git", "mode": "hidden"},
+        {"path": "vendor", "mode": "ro", "reason": "vendored"},
+    ])
+    monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
+    app_policy_file.invalidate_policy_cache()
+
+    cases = [
+        ("vendor/a.txt", True),    # ro + write -> both refuse, one sentence
+        ("vendor/a.txt", False),   # ro + read  -> both allow
+        (".git/config", False),    # hidden     -> both refuse, one sentence
+        ("web/src/main.js", True),  # unmarked  -> both allow
+    ]
+    for rel, for_write in cases:
+        verdict = policy_modes.mode_for(rel)
+        pane = policy_modes.refusal_message(verdict, for_write=for_write)
+        agent = connector_policy.workspace_policy_reason(
+            rel, root=str(root), for_write=for_write
+        )
+        allowed = verdict.mode == shared.READ_WRITE or (
+            verdict.mode == shared.READ_ONLY and not for_write
+        )
+        if allowed:
+            assert agent is None, (rel, for_write, agent)
+        else:
+            # The pane's whole sentence, inside the connector's -- not a
+            # paraphrase of it.
+            assert agent is not None and pane in agent, (rel, for_write, pane, agent)
+
+
+def test_a_command_naming_no_path_is_unaffected_by_the_policy(root: Path):
+    """No token, no question: the policy is path-scoped, like the rest here."""
+    write_policy(root, [{"path": "src", "mode": "hidden"}])
+    ok, msg = c.validate_command("pytest -q")
+    assert ok, msg
+
+
+def test_the_cache_follows_the_file_not_the_process(root: Path):
+    """A policy edited between two tool calls changes the next verdict.
+
+    ``ROOT_DIR`` is frozen per process, so the freshness has to come from the
+    file's own stamp -- the same ``(root, mtime_ns, size)`` key pol-04 uses.
+    """
+    (root / "vendor").mkdir()
+    write_policy(root, [{"path": "vendor", "mode": "ro"}])
+    assert refused("touch vendor/x")
+
+    write_policy(root, [{"path": "vendor", "mode": "rw"}])
+    ok, msg = c.validate_command("touch vendor/x")
+    assert ok, msg
 
 
