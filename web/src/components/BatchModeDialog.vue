@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import { humanFileSize } from '../composables/useChat'
-import { useBatch } from '../composables/useBatch'
+import { MAX_TASK_RETRIES, useBatch } from '../composables/useBatch'
 
 // The lot-launch form. A thin view: every field it shows is useBatch state, and
 // the count caption is what its blur-time fetch fills (the pattern
@@ -17,6 +17,10 @@ const {
   closeDialog,
   requestLaunch,
 } = useBatch()
+
+// Only quoted in the explanatory caption, so a future change to the loop's
+// retry budget cannot leave the dialog promising something else.
+const retryLimit = MAX_TASK_RETRIES
 
 const dialogEl = ref(null)
 
@@ -95,9 +99,12 @@ function onFieldEnter(event) {
       <p class="caption">
         Runs a numbered lot of task files through WorkBench, one task per chat
         turn. The model reads each task file itself; the conversation context is
-        reset between tasks, so what carries over is what is on disk. Choose the
-        MCP and LSP connectors before launching — they freeze with the first
-        task and cannot change mid-lot.
+        reset between tasks, so what carries over is what is on disk. A task
+        counts as finished only once its file has left this folder for
+        <code>done/</code>: a task whose file is still here is relaunched, up to
+        {{ retryLimit }} times, after which the lot aborts. Choose the MCP and
+        LSP connectors before launching — they freeze with the first task and
+        cannot change mid-lot.
       </p>
 
       <form @submit.prevent="requestLaunch">

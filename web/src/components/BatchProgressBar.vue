@@ -39,10 +39,12 @@ const ariaLabel = computed(() => {
   return `${state.prefix} batch — task ${current.value} of ${state.total}${task}`
 })
 
-// What each outcome means for the lot, in one line. Deliberately about how the
-// *turn* ended, not whether the task succeeded: batch mode never reads a task
-// body, so it cannot check the move into done/ that the instruction asks for.
-// Re-opening the dialog re-lists the folder, and that is how reality shows.
+// What each turn outcome means, in one line. The turn's own ending is only half
+// the story: the loop also checks whether the task file left the lot folder
+// (`moved`), which is the completion signal the retry runs on. Batch mode still
+// reads no task body, so `moved: true` means "no longer listed in the lot", not
+// "the work was good" — re-opening the dialog re-lists the folder, and that is
+// how reality shows.
 const OUTCOME_LABEL = {
   done: 'turn finished',
   truncated: 'turn cut short by the server',
@@ -52,15 +54,29 @@ const OUTCOME_LABEL = {
   error: 'turn failed',
 }
 
+// One entry per turn, so a task that was relaunched reads as several lines with
+// the same task number — the retry count is what the user is owed.
+function noteFor(record, i) {
+  const number = record?.number ?? state.listing?.tasks?.[i]?.number ?? i + 1
+  const attempt = record?.attempt ?? 0
+  const label = OUTCOME_LABEL[record?.outcome] ?? record?.outcome
+  const suffix = attempt > 0 ? ` (retry ${attempt})` : ''
+  if (record?.moved === false) {
+    return `task ${number}: ${label}${suffix} — task file still in the lot`
+  }
+  return `task ${number}: ${label}${suffix}`
+}
+
 const title = computed(() => {
   const head =
-    `Batch progress — turns of ${state.total} numbered task(s), ` +
-    'not a verdict on the tasks themselves.'
-  const notes = state.outcomes.map((outcome, i) => {
-    const number = state.listing?.tasks?.[i]?.number ?? i + 1
-    return `task ${number}: ${OUTCOME_LABEL[outcome] ?? outcome}`
-  })
-  if (state.status === 'failed') notes.push('batch aborted — a turn ended in error')
+    `Batch progress — turns of ${state.total} numbered task(s); a task whose ` +
+    'file is still in the lot folder is relaunched.'
+  const notes = state.outcomes.map(noteFor)
+  if (state.status === 'failed') {
+    notes.push(
+      'batch aborted — a turn failed, or a task stayed unmoved after the retries',
+    )
+  }
   if (state.status === 'stopped') notes.push('batch stopped by you')
   return [head, ...notes].join(' · ')
 })

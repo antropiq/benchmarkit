@@ -169,6 +169,13 @@ Note the reference syntax: the closing brace goes right after the variable
 name, with the rest of the path outside it — `${BENCHMARKIT_PATH_LOCATION}/web`,
 never `${BENCHMARKIT_PATH_LOCATION/web}`.
 
+Whichever folder you point at gets its own read-write policy in
+`.nojae/read-write-policy.json`: which of its files the Editor (and the chat
+assistant's file tools) may show, read and change. It is seeded for you and
+edited outside the app. See
+[`docs/POLICY-MANAGEMENT-DOC-EN.md`](docs/POLICY-MANAGEMENT-DOC-EN.md) /
+[`docs/POLICY-MANAGEMENT-DOC_FR.md`](docs/POLICY-MANAGEMENT-DOC_FR.md).
+
 ### 4. Run
 
 ```bash

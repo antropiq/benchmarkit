@@ -4,8 +4,8 @@ import { registerBatchGuard, useBenchmark } from './useBenchmark'
 
 // ---------------------------------------------------------------------------
 // Batch mode: feed a numbered lot of markdown task files to WorkBench, one
-// task per chat turn, then stop (at the end of the lot, or on the first turn
-// that ends in error).
+// task per chat turn, then stop — at the end of the lot, on the first turn that
+// ends in error, or when a task stays unfinished for too many attempts.
 //
 // This composable owns *only* the batch: the conversation, the stream and the
 // measurements stay in useChat, and every task turn goes through
@@ -13,10 +13,16 @@ import { registerBatchGuard, useBenchmark } from './useBenchmark'
 // also why a browser reload discards a batch (E8): there is no server-side "a
 // batch is running" to reconnect to.
 //
-// Two invariants the rest of the design rests on:
+// Three invariants the rest of the design rests on:
 //   * the app never reads a task body (B13). The instruction names the file's
 //     path and the model opens it with its own connectors, so the listing
 //     endpoint stays the only file surface batch mode has;
+//   * a task is only *finished* when its file left the lot folder. The move into
+//     `<dir>/done` is the agent's own acknowledgement of completeness and, with
+//     B13, the re-listing is the only way the app can read it. So after every
+//     turn the loop checks it: a task whose file is still in the lot is
+//     relaunched with a retry note appended to its instruction instead of the
+//     lot moving on — up to MAX_TASK_RETRIES times, after which the lot aborts.
 //   * the LLM context is reset per task (B6): sendBatchTurn posts one message,
 //     and the screen is wiped between tasks (useChat's reset()) so a task is
 //     shown on a clean conversation too — chat stream, reasoning/tool panel,
@@ -33,6 +39,22 @@ export const TASK_INSTRUCTION_TEMPLATE =
   "You've been given task: <task_location> to proceed. Do the coding tasks " +
   'needed to implement the feature. Once done move it into the todos/done ' +
   'folder.'
+
+// How many times an unfinished task may be relaunched before the lot is given
+// up on (the spec's "n is 1 to 3"). Fixed rather than configurable: an agent
+// that forgot the move needs one nudge, and every attempt costs a full turn of
+// the whole lot.
+export const MAX_TASK_RETRIES = 3
+
+// Appended to the instruction of a relaunched task, so the model is told *why*
+// it is being asked again — the file not having left the lot folder is the only
+// evidence the app has that the task is unfinished (the usual causes are context
+// overflow, a connectivity error, a tool-loop cap, or simply forgetting the
+// move). The wording and the markdown emphasis are the architect's, and render
+// in the user bubble like the instruction itself.
+export const RETRY_NOTE_TEMPLATE =
+  'Important: The task as been relaunch because *it has not been moved* to ' +
+  'the **todos/done** folder (retry number *<retry_number>*)'
 
 // Client-side mirror of the backend PREFIX_PATTERN (core/batch.py): the same
 // single check that keeps the query out of glob-injection territory, so an
@@ -52,6 +74,18 @@ export function taskInstruction(taskLocation) {
   return TASK_INSTRUCTION_TEMPLATE.replace('<task_location>', taskLocation)
 }
 
+// The instruction of attempt N of a task: the same template plus the retry note.
+// Attempt 0 — the first try — gets the plain instruction, so a lot whose tasks
+// behave is byte-identical to what it sent before retries existed.
+export function taskInstructionForAttempt(taskLocation, attempt = 0) {
+  const base = taskInstruction(taskLocation)
+  if (attempt <= 0) return base
+  return `${base}\n\n${RETRY_NOTE_TEMPLATE.replace(
+    '<retry_number>',
+    String(attempt),
+  )}`
+}
+
 const state = reactive({
   // --- dialog state ---
   open: false,
@@ -68,10 +102,12 @@ const state = reactive({
             // numbering still fills the bar honestly; a stopped or failed turn
             // does not advance it — Stop on task 3 leaves the bar at 2/3)
   current: null, // { number, name, taskLocation } of the streaming turn
-  // One entry per task started: 'done' | 'capped' | 'truncated' | 'stopped' |
-  // 'not-started' | 'error'. These are *turn* outcomes, not verdicts: with B13
-  // the app never sees the task body, so it cannot know whether the model
-  // moved the task file into done/ — the bar's title says so.
+  // One entry per *turn* started — a relaunched task has one entry per attempt:
+  // { number, attempt, outcome, moved }. `outcome` is how the turn ended
+  // ('done' | 'capped' | 'truncated' | 'stopped' | 'not-started' | 'error'),
+  // never a verdict on the task itself; `moved` is the completion check's
+  // verdict for that turn — true (the file left the lot folder), false (it is
+  // still there, so the task is relaunched) or null (the check could not run).
   outcomes: [],
   status: 'idle', // idle | running | stopped | failed | finished
 })
@@ -89,6 +125,31 @@ registerBatchGuard(() => state.active)
 // `error`/`not-started` do not: the bar's number is the count of tasks whose
 // turn ran to its end, so a Stop on task 3 leaves it reading 2/3.
 const TURN_COMPLETED = new Set(['done', 'truncated', 'capped'])
+
+// Whether a finished turn moves the bar on. A turn that ended with the task
+// file still in the lot folder does not: that task is about to be done again,
+// so counting it would read as progress the lot has not made. `moved === null`
+// (the check could not run) does count — see taskMovedOutOfLot.
+export function taskCountedForProgress({ outcome, moved }) {
+  return TURN_COMPLETED.has(outcome) && moved !== false
+}
+
+// What the loop does after one attempt at a task. A table rather than inline
+// branches so the retry rule is one testable function (the shape
+// lib/inference-state.js uses) and the loop reads as its actions:
+//   'failed'  — the turn itself failed: the lot is one job, so it is over (B8);
+//   'stopped' — the user stopped it (B9), which outranks a pending retry: a
+//               relaunch would restart work they just interrupted;
+//   'abort'   — the file is still in the lot and the retry budget is spent, so
+//               the *remaining* tasks are not started either;
+//   'retry'   — relaunch this same task, one retry note further;
+//   'next'    — nothing says unfinished: move on.
+export function nextBatchAction({ outcome, moved, attempt, active }) {
+  if (outcome === 'error' || outcome === 'not-started') return 'failed'
+  if (!active || outcome === 'stopped') return 'stopped'
+  if (moved === false) return attempt >= MAX_TASK_RETRIES ? 'abort' : 'retry'
+  return 'next'
+}
 
 function describeError(body, fallback) {
   const detail = body?.detail
@@ -193,6 +254,48 @@ export function useBatch() {
     return false
   }
 
+  // A second, quiet listing of the same lot — the completion check's only
+  // source. Deliberately *not* `validate()`: the dialog is closed while a lot
+  // runs, so a failed fetch must not write into `state.error`/`state.listing`
+  // (which would leave the launch-time listing inconsistent with the loop that
+  // is still iterating it). `openDialog()` re-lists on its own when the user
+  // looks again.
+  // Returns the payload, or null when the folder could not be listed.
+  async function relistLot() {
+    try {
+      const query = new URLSearchParams({
+        prefix: state.prefix.trim(),
+        dir: state.dir.trim(),
+      })
+      const res = await fetch(`/api/batch/tasks?${query}`)
+      if (!res.ok) return null
+      return await res.json()
+    } catch {
+      return null
+    }
+  }
+
+  // Did the task file leave the lot folder? That move into `<dir>/done` is the
+  // agent's own acknowledgement of completeness, and — because batch mode reads
+  // no task body (B13) and has no stat route — the re-listing above is the only
+  // way the app can see it.
+  //
+  // Returns `false` when the fresh listing still carries the task's
+  // `taskLocation` (unfinished: relaunch it), `true` when it is gone, and
+  // `null` when the check could not run at all (listing failed, or the lot
+  // folder itself disappeared). `null` must not be folded into `false`:
+  // retrying a finished task on an outage costs a full turn, and a lot whose
+  // folder vanished cannot be judged by anything this endpoint can say.
+  //
+  // "Gone from the listing" is the honest limit of what is checkable: a file
+  // renamed inside the lot folder to a name the prefix no longer matches also
+  // reads as moved, and the app has no route to tell the two apart.
+  async function taskMovedOutOfLot(task) {
+    const fresh = await relistLot()
+    if (!fresh || !Array.isArray(fresh.tasks)) return null
+    return !fresh.tasks.some((item) => item.taskLocation === task.taskLocation)
+  }
+
   // One-shot wait on the signal every component already trusts: phase returns
   // to 'idle' from finish(), from the pause_ack case, or from the non-OK path —
   // i.e. after every terminal frame of a reply.
@@ -216,13 +319,18 @@ export function useBatch() {
   // One task turn: hand the instruction to useChat, wait for the terminal
   // frame, then read the outcome off the message the placeholder became and off
   // the chat error line. No new event, no new frame, nothing in core/.
-  async function runOneTurn(task) {
+  //
+  // `attempt` is how many times this task has already been relaunched: it only
+  // selects the message text (the retry note), never a different flow.
+  async function runOneTurn(task, attempt = 0) {
     const lotText =
       state.includeLot && state.listing?.lot?.text ? state.listing.lot.text : null
     // E14: a turn that never fires would hang the loop on a phase change that
     // never happens, so sendBatchTurn's boolean decides immediately.
     if (
-      !sendBatchTurn(taskInstruction(task.taskLocation), { batchContext: lotText })
+      !sendBatchTurn(taskInstructionForAttempt(task.taskLocation, attempt), {
+        batchContext: lotText,
+      })
     ) {
       return 'not-started'
     }
@@ -279,14 +387,48 @@ export function useBatch() {
       for (const task of tasks) {
         if (!state.active) return // Stop won between the turns (E2)
         state.current = task
-        const outcome = await runOneTurn(task)
-        state.outcomes.push(outcome)
-        // The bar counts finished *turns*: a Stop or a failure leaves the bar at
-        // the last task that really ran, which is what stays honest on screen
-        // (and `current` is what names the task that was interrupted).
-        if (TURN_COMPLETED.has(outcome)) state.index = task.number
-        if (outcome === 'error' || outcome === 'not-started') {
-          state.status = 'failed'
+        let attempt = 0
+        // One task, retried until its file leaves the lot folder (or until the
+        // retry budget is spent). `attempt` is also the retry number quoted in
+        // the instruction of the next try.
+        for (;;) {
+          const outcome = await runOneTurn(task, attempt)
+          const record = { number: task.number, attempt, outcome, moved: null }
+          // The completion check only speaks about a turn that reached its end;
+          // a Stop, an error or a turn that never started is judged by its own
+          // rule, not by the listing.
+          if (TURN_COMPLETED.has(outcome)) {
+            record.moved = await taskMovedOutOfLot(task)
+          }
+          state.outcomes.push(record)
+          if (taskCountedForProgress(record)) state.index = task.number
+
+          const action = nextBatchAction({
+            outcome,
+            moved: record.moved,
+            attempt,
+            active: state.active, // Stop between frames wins over a pending retry
+          })
+          if (action === 'retry') {
+            attempt += 1
+            // A retry is a fresh turn on a fresh context, exactly like the step
+            // to the next task: the model gets a clean conversation carrying one
+            // more piece of information — the note that the move never happened.
+            startNextTaskOnCleanSlate()
+            continue
+          }
+          if (action === 'next') break
+          if (action === 'abort') {
+            // The WorkBench error line is where a lot explains itself: the
+            // dialog is closed by then, and the progress bar's `outcomes`
+            // already name the task and its attempts.
+            fail(
+              `Batch aborted: ${task.taskLocation} was still in the lot folder ` +
+                `after ${MAX_TASK_RETRIES} retries — its file never reached the ` +
+                'done folder, so the remaining tasks were not started.',
+            )
+          }
+          state.status = action === 'stopped' ? 'stopped' : 'failed'
           return
         }
         // The lot moves on: hand the next task a clean screen. The last task

@@ -211,6 +211,10 @@ has no template — it is written by the seeding code. These rules tie them toge
   through the shared deny-list (`core/batch.py`) and *read/written* only
   through the connectors; its loop is client-side (`useBatch.js`), so a reload
   discards a running lot.
+- **A batch task is finished when its file left the lot folder**: that move is
+  the agent's own acknowledgement, and re-listing is the only way the loop can
+  see it. A task whose file is still there is relaunched with a retry note,
+  up to the loop's fixed budget, then the whole lot aborts.
 - **Tree file icons are one generated unit**: the per-file-type glyph mapping
   (`web/src/lib/file-icons.js`), the `nerd-icons-*.woff2` subsets and the
   `unicode-range` of the "JetBrains Mono Nerd Icons" faces in `nerd-fonts.css`
