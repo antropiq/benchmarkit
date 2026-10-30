@@ -189,3 +189,62 @@ describe('persistence of the axis', () => {
     expect(l.dockCollapsed.value).toBe(true)
   })
 })
+
+// wf-04's sweep. The cases above walk *transitions* (one hop per pair); this
+// walks a whole session the way a user actually moves — one control, then the
+// other, sometimes from a state the previous click left behind — and asserts
+// the pair at every step, not only at the destination. A bug that only shows
+// on the third hop (a leftover `view` behind a persisted flag, say) is
+// invisible to the single-hop table.
+describe('a walk through the states', () => {
+  it('keeps the pair honest over a full cycle of both controls', () => {
+    const l = layout()
+    // normal -> reasoning -> normal -> conversation -> reasoning ->
+    // conversation -> normal, each step by the gesture a user would use.
+    const steps = [
+      ['toggleFocus', FOCUS_REASONING],
+      ['toggleFocus', FOCUS_NORMAL],
+      ['toggleLeftHidden', FOCUS_CONVERSATION],
+      // From `conversation` the focus control uncovers the column and
+      // maximises in one gesture (spec §2), so the pair must be reasoning's.
+      ['toggleFocus', FOCUS_REASONING],
+      ['toggleLeftHidden', FOCUS_CONVERSATION],
+      ['toggleLeftHidden', FOCUS_NORMAL],
+    ]
+
+    expect(pair(l)).toEqual(SHAPE[FOCUS_NORMAL])
+    for (const [gesture, expected] of steps) {
+      l[gesture]()
+      expect([gesture, ...pair(l)]).toEqual([gesture, ...SHAPE[expected]])
+    }
+
+    // Storage agrees with the live pair at the end of the walk, which is what
+    // a reload reads back (D4).
+    expect(window.localStorage.getItem(HIDDEN_KEY)).toBe('0')
+  })
+
+  // The screen's two independent flags — the dock's fold and the axis — were
+  // never silently merged: the fold survives every state in both orders, and
+  // the axis survives the fold being flipped mid-walk.
+  it('leaves the dock fold alone when the axis walks, and the reverse', () => {
+    // Fold first, walk all three states, unfold last.
+    const folded = layout()
+    folded.dockCollapsed.value = true
+    folded.toggleFocus()
+    folded.toggleLeftHidden()
+    folded.toggleFocus()
+    folded.setFocus(FOCUS_NORMAL)
+    expect(folded.dockCollapsed.value).toBe(true)
+    expect(window.localStorage.getItem(COLLAPSE_KEY)).toBe('1')
+    expect(pair(folded)).toEqual(SHAPE[FOCUS_NORMAL])
+
+    // Walk first, fold while a state is active, walk on.
+    const walked = layout()
+    walked.toggleFocus()
+    walked.dockCollapsed.value = true
+    walked.toggleLeftHidden()
+    walked.toggleFocus()
+    expect(walked.dockCollapsed.value).toBe(true)
+    expect(pair(walked)).toEqual(SHAPE[FOCUS_REASONING])
+  })
+})

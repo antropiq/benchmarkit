@@ -2,18 +2,27 @@ import { computed, ref } from 'vue'
 import { useSplitter } from './useSplitter.js'
 
 // The Chat screen's geometry, in one place, because its two splitters used to
-// be one: the shell is now two columns, each a flex column with its own bar,
-// so a bar sizes only its own column.
+// be one: the shell is a row of three children — two columns, each a flex
+// column with its own bar, and the gutter between them — so a bar sizes only
+// its own column.
 //
 //   .chat-shell (row)
 //     .chat-col--left   .chat-tool-panel + chat-col-resizer + .chat-tools-dock
+//     .chat-col-gutter  the two focalisation controls, hidden by no state
 //     .chat-col--right  .chat-output     + chat-resizer     + .chat-input
 //
 // Both splitters take the *column* as their shell, so each measures the
 // column it lives in and sizes the pane after its bar: the composer row grows
-// upwards, the dock grows downwards. Folding the dock is the one control that
-// spans both — it takes the dock and its bar out of the flow, which hands
-// their height to the timeline.
+// upwards, the dock grows downwards.
+//
+// Three controls take elements out of the flow instead of sizing them: the
+// dock's fold (its bar goes with it), and the two focalisations the gutter
+// carries. `focus` picks which surface owns the screen and reaches the DOM as
+// one state class on `.chat-shell` (`chat-shell--reasoning`,
+// `chat-shell--conversation`) — the rules keyed on that name move a whole
+// column, and no state reads or writes a splitter's stored size, so a dragged
+// dock and a dragged composer come back exactly as they were left (see
+// `dockCollapsed` below: a flag, not a size).
 //
 // A dock tall enough to hold two switches and their hub titles; the timeline
 // above it keeps a usable window into the reasoning either way — 200 px being

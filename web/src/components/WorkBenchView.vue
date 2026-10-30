@@ -8,7 +8,7 @@ import { humanFileSize, useChat } from '../composables/useChat.js'
 import { useMemory } from '../composables/useMemory.js'
 import { useAutoScroll } from '../composables/useAutoScroll.js'
 import { useBenchmark } from '../composables/useBenchmark.js'
-import { useChatLayout } from '../composables/useChatLayout.js'
+import { FOCUS_REASONING, useChatLayout } from '../composables/useChatLayout.js'
 import { useBatch } from '../composables/useBatch.js'
 import { anyHub, bothHubs } from '../lib/chat-hubs.js'
 import WorkBenchToolsDock from './WorkBenchToolsDock.vue'
@@ -83,7 +83,19 @@ const {
 </script>
 
 <template>
-  <div class="chat-shell">
+  <!-- The two focalisations reach the screen as state classes on the shell,
+       never on the columns: this is where the chat geometry is already decided
+       (it carries the breakpoint-overridden --bi-chat-panel-width), and the two
+       rules those names drive in theme.css are the whole geometry of the
+       feature. The reads below render useChatLayout's state (D1); the template
+       computes no transition. -->
+  <div
+    class="chat-shell"
+    :class="{
+      'chat-shell--reasoning': focus === FOCUS_REASONING,
+      'chat-shell--conversation': leftHidden,
+    }"
+  >
     <div
       ref="leftCol"
       class="chat-col chat-col--left"

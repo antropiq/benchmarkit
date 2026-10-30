@@ -1361,6 +1361,85 @@ body {
   outline-offset: -2px;
 }
 
+/* The dashed marks (see WorkBenchFocusGutter): the dash is the mark, the 28px
+   button is the target, and neither moves on hover. What "lighting up" changes
+   is the color (the rule above), the opacity and the dash — never the size, so
+   the target cannot slip under the cursor.
+
+   The dash *pattern* is an attribute of each shape in the template (it is part
+   of the glyph), so going solid has to target the shapes themselves: an
+   inherited value never beats a declaration on the element, and a presentation
+   attribute is a declaration — a `stroke-dasharray` on the <svg> here would
+   lose to the rects'. What wins is a class rule, which outranks presentation
+   attributes however they are spelled.
+
+   Butt caps, deliberately: `round`/`square` extend each dash by half a
+   stroke-width at both ends, which at this scale (14px glyph, 2-unit stroke)
+   eats the whole gap and the pointillé reads solid before anything is hovered.
+
+   The colors come from the two theme blocks (`--pico-muted-color` at rest,
+   `--bi-icon` lit), so light and dark both work without a second rule, and the
+   rest opacity is 0.85 because that is where the mark clears 3:1 against the
+   page in *both* themes (measured: 3.4 light / 5.0 dark; at 0.75 the light
+   theme falls to 2.8, and a control nobody sees cannot be clicked). Lit it is
+   16.2 / 13.0 against the button's own hover surface. */
+.chat-gutter-mark {
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.chat-gutter-btn:is(:hover, :focus-visible) .chat-gutter-mark {
+  opacity: 1;
+}
+
+.chat-gutter-btn:is(:hover, :focus-visible) .chat-gutter-mark :is(rect, path) {
+  stroke-dasharray: none;
+}
+
+/* -- focalisation: the two states ------------------------------------------
+
+   The whole geometry of the feature is these rules — `display: none` and a
+   `flex` basis, one per state, on the columns. Never `v-if`: the reasoning
+   panel holds its displayed lines in a component-local cache and its column
+   count in a ResizeObserver, so unmounting it would re-cut every reasoning
+   line of the session from MIN_BUDGET and lose the scroll position. Hiding in
+   CSS also keeps the two splitters, useAutoScroll's ref and the panel's cache
+   alive without any help.
+
+   They sit *after* `.chat-col--single` above, which they out-specify only by
+   order: at equal class count the later rule wins, and that is what lets
+   `reasoning` take the row whether the left column is one panel wide or two.
+
+   `reasoning` takes the dock and its bar out with the right column: left in
+   the flow the dock would still claim its minimum height, so the timeline
+   would gain width but not height and would not be the maximised surface the
+   state is for. Nothing here writes or zeroes the dragged dock height
+   (benchmarkit:chatToolsColumn) or the composer split — a state leaves
+   elements out of the flow, it never resizes, so `normal` finds both exactly
+   as they were dragged.
+
+   No @media rule mentions the gutter, and that is a decision, not an
+   oversight: as a flex item it crosses both breakpoints and both column
+   variants without knowing they exist, and it is the only surface no state
+   hides — the chevron that takes a column away is the way back to it, so
+   hiding the gutter on a narrow screen would strand one. */
+.chat-shell--conversation .chat-col--left {
+  display: none;
+}
+
+.chat-shell--reasoning .chat-col--right {
+  display: none;
+}
+
+.chat-shell--reasoning .chat-col--left {
+  flex: 1 1 auto;
+}
+
+.chat-shell--reasoning .chat-tools-dock,
+.chat-shell--reasoning .chat-col-resizer {
+  display: none;
+}
+
 .chat-output {
   flex: 4 1 0;
   min-width: 0;
