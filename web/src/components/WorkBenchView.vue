@@ -12,6 +12,7 @@ import { useChatLayout } from '../composables/useChatLayout.js'
 import { useBatch } from '../composables/useBatch.js'
 import { anyHub, bothHubs } from '../lib/chat-hubs.js'
 import WorkBenchToolsDock from './WorkBenchToolsDock.vue'
+import WorkBenchFocusGutter from './WorkBenchFocusGutter.vue'
 
 const { state, editLast, clearImage, loadChatHubs } = useChat()
 const { state: batch } = useBatch()
@@ -67,10 +68,17 @@ const dock = ref(null)
 // Two splitters, one per column: the right one sizes the composer row (it used
 // to span the whole shell and so sized the left column too), the left one
 // sizes the tools dock under the reasoning timeline. See useChatLayout.
+//
+// `focus` / `leftHidden` / the two toggles drive the gutter between the
+// columns: the state is the composable's, the template only renders it.
 const {
   column: dockSplit,
   composer: composerSplit,
   dockCollapsed,
+  focus,
+  leftHidden,
+  toggleFocus,
+  toggleLeftHidden,
 } = useChatLayout(leftCol, rightCol, input, dock)
 </script>
 
@@ -106,6 +114,12 @@ const {
       />
     </div>
 
+    <WorkBenchFocusGutter
+      :focus="focus"
+      :left-hidden="leftHidden"
+      @toggle-focus="toggleFocus"
+      @toggle-left-hidden="toggleLeftHidden"
+    />
     <div ref="rightCol" class="chat-col chat-col--right">
       <div
         ref="panel"

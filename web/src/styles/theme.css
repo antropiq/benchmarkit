@@ -1298,6 +1298,69 @@ body {
   flex: 1 1 auto;
 }
 
+/* The two focalisation controls, in a third flex item between the columns
+   (see WorkBenchFocusGutter). A flex item rather than an overlay is the whole
+   point: it never has to know --bi-chat-tools-col-width, the --single variant
+   or the breakpoints below, it only takes its 28px out of the row.
+
+   The negative inline margins cancel the two gaps a third child would add —
+   the box lands in the gap that already separates the columns, so the visible
+   space either side of a 14px mark stays ~7px and the conversation loses
+   little. Nothing overlaps: the margins pull into gap space only.
+
+   Top-aligned so both controls sit at the top of the column, and `flex: none`
+   on the buttons keeps the two 28px targets whole at any window height. There
+   is deliberately no separator drawn between them: in 28px of width a rule
+   reads as noise next to the marks, and the gap alone groups them. */
+.chat-col-gutter {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 28px;
+  align-self: flex-start;
+  margin-inline: calc(-1 * var(--bi-space-2));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.25rem;
+}
+
+/* Pico's own button rules would paint these primary-coloured with a 1rem
+   bottom margin, so every one of them is reset here. At rest the mark is
+   muted; hover and keyboard focus bring it to the foreground colour (wf-03
+   makes the dashes go solid at the same step). The target is 28px — the
+   mark is the glyph, not the click area. */
+.chat-gutter-btn {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--pico-border-radius);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--pico-muted-color);
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.chat-gutter-btn:is(:hover, :focus-visible) {
+  background-color: var(--bi-surface-2);
+  color: var(--bi-icon);
+}
+
+/* Pico's own focus ring is a box-shadow, which the reset above removes, so the
+   keyboard ring is restated the way the other bare buttons in this file do —
+   inset, because the gutter's box already ends at the two columns' edges and an
+   outside ring would sit on top of them. */
+.chat-gutter-btn:focus-visible {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: -2px;
+}
+
 .chat-output {
   flex: 4 1 0;
   min-width: 0;
