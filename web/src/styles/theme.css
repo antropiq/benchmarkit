@@ -893,7 +893,9 @@ body {
 /* Batch meter, above the composer row (BatchProgressBar.vue). The <progress>
    and its caption come from `.progress-row` / `.caption.mono` above; this
    block only stacks the three lines. It fills `.chat-textarea-col`, which owns
-   the whole composer width now that no side panel stands beside the textarea. */
+   the whole composer width now that no side panel stands beside the textarea.
+   The bottom margin keeps the bordered panel off the action-button row below
+   it — the column's own `gap` is only 2px, too tight to read as its edge. */
 .batch-progress {
   flex: 0 0 auto;
   width: 100%;
@@ -901,7 +903,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  margin: 0;
+  margin: 0 0 0.4rem;
   padding: 0.4rem;
   border: 1px solid var(--bi-border);
   border-radius: var(--bi-radius-lg);
