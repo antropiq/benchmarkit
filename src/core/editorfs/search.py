@@ -20,6 +20,16 @@ What it promises (each rule mirrored by a test in ``tests/test_editorfs_search.p
   hidden name, which is the leak hiding the row exists to prevent. The scan does
   not inherit the tree's *listing* cap — that bounds one screenful of rows, not
   access — so a collapsed branch is walked in full.
+* **and that visible set is then narrowed by the repository's ignore rules.**
+  :func:`editorfs.gitstatus.ignored_paths` asks git (``status --ignored=matching``)
+  what this workspace excludes, and the walk prunes those names the same way it
+  prunes a ``hidden`` one: an ignored *folder* costs no ``scandir`` below it and
+  an ignored file is never opened. Two filters, in that order, and neither one is
+  the other's substitute — the policy says what this surface may see, the ignore
+  rules say what the project calls its own bytes. A path with no repository (or a
+  git that cannot be asked) simply has no ignore filter; the policy still bounds
+  the scan, so this costs pruning of caches and build output and never a refusal.
+  Ignored paths are counted nowhere either: they are not a cap the user can hit.
 * the scope **root** goes through :func:`editorfs.policy.resolve_in_workspace`
   once: 422 for a path outside the workspace, 404 for one that is hidden or
   absent. A hidden *file* therefore cannot be searched by name even though no row
@@ -57,9 +67,9 @@ import re
 import stat as stat_module
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
-from . import constants, tree
+from . import constants, gitstatus, tree
 from .policy import WorkspacePathError, resolve_in_workspace
 from .policy_modes import mode_for
 from .constants import policy_shared as shared
@@ -81,6 +91,27 @@ class ScanCounts:
     binary: int = 0
     files_cut: bool = False  # MAX_SEARCH_FILES ended the scan
     bytes_cut: bool = False  # MAX_SEARCH_BYTES ended the scan
+
+
+def _ignored_hit(rel: str, names: Set[str]) -> bool:
+    """Whether ``rel`` is ignored — itself, or because a folder above it is.
+
+    git answers with whatever names its own rules match, and it *collapses* a
+    folder whose whole content is excluded to that folder's name (``build/``),
+    while an ignore rule that only matches files arrives as the files
+    (``src/__pycache__/x.pyc``). Checking the name and each of its ancestors
+    makes one rule of both shapes, and it is what lets a *scope* that sits inside
+    an ignored folder come back empty even though git only names the folder above
+    it.
+    """
+    if not names:
+        return False
+    cut = len(rel)
+    while cut > 0:
+        if rel[:cut] in names:
+            return True
+        cut = rel.rfind("/", 0, cut)
+    return False
 
 
 class SearchQueryError(Exception):
@@ -128,13 +159,21 @@ def iter_resolved_scope(
     would otherwise ask the gate twice for one path: the same rules, the same
     errors, and a second read of the deny-list file for nothing.
     """
+    ignored = gitstatus.ignored_paths(normalised) or set()
+    if _ignored_hit(normalised, ignored):
+        # The scope itself is one of the project's ignored names, so *every* file
+        # in it is out of the supply. This answers an empty scan rather than the
+        # 404 a hidden scope gets: an ignored folder is a row the tree shows, and
+        # "nothing matched here" is the truth about it, not an observation.
+        return
+
     if resolved.is_file():
         # A file scope: the same reader a walk would use for this path, and *not*
         # ``files.read_file`` — that raises 413 past ``MAX_EDITOR_BYTES``, which
         # would make one big file an error for a search instead of a skip. The
         # path already passed the gate, so it is inside the workspace, is not
         # hidden, and is a ``realpath``: no symlink is left to worry about here.
-        text = _Scanner(counts).from_resolved_path(resolved)
+        text = _Scanner(counts, ignored).from_resolved_path(resolved)
         if text is not None:
             yield (normalised, text)
         return
@@ -143,7 +182,7 @@ def iter_resolved_scope(
         raise WorkspacePathError(
             404, f"Directory does not exist: {normalised or '.'}"
         )
-    yield from _Scanner(counts).walk(normalised, resolved)
+    yield from _Scanner(counts, ignored).walk(normalised, resolved)
 
 
 class _Scanner:
@@ -154,8 +193,9 @@ class _Scanner:
     longer — it is not a field of the payload and must not leak between searches.
     """
 
-    def __init__(self, counts: ScanCounts) -> None:
+    def __init__(self, counts: ScanCounts, ignored: Set[str]) -> None:
         self.counts = counts
+        self.ignored = ignored
         self.bytes_read = 0
 
     def stopped(self) -> bool:
@@ -180,6 +220,14 @@ class _Scanner:
             # ``tree.list_dir``: a hidden folder is neither listed nor walked, so
             # no snippet from inside it can reach the payload. Nothing is counted.
             if mode_for(child_rel).mode == shared.HIDDEN:
+                continue
+            # The second filter, applied the same way and for the same reason: a
+            # name the project's ignore rules exclude is not walked and not
+            # opened, so the scan never spends its byte budget on build output or
+            # caches. It is not a *policy* answer — an ignored folder is a row the
+            # tree shows — so the two stay separate checks, and neither one counts
+            # what it pruned.
+            if _ignored_hit(child_rel, self.ignored):
                 continue
             # ``follow_symlinks=False`` for the same reason the tree uses it: a
             # link to a folder is a leaf here, so the walk cannot leave the

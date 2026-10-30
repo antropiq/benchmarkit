@@ -1,12 +1,20 @@
 """Which workspace files git considers *unstaged*, and the two sides of a diff.
 
-Two entry points for the Editor tab's navigator:
+Entry points for the Editor tab's navigator:
 
 * :func:`git_status` — the changed paths of the working location
   (``GET /api/fs/status``), so a tree row can say "this file changed outside
   the app";
 * :func:`file_diff` — the committed side and the on-disk side of one file
   (``GET /api/fs/diff``), for a diff tab.
+
+A third read-only query answers a different surface: :func:`ignored_paths` — the
+paths the workspace's ignore rules exclude, which the workspace search refuses to
+open or descend (see :mod:`editorfs.search`). It lives here because it is a git
+question and this module owns the one way this package asks git anything; a
+search that matched ignore patterns itself would be a second answer about the
+same path in a second implementation, which is what one-verdict policy exists to
+prevent.
 
 Both are **read-only git queries**: nothing here stages, commits or checks out
 anything. The package's one writer is :func:`editorfs.files.write_file`, and a
@@ -36,11 +44,18 @@ Four rules the two endpoints share:
   item. A *broken* git run (no binary, a timeout, a corrupt repo) answers 504
   instead — a marker is decoration the front end may ignore, but it must never
   be handed "nothing changed" as a lie.
+
+The exception to that last rule is :func:`ignored_paths`, which answers ``None``
+where the two routes above would raise: for a search, "git cannot tell me what is
+ignored" is not a refusal, it is the absence of a second filter. The policy
+verdict still bounds the scan either way, so a broken index can neither reach a
+hidden path nor hide a visible one — it only costs the search its pruning of
+caches and build output.
 """
 
 import os
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import constants
 from .files import language_for, read_file
@@ -138,6 +153,77 @@ def _records(raw: bytes) -> List[str]:
         for chunk in raw.split(b"\0")
         if chunk
     ]
+
+
+def ignored_paths(scope: str = "") -> Optional[Set[str]]:
+    """The workspace-relative names ``.gitignore`` excludes inside ``scope``.
+
+    Asked as ``git status --ignored=matching``, which is the one question
+    "what do this repository's ignore rules exclude?" answered by the program
+    that owns the answer — including its ``.git/info/exclude``, its
+    ``core.excludesFile``, the nested ``.gitignore`` files at any depth, and the
+    negation rules (``!pattern``) that re-admit a name inside an ignored folder.
+
+    Three properties of that answer are why the search uses it instead of
+    matching patterns itself:
+
+    * **a rule that matches a directory** (``build/``, ``logs/``) **arrives as
+      that one name, collapsed** — the whole subtree is not enumerated. That is
+      the shape a *prune* wants;
+    * **a tracked file matching an ignore pattern is not reported**, because git
+      does not ignore it — the checked-in side of a ``.gitignore`` mistake stays
+      searchable;
+    * **a rule that matches files, not folders, arrives as the files**
+      (``*.pyc`` gives ``src/__pycache__/m.pyc``, and the folder above it is not
+      named), which is why the caller checks a path *and its ancestors* against
+      one set instead of preferring one shape.
+    * the names are repository-relative, so they go through the same
+      ``--show-prefix`` mapping every other answer here uses.
+
+    ``None`` is the answer when git cannot be asked (no repository here, no git
+    binary, a timeout, a broken index): the *absence of a filter*, not an error
+    and not an empty set. A search's scope is already bounded by the workspace
+    policy, so this costs it pruning of caches and build output and nothing else
+    — see the module docstring for why a search must not fail over it.
+    """
+    try:
+        repo = repo_info()
+        if repo is None:
+            return None
+        proc = _git(
+            [
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--ignored=matching",
+                "--untracked-files=normal",
+                "--",
+                "." if not scope else f":(literal){scope}",
+            ],
+            workspace_root(),
+        )
+    except WorkspacePathError:
+        # No git binary, or a git that timed out: the same *absence of a filter*
+        # as a folder that is not a repository. The status route answers 504 for
+        # these because a missing marker would be a lie; a search has nothing to
+        # lie about — it falls back to scanning what the policy allows, which is
+        # what it did before this filter existed.
+        return None
+    if proc.returncode != 0:
+        return None
+
+    names: Set[str] = set()
+    for record in _records(proc.stdout):
+        # ``!!`` is the ignored column pair; anything else in this output is a
+        # change, and this question is about the rules, not about the work tree.
+        if record[:2] != "!!" or len(record) < 4:
+            continue
+        rel = _to_workspace_rel(record[3:], repo["prefix"])
+        if rel:
+            # A collapsed folder arrives with a trailing ``/``; the name itself
+            # is what the walk prunes on.
+            names.add(rel.rstrip("/"))
+    return names
 
 
 def classify(index_code: str, worktree_code: str) -> Tuple[str, bool]:

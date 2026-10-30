@@ -485,3 +485,103 @@ class TestGitFailuresAreHonest:
 
         assert seen, "no git command was run"
         assert all(env.get("GIT_OPTIONAL_LOCKS") == "0" for env in seen)
+
+
+class TestIgnoredPaths:
+    """``gitstatus.ignored_paths`` — the names the workspace search prunes on.
+
+    Asserted on the core function rather than a route: it is not an endpoint, and
+    what matters is that the names *git's own rules* produce arrive
+    workspace-relative and in the shape a walk prunes on.
+    """
+
+    def test_an_ignored_file_and_an_ignored_folder_are_both_named(self, ws: Path):
+        (ws / ".gitignore").write_text("*.log\nbuild/\n", encoding="utf-8")
+        (ws / "notes.log").write_text("x\n", encoding="utf-8")
+        (ws / "build" / "deep").mkdir(parents=True)
+        (ws / "build" / "gen.js").write_text("x\n", encoding="utf-8")
+        (ws / "build" / "deep" / "gen.js").write_text("x\n", encoding="utf-8")
+        assert editorfs.gitstatus.ignored_paths("") == {"notes.log", "build"}
+
+    def test_an_ignored_folder_arrives_collapsed_not_enumerated(self, ws: Path):
+        """One name for a whole excluded subtree — the shape a *prune* needs.
+
+        Enumerating the contents instead would make the answer depend on which
+        files happen to sit under ``build/``, and a folder git had not listed
+        could still be walked into.
+        """
+        (ws / ".gitignore").write_text("build/\n", encoding="utf-8")
+        (ws / "build").mkdir()
+        for name in ("a.js", "b.js", "c.js"):
+            (ws / "build" / name).write_text("x\n", encoding="utf-8")
+        assert editorfs.gitstatus.ignored_paths("") == {"build"}
+
+    def test_a_nested_gitignore_is_part_of_the_answer(self, ws: Path):
+        (ws / "pkg" / ".gitignore").write_text("secret/\n", encoding="utf-8")
+        (ws / "pkg" / "secret").mkdir(parents=True)
+        (ws / "pkg" / "secret" / "deep.md").write_text("x\n", encoding="utf-8")
+        assert editorfs.gitstatus.ignored_paths("") == {"pkg/secret"}
+
+    def test_a_tracked_file_matching_an_ignore_rule_is_not_reported(self, ws: Path):
+        """git does not ignore what it tracks, and neither does this answer.
+
+        The point of *asking git* rather than matching the patterns: a file checked
+        in despite ``*.pyc`` is a real file of the project, and a search that
+        re-derived the rules would hide bytes the repository holds.
+        """
+        (ws / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+        (ws / "keep.pyc").write_text("x\n", encoding="utf-8")
+        git(ws, "add", "-f", "keep.pyc")
+        git(ws, "commit", "-qm", "a mistake, checked in")
+        assert editorfs.gitstatus.ignored_paths("") == set()
+
+    def test_a_rule_that_matches_files_arrives_as_the_files(self, ws: Path):
+        """``*.pyc`` names no folder, so the caller has to check ancestors too."""
+        (ws / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+        (ws / "src" / "__pycache__").mkdir(parents=True)
+        (ws / "src" / "__pycache__" / "m.pyc").write_text("x\n", encoding="utf-8")
+        assert editorfs.gitstatus.ignored_paths("") == {"src/__pycache__/m.pyc"}
+
+    def test_a_scope_asks_about_that_subtree_alone(self, ws: Path):
+        (ws / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        (ws / "notes.log").write_text("x\n", encoding="utf-8")
+        (ws / "pkg" / "inner.log").write_text("x\n", encoding="utf-8")
+        assert editorfs.gitstatus.ignored_paths("pkg") == {"pkg/inner.log"}
+
+    def test_the_names_stay_workspace_relative_below_a_subtree(
+        self, ws: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The same ``--show-prefix`` map the two routes use, or the walk prunes
+        on names the tree never had."""
+        (ws / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        (ws / "pkg" / "inner.log").write_text("x\n", encoding="utf-8")
+        (ws / "notes.log").write_text("x\n", encoding="utf-8")
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(ws / "pkg"))
+        assert editorfs.gitstatus.ignored_paths("") == {"inner.log"}
+
+    def test_a_folder_that_is_not_a_repository_answers_none(self, tmp_path, monkeypatch):
+        """``None`` is the *absence of a filter*, not a claim that nothing is
+        ignored — which is what an empty set would say, and a folder with no
+        repository has not earned the right to make it.
+        """
+        plain = tmp_path / "no-repo-ignores"
+        plain.mkdir()
+        (plain / "file.txt").write_text("x\n", encoding="utf-8")
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(plain))
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+        assert editorfs.gitstatus.ignored_paths("") is None
+
+    def test_a_git_that_cannot_be_asked_answers_none(
+        self, ws: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """No binary, or a git that timed out: the same absence, never a 504.
+
+        The two *routes* answer 504 for exactly this condition, because a missing
+        dirty-marker would be a lie about the work tree. A search has no marker to
+        lie about — the policy already bounds it — so it loses only its pruning.
+        """
+        def expire(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=1)
+
+        monkeypatch.setattr(editorfs.gitstatus.subprocess, "run", expire)
+        assert editorfs.gitstatus.ignored_paths("") is None

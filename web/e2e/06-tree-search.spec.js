@@ -535,6 +535,51 @@ test('a hidden path is absent from the payload, unquoted and uncounted', async (
   await expect(page.locator('.editor-search-empty')).toHaveText('no matches')
 })
 
+// 8b. The second filter: the repository's own ignore rules.
+//
+// The policy says what this surface *may* see; ``.gitignore`` says what the
+// project calls its own bytes, and a search honours both. This is the row that
+// only the live checkout can prove, because it needs a folder that is
+// simultaneously **listed by the tree**, **ignored by git** and **full of
+// matching bytes** — which is what `web/dist` and `web/node_modules` are here
+// (the first is vite's output, gitignored and only *read-only* by policy, so the
+// tree shows it; the second is `ro` through the seeded rule).
+//
+// Nothing is written: the folders exist because `global-setup.js` built the SPA
+// and `npm install` fetched the dependencies. The needle is an ordinary word that
+// generated JavaScript and dependency code are certain to hold, and the point is
+// its *absence* from the answer — so a build that changed shape cannot make this
+// red for the wrong reason.
+test('a gitignored folder the tree lists is searched as the empty scope it is', async ({
+  page,
+  request,
+}) => {
+  const dist = await (await request.get('/api/fs/search?path=web/dist&q=function')).json()
+  const modules = await (
+    await request.get('/api/fs/search?path=web/node_modules&q=function')
+  ).json()
+
+  // The honest empty answer, not an error and not a truncation: an ignored
+  // folder is a real row, and the scan read nothing under it.
+  for (const payload of [dist, modules]) {
+    expect(payload.matches).toEqual([])
+    expect(payload.matchCount).toBe(0)
+    expect(payload.filesScanned).toBe(0)
+    expect(payload.truncated).toBe(false)
+    expect(payload.footerNote).toBe('')
+  }
+
+  // And the same from the gesture a person makes: the row is in the tree, the
+  // dialog opens on it, and the table says *no matches*.
+  await openEditor(page)
+  await openFolders(page, 'web', 'web/dist')
+  await useMenuItem(page, 'web/dist', 'Search…')
+  await expect(scopeLabel(page)).toHaveText('web/dist')
+  await searchFor(page, 'function')
+  await expect(resultRows(page)).toHaveCount(0)
+  await expect(page.locator('.editor-search-empty')).toHaveText('no matches')
+})
+
 // The second entry point of §2.9: the header's icon raises the same dialog on
 // the row the tree is *on*, so its subject is the tree's focus — a row can be
 // the subject without ever having been clicked.

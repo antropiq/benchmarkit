@@ -21,6 +21,7 @@ counted. The scope root alone raises; a file inside the scope never does.
 """
 
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
@@ -85,6 +86,50 @@ def client(workspace: Path):
     """
     with TestClient(create_app()) as test_client:
         yield test_client
+
+
+def git(repo: Path, *args: str) -> None:
+    """One git command in ``repo``, failing the test on a non-zero exit.
+
+    The hermetic form ``tests/test_editorfs_git.py`` uses: the global and system
+    config are ignored and the identity comes from the environment, so a
+    developer's ``~/.gitconfig`` cannot change what these rows assert.
+    """
+    env = {
+        **os.environ,
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
+    }
+    proc = subprocess.run(
+        ["git", *args], cwd=repo, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    assert proc.returncode == 0, f"git {' '.join(args)}: {proc.stderr.decode()}"
+
+
+@pytest.fixture
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The seeded workspace of ``workspace``, made into a git repository.
+
+    Only the repository is added, so a row about the ignore filter differs from
+    its sibling about the policy by exactly one thing: the presence of git.
+    ``GIT_CEILING_DIRECTORIES`` is what makes "this folder is the repository" a
+    fact about the fixture rather than about where the suite happened to run —
+    without it, a checkout above ``tmp_path`` would answer for the folder.
+    """
+    root = tmp_path / "checkout"
+    root.mkdir()
+    monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    policy_seed.ensure_policy_file(str(root))
+    policy_file.invalidate_policy_cache()
+    git(root, "init", "-q")
+    git(root, "commit", "-qm", "empty baseline", "--allow-empty")
+    return root
 
 
 def search(client: TestClient, **params: Any):
@@ -629,6 +674,177 @@ class TestPayload:
             with pytest.raises(WorkspacePathError) as excinfo:
                 search_workspace(rel, query="needle")
             assert excinfo.value.status_code == status, rel
+
+
+class TestGitignoreIsTheSecondFilter:
+    """The scan sees the policy's set **and** the repository's non-ignored set.
+
+    These rows need a real repository, so they use the ``repo`` fixture rather
+    than ``workspace``: the filter is *git's* answer about its own rules, and a
+    test that faked that answer would assert the fake, not the feature. The
+    ``GIT_CEILING_DIRECTORIES`` pin is what makes "this folder is the repository"
+    a fact about the fixture instead of about where the suite happened to run.
+    """
+
+    def test_an_ignored_folder_is_pruned_and_nothing_is_counted(self, repo: Path):
+        write(repo, "build/gen.js", "needle\n")
+        write(repo, "build/deep/gen.js", "needle\n")
+        write(repo, "src/mod.js", "needle\n")
+        (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+        supplied, counts = scan("")
+        # ``.gitignore`` is in every expectation below because it is an ordinary
+        # project file: the filter asks which names the rules *exclude*, and a
+        # rule file is not excluded by its own rules.
+        assert [path for path, _ in supplied] == ["src/mod.js", ".gitignore"]
+        assert counts == ScanCounts(files_scanned=2)
+
+    def test_an_ignored_folder_costs_no_scandir_below_it(self, repo: Path,
+                                                        monkeypatch):
+        """The ignore filter is a *prune*, like the policy's — not a filter after
+        the descent. The claim worth proving is the expensive one: an ignored
+        subtree of a huge checkout must not be read at all, because that is where
+        the byte budget used to go.
+        """
+        write(repo, "build/deep/gen.js", "needle\n")
+        write(repo, "plain.md", "needle\n")
+        (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+
+        listed: List[str] = []
+        real_scandir = os.scandir
+
+        def spy(path: Union[str, "os.PathLike[str]"]):
+            listed.append(str(path))
+            return real_scandir(path)
+
+        monkeypatch.setattr(search_module.os, "scandir", spy)
+        assert [path for path, _ in scan("")[0]] == [".gitignore", "plain.md"]
+        # Nothing *below* the root was opened, so `build` was seen as a name and
+        # never entered. The root itself is listed more than once because the
+        # policy loader stats it for its own sibling suggestions — that is not the
+        # walk, and the claim here is about the walk not descending.
+        below_root = [path for path in listed if path != str(repo.resolve())]
+        assert below_root == [], below_root
+        assert str(repo.resolve()) in listed
+
+    def test_an_ignored_file_is_omitted_and_nothing_is_counted(self, repo: Path):
+        write(repo, "notes.log", "needle\n")
+        write(repo, "notes.md", "needle\n")
+        (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        supplied, counts = scan("")
+        assert [path for path, _ in supplied] == [".gitignore", "notes.md"]
+        assert counts == ScanCounts(files_scanned=2)
+
+    def test_the_rule_files_themselves_are_searchable(self, repo: Path):
+        """The name the filter must never exclude: the file it is written in.
+
+        A rule re-read by hand is the point of the whole feature, so a search for
+        ``build`` has to be able to find the line that ignores it.
+        """
+        (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+        payload = search_workspace("", query="build")
+        assert [(hit["path"], hit["line"]) for hit in payload["matches"]] == [
+            (".gitignore", 1)
+        ]
+
+    def test_a_file_rule_prunes_the_file_not_its_whole_folder(self, repo: Path):
+        """``*.pyc`` names no directory, so the folder above it stays searchable.
+
+        The pair of rules the ancestor check has to satisfy at once: ``build/``
+        prunes a subtree, ``*.pyc`` prunes one name inside a folder that is not
+        itself ignored.
+        """
+        write(repo, "src/draft/m.pyc", "needle\n")
+        write(repo, "src/mod.py", "needle\n")
+        (repo / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+        assert paths("") == ["src/mod.py", ".gitignore"]
+
+    def test_a_nested_gitignore_is_part_of_the_answer(self, repo: Path):
+        write(repo, "pkg/secret/deep.md", "needle\n")
+        write(repo, "pkg/mod.md", "needle\n")
+        (repo / "pkg" / ".gitignore").write_text("secret/\n", encoding="utf-8")
+        assert paths("") == ["pkg/.gitignore", "pkg/mod.md"]
+
+    def test_a_tracked_file_matching_an_ignore_rule_is_still_searched(
+        self, repo: Path
+    ):
+        """git does not ignore what it tracks, so neither does the scan.
+
+        Why the filter asks git instead of matching the patterns: a file checked
+        in despite ``*.log`` is a real file of the project, and re-deriving the
+        rules in Python would hide bytes the repository holds.
+        """
+        write(repo, "keep.log", "needle\n")
+        (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        git(repo, "add", "-f", "keep.log")
+        git(repo, "commit", "-qm", "a mistake, checked in")
+        assert paths("") == [".gitignore", "keep.log"]
+
+    def test_an_ignored_scope_answers_empty_rather_than_404(self, repo: Path):
+        """The one difference from a hidden scope, and it is about the row.
+
+        ``build`` is a folder the tree lists, so the dialog can honestly be
+        raised on it; the answer is the empty one, not the 404 that a pruned name
+        gets. No flag is raised either — nothing was cut, the scope simply holds
+        no searchable file.
+        """
+        write(repo, "build/gen.js", "needle\n")
+        (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+        payload = search_workspace("build", query="needle")
+        assert payload["matches"] == []
+        assert payload["matchCount"] == 0
+        assert payload["truncated"] is False
+        assert payload["footerNote"] == ""
+
+    def test_a_file_scope_on_an_ignored_file_answers_empty(self, repo: Path):
+        write(repo, "notes.log", "needle\n")
+        (repo / ".gitignore").write_text("*.log\n", encoding="utf-8")
+        payload = search_workspace("notes.log", query="needle")
+        assert payload["isFile"] is True
+        assert payload["matches"] == []
+        assert payload["filesScanned"] == 0
+
+    def test_the_ignore_filter_costs_the_payload_no_new_key(self, repo: Path):
+        """The Contract is unchanged: an ignored name is not counted, exactly as
+        a policy-skipped one is not, so nothing about the filter is observable
+        through the payload.
+        """
+        write(repo, "build/gen.js", "needle\n")
+        write(repo, "plain.md", "needle\n")
+        (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+        payload = search_workspace("", query="needle")
+        assert set(payload) == PAYLOAD_KEYS
+        assert payload["skipped"] == {"oversized": 0, "binary": 0}
+        assert payload["footerNote"] == ""
+        assert [hit["path"] for hit in payload["matches"]] == ["plain.md"]
+
+    def test_a_folder_with_no_repository_searches_the_policy_set_alone(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``None`` from git is the absence of a filter, not an empty ignore set.
+
+        A plain folder keeps every file the policy allows — here one whose name
+        every repository would have ignored — because the claim "nothing here is
+        ignored" is one only a repository has made.
+        """
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(workspace))
+        write(workspace, "build/gen.js", "needle\n")
+        assert paths("") == ["build/gen.js"]
+
+    def test_a_git_that_cannot_be_asked_does_not_fail_the_search(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """No binary, a timeout, a broken index: the scan falls back to the
+        policy's set rather than answering 504 — the caps and the verdict are what
+        bound it either way.
+        """
+        (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+        write(repo, "build/gen.js", "needle\n")
+
+        def expire(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="git", timeout=1)
+
+        monkeypatch.setattr(editorfs.gitstatus.subprocess, "run", expire)
+        assert paths("") == ["build/gen.js", ".gitignore"]
 
 
 class TestFooter:
