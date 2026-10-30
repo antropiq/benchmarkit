@@ -1473,6 +1473,53 @@ body {
   margin: 0;
 }
 
+/* The agent-mode dropdown (am-07), last item of the composer's left action
+   group. A column rather than a bare <select>, because the findings line
+   belongs under it and must not become a fourth grid cell of the bullet row.
+   Pico's `select { margin-bottom: … }` and `width: 100%` would stretch it
+   across the row and push the bullets, so the width is pinned and the margin
+   zeroed. Height matches the icon buttons it sits beside (36px). */
+.chat-mode-col {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chat-mode-select {
+  width: auto;
+  max-width: 12rem;
+  height: 36px;
+  margin: 0;
+  padding: 0 1.6rem 0 0.5rem;
+  font-size: 0.82rem;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius);
+  background-color: var(--bi-surface);
+  /* Pico sets --pico-color to white on its form controls in some contexts;
+     the icon token is the one Pico never touches (see the .icon-btn note). */
+  color: var(--bi-icon);
+  cursor: pointer;
+}
+
+.chat-mode-select:hover:not(:disabled) {
+  border-color: var(--pico-muted-color);
+}
+
+.chat-mode-select:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* One quiet caption about the workspace's own modes file — deliberately not
+   `.alert-error`: the defaults still work, and the fix lives outside the app. */
+.chat-mode-findings {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--pico-muted-color);
+}
+
 /* Nine numbered registration slots above the textarea (MemoryBullets.vue).
    Pico's input-group rules (`[role=group] { margin-bottom: var(--pico-spacing) }`)
    would otherwise push the row away from the textarea and offset the bullets

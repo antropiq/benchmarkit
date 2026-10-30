@@ -18,6 +18,7 @@ from src.api import routes
 from src.api.server import create_app
 from src.core import batch as batch_core
 from src.core import chat as chat_core
+from src.core import agent_modes_defaults as modes_defaults
 
 
 def make_lot(
@@ -369,7 +370,13 @@ class TestBatchContextOnChat:
         assert seen["batch_instructions"] == "The lot: 8 tasks."
         # Sent alongside the project instructions, never merged into sysprompt.
         assert "The lot" not in (seen["sysprompt"] or "")
-        assert seen["sysprompt"] == "Base prompt."
+        # am-04: what reaches ``sysprompt`` is the active agent mode's persona,
+        # not the configured ``LLM_SYSPROMPT`` (this workspace's modes file
+        # defaults to ``code``). The configured prompt survives only as the
+        # fallback for a mode that declares no persona — see
+        # tests/test_chat.py, TestAgentModePromptAssembly.
+        assert seen["sysprompt"] == "\n".join(modes_defaults.CODE_PERSONA)
+        assert seen["sysprompt"] != "Base prompt."
 
     def test_call_shape_without_batch_context_is_unchanged(self, chat_client,
                                                            monkeypatch):

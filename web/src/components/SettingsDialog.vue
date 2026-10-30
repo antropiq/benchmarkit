@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import ApiKeyField from './ApiKeyField.vue'
-import { describePolicy } from '../lib/path-location-policy'
+import { describeAgentModes, describePolicy } from '../lib/path-location-policy'
 import { useBenchmark } from '../composables/useBenchmark'
 
 const {
@@ -45,6 +45,23 @@ const pathLocationChanged = computed(
 // never say the same thing twice.
 const policySentence = computed(
   () => describePolicy(state.pathLocationPolicy)?.text ?? '',
+)
+
+// The same pair for the agent-modes file am-03 seeds in the same reserved
+// folder: a caption for what the file is, a warn line when the seed failed.
+const agentModesSentence = computed(
+  () => describeAgentModes(state.pathLocationAgentModes)?.text ?? '',
+)
+
+// One warning line per switch, not one per file: the two reserved-folder seeds
+// (pol-05's policy, am-03's modes) fail independently, but they are the outcome
+// of the *same* action, so the dialog joins whatever failed into a single
+// status paragraph. A modes-only failure still reads as "the location is set,
+// one file did not land" — never as a red switch.
+const seedFailureNote = computed(() =>
+  [state.pathLocationPolicyNote, state.pathLocationAgentModesNote]
+    .filter(Boolean)
+    .join(' '),
 )
 
 const MCP_STATUS_CLASS = {
@@ -195,15 +212,29 @@ function serverDetail(server) {
                  and reports what happened. A seed that could not happen is a
                  note, not an error — the location *is* set and both hubs
                  restarted; only that project's tree stays unfiltered. -->
+            <!-- And the agent-modes file (am-03) in the same folder, reported in
+                 the same shape. The two seeds fail independently but belong to
+                 one action, so the warnings are joined into a single status
+                 line, and each file's own caption still appears unless its own
+                 seed is the one being shouted about. -->
             <p
-              v-if="state.pathLocationPolicyNote"
+              v-if="seedFailureNote"
               class="path-location-policy-note path-location-policy-note--warn"
               role="status"
             >
-              {{ state.pathLocationPolicyNote }}
+              {{ seedFailureNote }}
             </p>
-            <p v-else-if="state.pathLocationPolicy" class="caption path-location-policy-note">
+            <p
+              v-if="state.pathLocationPolicy && !state.pathLocationPolicyNote"
+              class="caption path-location-policy-note"
+            >
               {{ policySentence }}
+            </p>
+            <p
+              v-if="state.pathLocationAgentModes && !state.pathLocationAgentModesNote"
+              class="caption path-location-policy-note"
+            >
+              {{ agentModesSentence }}
             </p>
           </section>
 
@@ -247,6 +278,11 @@ function serverDetail(server) {
                 placeholder="You are a helpful assistant."
               ></textarea>
             </label>
+            <p class="caption">
+              Used verbatim as the system prompt of a benchmark run; in the
+              WorkBench tab it is the fallback for an agent mode whose
+              <code>systemMessage</code> is empty.
+            </p>
             <label class="settings-vision">
               <input
                 type="checkbox"

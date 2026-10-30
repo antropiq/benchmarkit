@@ -44,6 +44,7 @@ from src.core.mcphub import load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
 from src.core import editorfs
 from src.core.editorfs import policy_seed
+from src.core import agent_modes
 from src.core import termhub
 from src.core.termhub import policy as term_policy
 from src.core.bench import run_benchmark
@@ -339,6 +340,10 @@ class ChatIn(BaseModel):
     # Same conversation-scoped filter for the LSP language servers (the Chat
     # tab's per-conversation LSP toggles).
     lspEnabled: Optional[List[str]] = None
+    # The agent mode for this turn (see core.agent_modes). ``None`` means "the
+    # workspace's default": a client predating the feature keeps working, the
+    # same compatibility rule as mcpEnabled/lspEnabled above.
+    agentMode: Optional[str] = None
 
     # Batch mode only: the task lot's big-picture text (the ``NN == 0`` file),
     # which ``core.chat`` appends to the system message of *every* task turn.
@@ -371,6 +376,35 @@ class ChatIn(BaseModel):
         for message in value:
             if isinstance(message.content, str) and not message.content.strip():
                 raise ValueError("message content must not be empty")
+        return value
+
+    @field_validator("agentMode")
+    @classmethod
+    def _mode_id_shape(cls, value: Optional[str]) -> Optional[str]:
+        """The *shape* of a mode id — not whether it exists.
+
+        Only this belongs in the model: "is this a mode that exists right now"
+        is a question about a file that may have been edited a second ago, so a
+        ``Literal[...]`` or an enum here would freeze the list at import time
+        and break the hot-edit property the loader promises. The existence
+        check is ``resolve_mode()``'s job, called from ``post_chat`` (D14).
+
+        An empty or whitespace-only value is not a shape error: it is the
+        documented way of asking for the workspace's default (the same rule
+        ``resolve_mode`` applies), so it normalises to ``None`` here rather than
+        turning "use the default" into a refusal.
+        """
+        if value is None or not value.strip():
+            return None
+        if len(value) > agent_modes.MAX_MODE_ID_CHARS or re.match(
+            agent_modes.MODE_ID_PATTERN, value
+        ) is None:
+            raise ValueError(
+                "agentMode must be a mode id or empty for the default: a "
+                "lowercase letter, then "
+                "letters, digits, '_' or '-' (up to "
+                f"{agent_modes.MAX_MODE_ID_CHARS} characters)"
+            )
         return value
 
 
@@ -680,15 +714,37 @@ def _chat_tool_kwargs(
     request: Request,
     mcp_enabled: Optional[List[str]] = None,
     lsp_enabled: Optional[List[str]] = None,
+    mode: Optional[agent_modes.AgentMode] = None,
 ) -> Dict[str, Any]:
     """The single tool loop of ``stream_chat``, fed by both hubs.
+
+    Three levels gate the tools that reach that loop and they only ever
+    **intersect**: **Settings** (``_active_connector_ids`` /
+    ``_active_server_ids``, the whole install), the **agent mode**
+    (``mode.mcptools`` / ``mode.lsptools``, one hub, D3/D4) and the
+    **conversation** (``mcp_enabled`` / ``lsp_enabled``, one connector). All
+    three narrow the same allowlist, so Settings stays the authority and an
+    open mode can never *grant* a connector the user unticked.
 
     The merge lives here (not in ``core/chat.py``): ``stream_chat`` keeps
     taking one ``tools`` list, one executor and one iteration cap, and the
     ``tool_servers`` map is what makes every tool call attributable to its
     hub in the Chat UI. MCP tools win a name clash (LSP tool names are
     namespaced, so in practice they cannot collide).
+
+    ``mode=None`` means "no mode gate" and keeps the pre-feature call shape
+    byte-for-byte.
     """
+    # D3: a mode with the flag false must take the hub away from the *model*,
+    # not just from the prompt. ``[]`` — not ``None``, which is the documented
+    # "no filter" sentinel on ``mcp_enabled``/``lsp_enabled``: passing ``None``
+    # here would open the hub wide. This is the one line to get wrong.
+    # The empty allowlist makes both helpers return ``{}``, so ``stream_chat``
+    # receives no ``tools`` key at all and no ``TOOL_NOTICE`` is appended.
+    if mode is not None and not mode.mcptools:
+        mcp_enabled = []
+    if mode is not None and not mode.lsptools:
+        lsp_enabled = []
     mcp_kwargs = _mcp_tool_kwargs(request, mcp_enabled)
     lsp_kwargs = _lsp_tool_kwargs(request, lsp_enabled)
     if not mcp_kwargs and not lsp_kwargs:
@@ -1156,6 +1212,18 @@ def build_router(state: RunState) -> APIRouter:
         """
         return policy_seed.policy_file_state(path_location())
 
+    def _agent_modes_block() -> Dict[str, Any]:
+        """What the workspace's agent-modes file looks like, **read-only**.
+
+        The same half of the pair as :func:`_policy_block`: am-03 seeds
+        ``.nojae/agent-modes.json`` at the two moments a folder becomes the
+        working location, so a GET reports the file instead of leaving one
+        behind. ``absent`` is a plain fact there too — a workspace whose seed
+        failed chats on the built-in modes, so the dropdown (am-07) simply has
+        nothing of that project's own to offer.
+        """
+        return agent_modes.agent_modes_file_state(path_location())
+
     @router.get("/path-location")
     def get_path_location() -> Dict[str, Any]:
         """Effective working location of the MCP/LSP hubs.
@@ -1165,7 +1233,10 @@ def build_router(state: RunState) -> APIRouter:
         — read live from the environment, so it reflects a change made through
         ``POST /path-location`` rather than a stale startup snapshot.
         """
-        return _path_location_payload() | {"policy": _policy_block()}
+        return _path_location_payload() | {
+            "policy": _policy_block(),
+            "agentModes": _agent_modes_block(),
+        }
 
     @router.post("/path-location")
     async def post_path_location(
@@ -1255,12 +1326,30 @@ def build_router(state: RunState) -> APIRouter:
         #
         # A failure is a note in the payload, never an error: an unseeded
         # workspace opens fine, it just has no level-B rules to filter it.
+        #
+        # The agent-modes file (am-03) is seeded at the same moment, by the same
+        # rule, and its own cache is invalidated *after* its write (inside
+        # ``ensure_agent_modes_file``, exactly where pol-05's seeder invalidates
+        # the policy cache) — so the first read of the new root sees the file
+        # that was just created rather than a cached "absent". The cache is
+        # keyed on the root, so a switch would miss it anyway; the invalidation
+        # is there because the boot path can land on a root that was already
+        # read while it was unseeded.
+        policy_block = policy_seed.ensure_policy_file(expanded)
+        modes_block = agent_modes.ensure_agent_modes_file(expanded)
+        # Explicit, and after both seeds: the cache is keyed on the root so a
+        # switch would miss anyway, but saying it next to the policy it mirrors
+        # is what makes the ordering obvious to the next reader — and it covers
+        # the ``existing`` answer, which writes nothing and so never gets to the
+        # invalidation inside the seeder.
+        agent_modes.invalidate_agent_modes_cache()
         return (
             _path_location_payload()
             | {
                 "mcp": mcp,
                 "lsp": lsp,
-                "policy": policy_seed.ensure_policy_file(expanded),
+                "policy": policy_block,
+                "agentModes": modes_block,
             }
         )
 
@@ -1633,6 +1722,55 @@ def build_router(state: RunState) -> APIRouter:
         except batch_core.BatchListingError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
+    @router.get("/agent-modes")
+    def get_agent_modes() -> Dict[str, Any]:
+        """The agent modes this workspace offers, **read-only** (am-06).
+
+        The composer's dropdown and the hub panels' gray-out both read this one
+        payload, which is why it carries ``mcptools``/``lsptools``/``editable``
+        and nothing else: the client never hardcodes the app-owned mode's id, it
+        reads ``editable: false`` from here.
+
+        Deliberately **absent**:
+
+        * ``systemMessage`` — long, displayed nowhere, and there is no editor
+          for it yet (D6 puts one in Settings in a later lot). Publishing it now
+          invites a half-built preview that is wrong the day the editor lands;
+        * ``instructions`` — the reserved mode's generated blocks, derived text
+          nobody should be copying into the DOM.
+
+        A **broken** file answers **200** with the usable defaults in ``modes``
+        plus the ``findings`` that name the pointer to fix (D11): a 4xx/5xx
+        would hide the fix and leave the dropdown unrenderable. The findings are
+        always a list, possibly empty, and ``source.loaded`` says whether the
+        file itself was understood.
+
+        This answers *about* ``.nojae/agent-modes.json``; it is not a way to
+        read it. There is no ``?path=`` and the raw bytes are never returned —
+        the same purpose-built reader the policy file has
+        (:func:`_policy_block` / ``policy_file_state``), and the folder stays
+        invisible to the tree, ``/api/fs/*``, git status and the diff.
+        """
+        resolved = agent_modes.resolve_modes()
+        return {
+            "modes": [
+                {
+                    "id": mode.id,
+                    "label": mode.label,
+                    "mcptools": mode.mcptools,
+                    "lsptools": mode.lsptools,
+                    "editable": mode.editable,
+                }
+                for mode in resolved["modes"]
+            ],
+            "default": resolved["default"],
+            "source": resolved["source"],
+            "findings": [
+                {"kind": finding.kind, "message": finding.message}
+                for finding in resolved["findings"]
+            ],
+        }
+
     @router.post("/chat")
     async def post_chat(body: ChatIn, request: Request) -> StreamingResponse:
         """Stream one chat reply from the benchmark-configured LLM as SSE.
@@ -1656,13 +1794,50 @@ def build_router(state: RunState) -> APIRouter:
         if not models:
             raise HTTPException(status_code=400, detail="No models configured (ENDPOINT)")
 
+        # The active agent mode contributes exactly two things to the system
+        # message: its persona replaces the configured ``LLM_SYSPROMPT`` (D1),
+        # and its generated blocks append after AGENTS.md. It is resolved
+        # **per request** — the modes file is edited outside the app, so a
+        # change lands on the *next* turn of an existing conversation, the same
+        # way an AGENTS.md edit does; am-01's mtime cache makes that cheap and
+        # nothing here adds a second cache layer.
+        mode, _mode_findings = agent_modes.resolve_mode(body.agentMode)
+        if mode is None:
+            # Unknown id → 422 naming it, never a silent fall back to the
+            # default (D14): the only way to reach here is a typo — in a JSON
+            # file edited by hand, or in a stale tab after a rename — and a
+            # default would answer the user's question with the wrong agent and
+            # no clue. The detail lists what *is* available so the fix is in the
+            # message. This is deliberately the opposite of D11 (a broken
+            # *file* still chats): there the failure is the app's to absorb.
+            # Raised before the pause handle is armed and before the SSE
+            # generator exists — a request that never streams must not own the
+            # handle a later request needs.
+            available = ", ".join(
+                entry.id for entry in agent_modes.resolve_modes()["modes"]
+            )
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown agent mode {body.agentMode!r}. "
+                       f"Available: {available}",
+            )
+        # An empty persona means "use the configured prompt" — the escape hatch
+        # for a workspace that wants the pre-mode behaviour back.
+        persona = mode.system_message or config.sysprompt
+
         messages = [m.payload() for m in body.messages]
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         cancel_event = threading.Event()
         pause_event = threading.Event()
         _arm_chat_handle(cancel_event, pause_event)
-        tool_kwargs = _chat_tool_kwargs(request, body.mcpEnabled, body.lspEnabled)
+        # The same mode decides the hub gate (D3/D4): a mode whose flag is false
+        # contributes no tool schemas to the request at all, so the persona and
+        # the affordance can never disagree. Order of the three levels does not
+        # matter — they intersect.
+        tool_kwargs = _chat_tool_kwargs(
+            request, body.mcpEnabled, body.lspEnabled, mode=mode
+        )
 
         def emit(event: Any) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, event)
@@ -1679,7 +1854,11 @@ def build_router(state: RunState) -> APIRouter:
                     cancel_event=cancel_event,
                     pause_event=pause_event,
                     api_key=config.apiKey or "none",
-                    sysprompt=config.sysprompt,
+                    # The mode's persona, or the configured prompt when the mode
+                    # declares none (D1: the two are alternatives, never
+                    # stacked). Everything not WorkBench — the benchmark — keeps
+                    # reading ``LLM_SYSPROMPT`` through ``core/models.py``.
+                    sysprompt=persona,
                     # Keywords from here on: the flag pair is optional on
                     # ``stream_chat``, so a stub may omit it (tests do).
                     # Project instructions ride on the system message: when the
@@ -1687,6 +1866,13 @@ def build_router(state: RunState) -> APIRouter:
                     # there so every conversation starts already knowing the
                     # project's conventions (see ``config.load_agent_instructions``).
                     agent_instructions=agent_instructions_block(),
+                    # The mode's generated blocks (only the reserved Todo builder
+                    # has any) join after them, and are passed only when present
+                    # — same conditional shape as ``batch_instructions`` below, so
+                    # a request whose mode has no blocks keeps the call shape the
+                    # existing chat tests stub.
+                    **({"mode_instructions": "\n\n".join(mode.instructions)}
+                       if mode.instructions else {}),
                     # The lot's big picture (batch mode only) rides alongside
                     # the project instructions, never merged into ``sysprompt``:
                     # that separation is what keeps the TOOL_NOTICE word check

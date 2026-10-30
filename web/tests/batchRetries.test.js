@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  LOT_TASK_MODE_ID,
   MAX_TASK_RETRIES,
   RETRY_NOTE_TEMPLATE,
   TASK_INSTRUCTION_TEMPLATE,
@@ -12,6 +13,7 @@ import {
 } from '../src/composables/useBatch'
 import { useBenchmark } from '../src/composables/useBenchmark'
 import { useChat } from '../src/composables/useChat'
+import { loadAgentModes, setAgentMode, useAgentModes } from '../src/composables/useAgentModes'
 
 // Layer 1 (jsdom): the retry rule of batch mode. A task is finished when its
 // file has left the lot folder — the move into `done/` is the agent's own
@@ -195,20 +197,33 @@ function listingOf(stillInLot) {
 // removes at most one — the file whose agent moved it into `done/`.
 // `movedAfter[number]` is how many turns of that task it takes (Infinity: the
 // agent never moves it, the case the retry exists for).
+// `modes` is what `GET /api/agent-modes` answers (default: the seeded four);
+// `modes: null` makes that fetch fail. `payloads` collects whole /api/chat bodies.
 function stubRoutes({
   sent,
   tasks,
   movedAfter = {},
   failListing = false,
   duringTurn = null,
+  payloads = null,
+  // Absent (undefined) answers the seeded four; `null` makes the fetch fail.
+  modes,
 }) {
   const stillInLot = tasks.slice()
   const turnsOf = new Map()
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
     const key = String(url)
+    if (key.startsWith('/api/agent-modes')) {
+      if (modes === null) {
+        return { ok: false, status: 500, json: async () => ({}) }
+      }
+      return { ok: true, json: async () => modes ?? seededModesBody() }
+    }
     if (key.startsWith('/api/chat')) {
-      const instruction = JSON.parse(init.body).messages[0].content
+      const body = JSON.parse(init.body)
+      const instruction = body.messages[0].content
       sent.push(instruction)
+      if (payloads) payloads.push(body)
       const task = tasks.find((item) =>
         instruction.includes(`todos/${item.name}`),
       )
@@ -242,6 +257,38 @@ function seedLot(tasks) {
   batch.listing = listingOf(tasks)
 }
 
+// A modes payload in the shape `GET /api/agent-modes` answers (am-06). The
+// app-owned mode is spelled with a stand-in id here too: this file may not name
+// it either, for the same reason `web/src` may not (the scan in
+// agentModes.test.js reads the id out of the Python module).
+function seededModesBody({ codeMcpTools = true, withoutCodeMode = false } = {}) {
+  const modes = [
+    { id: 'chat', label: 'Chat', mcptools: false, lsptools: false, editable: true },
+    {
+      id: LOT_TASK_MODE_ID,
+      label: 'Code',
+      mcptools: codeMcpTools,
+      lsptools: true,
+      editable: true,
+    },
+    { id: 'architect', label: 'Architect', mcptools: true, lsptools: false, editable: true },
+    { id: 'reserved-mode-under-test', label: 'Reserved', mcptools: true, lsptools: false, editable: false },
+  ]
+  return {
+    modes: withoutCodeMode
+      ? modes.filter((mode) => mode.id !== LOT_TASK_MODE_ID)
+      : modes,
+    default: 'chat',
+    source: {
+      path: '/work/.nojae/agent-modes.json',
+      exists: true,
+      loaded: true,
+      version: 1,
+    },
+    findings: [],
+  }
+}
+
 function reset() {
   chat.phase = 'idle'
   chat.messages = []
@@ -266,7 +313,18 @@ function reset() {
   batch.prefix = 'ed-'
   batch.dir = 'todos'
   batch.includeLot = true
+  batch.pinnedMode = null
+  batch.modeNote = null
+  agentModes.modes = []
+  agentModes.current = null
+  agentModes.default = null
+  agentModes.loaded = false
+  agentModes.locked = false
+  agentModes.findings = []
+  agentModes.notice = null
 }
+
+const agentModes = useAgentModes().state
 
 describe('the loop relaunches a task whose file never left the lot', () => {
   beforeEach(reset)
@@ -432,5 +490,184 @@ describe('the loop relaunches a task whose file never left the lot', () => {
     ])
     expect(batch.status).toBe('stopped')
     expect(batch.index).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// D13 — the runner pins its own mode. A lot is authored in the app-owned,
+// contract-owning mode and *executed* by the runner, so its turns run under the
+// workspace's `code` mode regardless of what the composer's dropdown shows — and
+// the dropdown cannot change anything mid-lot.
+
+describe('the lot pins its mode', () => {
+  beforeEach(reset)
+
+  // Every task request carries the pinned id, and only that one — the loop
+  // reads `state.pinnedMode` per turn rather than the composer's selection.
+  it('launch resolves the mode once and every task turn carries it', async () => {
+    const sent = []
+    const payloads = []
+    const tasks = [task(1, 'ed-01-a.md'), task(2, 'ed-02-b.md')]
+    stubRoutes({ sent, payloads, tasks })
+    await loadAgentModes()
+    // The user was drafting the lot in another mode before opening Batch.
+    setAgentMode('architect')
+    seedLot(tasks)
+
+    await launch()
+
+    expect(batch.pinnedMode).toBe(LOT_TASK_MODE_ID)
+    expect(batch.modeNote).toBeNull()
+    expect(payloads).toHaveLength(2)
+    for (const payload of payloads) {
+      expect(payload.agentMode).toBe(LOT_TASK_MODE_ID)
+    }
+    // The composer's own selection is untouched by the pin: the select shows
+    // what the *human* picked, and is inert while the lot runs.
+    expect(agentModes.current).toBe('architect')
+  })
+
+  // The reason the pin is state and not an argument: a dropdown change between
+  // two turns must not reach the next one.
+  it('a dropdown change mid-run cannot reach the next task', async () => {
+    const sent = []
+    const payloads = []
+    const tasks = [task(1, 'ed-01-a.md'), task(2, 'ed-02-b.md')]
+    stubRoutes({
+      sent,
+      payloads,
+      tasks,
+      // Task 1's turn ends; the human switches mode before task 2 is sent.
+      duringTurn: () => setAgentMode('chat'),
+    })
+    await loadAgentModes()
+    seedLot(tasks)
+
+    await launch()
+
+    expect(payloads).toHaveLength(2)
+    expect(payloads[0].agentMode).toBe(LOT_TASK_MODE_ID)
+    expect(payloads[1].agentMode).toBe(LOT_TASK_MODE_ID)
+    expect(agentModes.current).toBe('chat')
+  })
+
+  // A workspace that renamed its coding mode is not refused: that would make
+  // modes able to break a lot that works today. It sends no `agentMode` at all
+  // (the server's default answers, the pre-feature shape) and says so once.
+  it('with no code mode the launch proceeds unpinned, with one line', async () => {
+    const sent = []
+    const payloads = []
+    const tasks = [task(1, 'ed-01-a.md')]
+    stubRoutes({ sent, payloads, tasks, modes: seededModesBody({ withoutCodeMode: true }) })
+    await loadAgentModes()
+    seedLot(tasks)
+
+    await launch()
+
+    expect(batch.pinnedMode).toBeNull()
+    expect(batch.modeNote).toContain(`no "${LOT_TASK_MODE_ID}" mode`)
+    // Names the workspace's own default, so the line says what really answers.
+    expect(batch.modeNote).toContain('"chat"')
+    expect(payloads).toHaveLength(1)
+    expect('agentMode' in payloads[0]).toBe(false)
+    expect(batch.status).toBe('finished')
+  })
+
+  // Same laxness when the list could not be read at all: nothing to pin, and a
+  // line that does not claim to know this workspace's default.
+  it('an unreadable modes list pins nothing and launches anyway', async () => {
+    const sent = []
+    const payloads = []
+    const tasks = [task(1, 'ed-01-a.md')]
+    stubRoutes({ sent, payloads, tasks, modes: null })
+    await loadAgentModes()
+    seedLot(tasks)
+
+    await launch()
+
+    expect(batch.pinnedMode).toBeNull()
+    expect(batch.modeNote).toContain('could not be read')
+    expect('agentMode' in payloads[0]).toBe(false)
+  })
+
+  // The §1 clause: the mode gate joins the *existing* connector list rather
+  // than becoming a second guard, so one message explains one dead lot. Here the
+  // connectors are all ticked, so the mode is the only thing wrong.
+  it('a code mode with no MCP tools is reported in the launch guard', async () => {
+    const sent = []
+    const tasks = [task(1, 'ed-01-a.md')]
+    stubRoutes({ sent, tasks, modes: seededModesBody({ codeMcpTools: false }) })
+    await loadAgentModes()
+    chat.mcp.loaded = true
+    chat.mcp.enabled = { fedit: true, console: true }
+    seedLot(tasks)
+
+    await launch()
+
+    expect(chat.error).toContain(LOT_TASK_MODE_ID)
+    expect(chat.error).toContain('MCP tools')
+    // Nothing ran, and no pin was kept for a lot that never launched.
+    expect(sent).toEqual([])
+    expect(batch.active).toBe(false)
+    expect(batch.pinnedMode).toBeNull()
+  })
+
+  // ...and it lands in the same sentence as missing connectors — one list, one
+  // reason, one place the user learns why Launch did nothing.
+  it('a missing connector and a tools-off mode are one message', async () => {
+    const sent = []
+    const tasks = [task(1, 'ed-01-a.md')]
+    stubRoutes({ sent, tasks, modes: seededModesBody({ codeMcpTools: false }) })
+    await loadAgentModes()
+    chat.mcp.loaded = true
+    chat.mcp.enabled = { fedit: true, console: false }
+    seedLot(tasks)
+
+    await launch()
+
+    expect(chat.error).toContain('console')
+    expect(chat.error).toContain(LOT_TASK_MODE_ID)
+    // One sentence, not two refusals: the connector list and the mode clause
+    // are joined by one "and", and both fixes are in the same tail.
+    expect(chat.error.match(/Batch mode needs/g)).toHaveLength(1)
+    expect(chat.error.indexOf(' and ') < chat.error.indexOf(' — ')).toBe(true)
+    expect(chat.error.split('; ')).toHaveLength(2) // the two fixes, one tail
+    expect(sent).toEqual([])
+    expect(chat.error).toContain('Settings → MCP')
+    expect(chat.error).toContain('dropdown')
+  })
+
+  // A pinned mode whose hub is open costs nothing: the guard stays quiet about
+  // modes when there is nothing wrong with them.
+  it('a tools-on code mode passes the guard that the connectors alone pass', async () => {
+    const sent = []
+    const tasks = [task(1, 'ed-01-a.md')]
+    stubRoutes({ sent, tasks })
+    await loadAgentModes()
+    chat.mcp.loaded = true
+    chat.mcp.enabled = { fedit: true, console: true }
+    seedLot(tasks)
+
+    await launch()
+
+    expect(chat.error).toBeNull()
+    expect(sent).toHaveLength(1)
+  })
+
+  // The pin belongs to one run: Restart (B15) forgets it, so the next lot
+  // re-resolves it against whatever the modes file says by then.
+  it('clearing a run drops the pin', async () => {
+    const sent = []
+    const tasks = [task(1, 'ed-01-a.md')]
+    stubRoutes({ sent, tasks, movedAfter: { 1: Infinity } })
+    await loadAgentModes()
+    seedLot(tasks)
+
+    await launch()
+    expect(batch.pinnedMode).toBe(LOT_TASK_MODE_ID)
+
+    useBatch().clearBatchRun()
+    expect(batch.pinnedMode).toBeNull()
+    expect(batch.modeNote).toBeNull()
   })
 })

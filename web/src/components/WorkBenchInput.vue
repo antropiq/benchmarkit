@@ -12,6 +12,15 @@ import {
 } from '../composables/useChat'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useBatch } from '../composables/useBatch'
+import {
+  findingsLine,
+  modeHint,
+  modeOptionDisabled,
+  modeSelectTitle,
+  modeSelectDisabled,
+  setAgentMode,
+  useAgentModes,
+} from '../composables/useAgentModes'
 
 const {
   state,
@@ -31,6 +40,7 @@ const {
   clearBatchRun,
   openDialog: openBatchDialog,
 } = useBatch()
+const agentModes = useAgentModes().state
 
 // Let draft insertions (memory bullets) focus the textarea after appending.
 const draftEl = ref(null)
@@ -84,6 +94,20 @@ function restart() {
 const canRestart = computed(
   () => state.messages.length > 0 || state.phase !== 'idle' || batch.active,
 )
+
+// --- Agent mode (the composer's dropdown; every rule lives in useAgentModes) ---
+
+// The select's title, and the quiet findings line, come from the composable —
+// this component only renders them. Switching mid-`streaming` is allowed and
+// has no effect on the turn already in flight (that request carried the mode
+// chosen when it was sent); the `:disabled` rule the composable owns is the
+// only refusal, and it is D7's, not a streaming guard.
+const modeTitle = computed(() => modeSelectTitle({ batchActive: batch.active }))
+const modeFindingsLine = computed(() => findingsLine())
+
+function onModeChange(event) {
+  setAgentMode(event.target.value)
+}
 
 // --- Image attach (the hidden file input below, driven by the icon button) ---
 
@@ -393,6 +417,52 @@ onBeforeUnmount(() => {
               <path d="m17 15 3 3-3 3" />
             </svg>
           </button>
+          <!-- The agent mode this conversation answers as (am-07). Rendered
+               only once the list loaded: a control that cannot be used is worse
+               than no control, and with a failed fetch the payload omits
+               `agentMode`, so the server's own default applies — exactly the
+               pre-feature behaviour. It sits in the left action group, after the
+               buttons, so the memory bullets stay centered as the layout
+               promises. Inert while a batch runs: the lot is one job executed
+               under one mode the runner pins for the whole run (D13), so the
+               dropdown can neither change it mid-lot nor pretend it owns it. -->
+          <div
+            v-if="agentModes.loaded || agentModes.notice"
+            class="chat-mode-col"
+          >
+            <select
+              v-if="agentModes.loaded"
+              class="chat-mode-select"
+              :value="agentModes.current"
+              :disabled="modeSelectDisabled(batch.active)"
+              :title="modeTitle"
+              aria-label="Agent mode"
+              @change="onModeChange"
+            >
+              <option
+                v-for="mode in agentModes.modes"
+                :key="mode.id"
+                :value="mode.id"
+                :disabled="modeOptionDisabled(mode.id)"
+                :title="modeHint(mode.id)"
+              >
+                {{ mode.label }}
+              </option>
+            </select>
+            <!-- The two quiet lines this control can carry, never a modal and
+                 never a banner: a session asked for a mode this workspace does
+                 not have (its substitution is said out loud, not chosen
+                 silently), or the hand-edited modes file has findings the server
+                 could not use (D11 — the defaults still answer, and the fix
+                 lives outside the app). A notice may outlive a failed fetch, so
+                 the column renders for it even without the select. -->
+            <p v-if="agentModes.notice" class="chat-mode-findings" role="status">
+              {{ agentModes.notice }}
+            </p>
+            <p v-else-if="modeFindingsLine" class="chat-mode-findings" role="status">
+              {{ modeFindingsLine }}
+            </p>
+          </div>
         </div>
         <MemoryBullets @configure="openBulletDialog" />
         <div class="chat-bullet-actions chat-bullet-actions--right">

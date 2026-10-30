@@ -1,16 +1,16 @@
 """The Editor's write routes are reachable from the browser, and from nothing else.
 
 AGENTS.md promises *"Tools are read-only by design"*. That promise survived the
-guarded write surface only because something asserts it, so this file asserts
-it three ways, each one a different way the promise could rot:
+guarded write surface only because something asserts it, so this file asserts it
+four ways, each one a different way the promise could rot:
 
 * **no advertised tool names a write route** — the MCP connectors' own tool
   listings and the LSP hub's tool catalogue, both built the way the hubs build
   them (the connectors answer ``list_tools`` themselves; the LSP catalogue is
   ``TOOL_SPECS`` through ``tools_for_server``, which is what a hub would
   publish for the servers in the committed template). With
-  ``BENCHMARKIT_DISABLE_MCP``/``_LSP`` the live hubs start disconnected, so
-  the lists here come from the sources of truth rather than a session.
+  ``BENCHMARKIT_DISABLE_MCP``/``_LSP`` the live hubs start disconnected, so the
+  lists here come from the sources of truth rather than a session.
 * **no code path spells a call to one** — a source scan for the write markers
   (``PUT /api/fs``, ``POST /api/fs``, ``DELETE /api/fs``). They may appear in
   ``src/api/routes.py`` (the definition) and the Editor composables (the
@@ -19,6 +19,12 @@ it three ways, each one a different way the promise could rot:
 * **the terminal stays a human surface** — the shell is a WebSocket reached
   from the SPA, and neither hub mentions it, so it cannot become a tool by
   someone wiring the hub to ``app.state.terminal``.
+* **the reserved folder keeps one reader per file, and it is a ``GET``** —
+  ``.nojae`` is edited by hand outside the app, so its two purpose-built
+  readers (the policy file's state, the agent-modes list) answer *about* a file
+  and write nothing. A verb on ``/agent-modes`` would put the switch that
+  decides whether tools exist behind a route, which no marker scan would see
+  because that route is not an ``/api/fs`` route.
 
 The last test feeds each check a deliberately poisoned input, because a guard
 that cannot fail is not a guard: that is the same "assert the invariant, not
@@ -122,6 +128,33 @@ def http_import_offenders(roots: List[Path]) -> List[str]:
             for name in names:
                 if name in HTTP_CLIENTS or name.split(".")[0] in HTTP_CLIENTS:
                     found.append(f"{path.name}: {name}")
+    return found
+
+
+def route_registrations(source_text: str, path_prefix: str) -> List[Dict[str, Any]]:
+    """Every route ``routes.py`` registers on a path under ``path_prefix``.
+
+    Each answer is ``{"verb", "path", "handler"}``, read out of the decorator
+    call (``@router.get("/agent-modes")``) rather than matched as a substring, so
+    what is reported is the *registration*: a docstring naming a route cannot
+    trip a guard built on this, and a new route cannot hide from one. Both the
+    verb guard and the arity guard below share this one walk.
+    """
+    found: List[Dict[str, Any]] = []
+    for node in ast.walk(ast.parse(source_text)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            call = decorator if isinstance(decorator, ast.Call) else None
+            if call is None or not isinstance(call.func, ast.Attribute):
+                continue
+            if not call.args or not isinstance(call.args[0], ast.Constant):
+                continue
+            route_path = call.args[0].value
+            if isinstance(route_path, str) and route_path.startswith(path_prefix):
+                found.append(
+                    {"verb": call.func.attr, "path": route_path, "handler": node}
+                )
     return found
 
 
@@ -330,6 +363,44 @@ class TestTheTerminalStaysHumanOnly:
         ) == []
 
 
+class TestTheAgentModesReaderStaysReadOnly:
+    """am-06 gave the reserved folder a second purpose-built reader: a *GET*.
+
+    ``GET /api/agent-modes`` answers *about* ``.nojae/agent-modes.json`` the way
+    ``GET /api/path-location`` answers about the policy file — one small reader,
+    no ``?path=``, no raw bytes, and nothing writable. The modes file is edited
+    by hand outside the app (D6), so a write route for it would not just break
+    the reservation: it would hand a tool the switch that decides whether tools
+    exist. The guard is on the *verb* rather than on the marker scan, because a
+    route named ``/agent-modes`` is not a route named ``/api/fs``.
+    """
+
+    def test_no_agent_modes_route_accepts_a_mutation(self):
+        routes_source = (REPO_ROOT / "src" / "api" / "routes.py").read_text(
+            encoding="utf-8"
+        )
+        registered = route_registrations(routes_source, "/agent-modes")
+        assert registered, "am-06's reader has to exist for this to mean anything"
+        assert [entry["verb"] for entry in registered] == ["get"], (
+            "a verb on /agent-modes would put the file that decides whether "
+            "tools exist behind a route"
+        )
+
+    def test_the_reader_is_a_get_and_carries_no_path_parameter(self):
+        """The one route, exactly as am-06 §3-§4 specify it: no argument at all.
+
+        A ``?path=`` query parameter is how a purpose-built reader turns into a
+        general way to reach the reserved folder, so what is pinned is the
+        handler's *arity* — not the absence of a string somewhere in the file.
+        """
+        routes_source = (REPO_ROOT / "src" / "api" / "routes.py").read_text(
+            encoding="utf-8"
+        )
+        handlers = route_registrations(routes_source, "/agent-modes")
+        assert [entry["handler"].name for entry in handlers] == ["get_agent_modes"]
+        assert handlers[0]["handler"].args.args == []
+
+
 class TestTheGuardsActuallyFail:
     """A guard that cannot fail is decoration, so each is shown catching one.
 
@@ -395,3 +466,25 @@ class TestTheGuardsActuallyFail:
                 method = str(entry.get("method") or "")
                 for word in forbidden:
                     assert word not in method, f"{action} calls {method}"
+
+    def test_the_agent_modes_verb_guard_catches_a_poisoned_route(self):
+        """One added ``@router.post`` on the reader's path trips the guard.
+
+        Fed to the same walk the guard uses (a string, not an edit to the real
+        file), so the check is that the *guard* sees a mutation — which is what
+        makes the assertion in the class above a guard rather than a comment.
+        """
+        poisoned = (
+            "@router.get(\"/agent-modes\")\n"
+            "def get_agent_modes():\n"
+            "    return {}\n\n"
+            "@router.post(\"/agent-modes\")\n"
+            "def post_agent_modes(body: ModesIn):\n"
+            "    return {}\n"
+        )
+        registered = route_registrations(poisoned, "/agent-modes")
+        assert [entry["verb"] for entry in registered] == ["get", "post"]
+        with pytest.raises(AssertionError):
+            assert [entry["verb"] for entry in registered] == ["get"]
+        # And the arity guard sees the body argument the poisoned route needs.
+        assert registered[1]["handler"].args.args != []

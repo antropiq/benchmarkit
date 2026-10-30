@@ -24,6 +24,7 @@ from src.core.mcphub import McpManager, load_externals
 from src.core.lsphub import LspManager, all_servers
 from src.core.editorfs import mutate as editorfs_mutate, policy_seed
 from src.core.termhub import TerminalHub
+from src.core import agent_modes
 from src.config import lsp_enabled_ids
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
@@ -48,6 +49,30 @@ def _seed_workspace_policy() -> Dict[str, Any]:
     if result["state"] == "failed":
         _log.warning(
             "could not seed the workspace policy at %s: %s",
+            result["path"],
+            result["error"],
+        )
+    return result
+
+
+def _seed_agent_modes() -> Dict[str, Any]:
+    """Leave the workspace's default agent-modes file behind; never raise.
+
+    am-03's first of two entry points, sitting beside the policy seed because it
+    is the same contract: ``ensure_agent_modes_file`` already answers a dict
+    instead of raising, so this wrapper only guards the *unexpected*, and a
+    modes file this app could not write must not take the boot down with it. An
+    unseeded workspace chats on the built-in modes — its dropdown simply has
+    nothing of its own to customise yet.
+    """
+    try:
+        result = agent_modes.ensure_agent_modes_file(path_location())
+    except Exception as exc:  # noqa: BLE001 — boot must survive anything here
+        _log.warning("could not seed the agent-modes file: %s", exc)
+        return {"state": "failed", "path": None, "error": str(exc)}
+    if result["state"] == "failed":
+        _log.warning(
+            "could not seed the agent-modes file at %s: %s",
             result["path"],
             result["error"],
         )
@@ -109,6 +134,14 @@ def create_app() -> FastAPI:
     # honest place. Failure is a note in the log, never a boot failure: an
     # unseeded workspace still works, it just has no level-B rules yet.
     _seed_workspace_policy()
+    # The agent-modes file (am-03) follows the same rule and the same moment:
+    # seeded here at boot, and by ``POST /api/path-location`` on a switch. It
+    # goes after the policy seed because both belong to the same reserved
+    # folder, and the policy seed is the one that creates it — so in the usual
+    # case this is a plain file write, not a second mkdir. Failure is a note in
+    # the log (and, on the switch, in the payload), never a boot failure: a
+    # workspace with no modes file chats on the built-in defaults.
+    _seed_agent_modes()
     # And drain the trash of whichever location that is, plus the legacy
     # ``logs/trash`` batches the pre-``.nojae`` code wrote here. Age is the only
     # signal for a batch nobody addresses any more, and a boot is the one moment

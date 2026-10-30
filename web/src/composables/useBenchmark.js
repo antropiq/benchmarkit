@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
-import { describePolicy } from '../lib/path-location-policy'
+import { describeAgentModes, describePolicy } from '../lib/path-location-policy'
+import { loadAgentModes } from './useAgentModes'
 import { loadChatLsp, loadChatMcp } from './useChat'
 import { useWorkspaceTree } from './useWorkspaceTree'
 
@@ -85,6 +86,14 @@ const state = reactive({
   // dialog renders from ``pathLocationPolicy``. Cleared on every attempt, so a
   // note from a switch that has since worked cannot linger.
   pathLocationPolicyNote: null,
+  // The second file in the same reserved folder (am-03): the workspace's
+  // agent-modes file, seeded at the same two moments and reported in the same
+  // shape as ``policy`` under the key ``agentModes``. Same tone rule — a
+  // ``failed`` seed is one more *line* on the switch's note, and a workspace
+  // without one chats on benchmarkit's built-in modes, so ``absent`` needs no
+  // alarm at all.
+  pathLocationAgentModes: null,
+  pathLocationAgentModesNote: null,
 })
 
 let eventSource = null
@@ -493,6 +502,8 @@ export function useBenchmark() {
       state.pathLocationError = null
       state.pathLocationPolicy = null
       state.pathLocationPolicyNote = null
+      state.pathLocationAgentModes = null
+      state.pathLocationAgentModesNote = null
       refreshModelLists()
       loadQuestionSets()
       loadMcp()
@@ -812,6 +823,13 @@ export function useBenchmark() {
       const described = describePolicy(body.policy)
       state.pathLocationPolicyNote =
         described && described.tone === 'warn' ? described.text : null
+      // The modes block rides along with it (am-03): read-only here too, so a
+      // plain ``absent`` is the ordinary state of a project that was never
+      // switched into.
+      state.pathLocationAgentModes = body.agentModes || null
+      const describedModes = describeAgentModes(body.agentModes)
+      state.pathLocationAgentModesNote =
+        describedModes && describedModes.tone === 'warn' ? describedModes.text : null
     } catch (exc) {
       state.pathLocationError = `Could not reach the API: ${exc}`
     } finally {
@@ -829,6 +847,7 @@ export function useBenchmark() {
     state.pathLocationSaving = true
     state.pathLocationError = null
     state.pathLocationPolicyNote = null
+    state.pathLocationAgentModesNote = null
     try {
       const res = await fetch('/api/path-location', {
         method: 'POST',
@@ -856,6 +875,13 @@ export function useBenchmark() {
       const described = describePolicy(body.policy)
       state.pathLocationPolicyNote =
         described && described.tone === 'warn' ? described.text : null
+      // am-03: the same switch seeded the modes file too, and the same tone
+      // rule applies — a ``failed`` seed adds one more line to the note (the
+      // dialog renders it under the policy's), never a red "the switch failed".
+      state.pathLocationAgentModes = body.agentModes || null
+      const describedModes = describeAgentModes(body.agentModes)
+      state.pathLocationAgentModesNote =
+        describedModes && describedModes.tone === 'warn' ? describedModes.text : null
       // The hubs just restarted: refresh both panels so the tool lists and
       // status dots show the new location.
       if (body.mcp) {
@@ -876,6 +902,14 @@ export function useBenchmark() {
           .map((server) => server.id)
         loadChatLsp()
       }
+      // The agent modes belong to the workspace just activated, so the list
+      // follows the root (am-07). `reseed: true`: an id that existed in the old
+      // root's `.nojae/agent-modes.json` probably does not exist in the new
+      // one, and the alternative to re-seeding `current` is a 422 on every send.
+      // A failed fetch is the composer's own quiet failure (no select, no
+      // `agentMode` in the payload), so it needs no note here — the one above
+      // is about the *file being seeded*, which this endpoint just reported.
+      loadAgentModes({ reseed: true })
       // The Editor tab's tree browses this location, so the whole workspace-
       // relative view of the app moves here: the tree forgets the listings it
       // cached under the old root and re-roots, and the tabs that held files of

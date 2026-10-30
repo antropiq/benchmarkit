@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
 import { useBatch } from '../composables/useBatch'
+import { hubGateReason, modeBlocksHub } from '../composables/useAgentModes'
 import { lspVisible } from '../lib/chat-hubs'
 
 const { state, setChatLsp, restartLsp } = useChat()
@@ -26,7 +27,15 @@ const locked = computed(
   () => state.lsp.locked || state.phase !== 'idle' || batch.active,
 )
 
+// The same D4 gate as the MCP panel, judged by the same function: a mode whose
+// `lsptools` is false gets no language-server schemas at all, so the switches
+// are shown inert with the reason rather than hidden.
+const gatedByMode = computed(() => modeBlocksHub('lsp'))
+const gateReason = computed(() => hubGateReason('lsp'))
+const switchesDisabled = computed(() => locked.value || gatedByMode.value)
+
 function rowTitle(server) {
+  if (gatedByMode.value) return gateReason.value
   if (batch.active) {
     return 'Unavailable while a batch runs — stop it to change the tools'
   }
@@ -77,18 +86,21 @@ const restartTitle = computed(() => {
         </svg>
       </button>
     </div>
+    <p v-if="gatedByMode" class="caption chat-hub-gate" role="status">
+      {{ gateReason }}
+    </p>
     <label
       v-for="server in state.lsp.servers"
       :key="server.id"
       class="chat-mcp-row"
-      :class="{ 'chat-mcp-row--dim': server.status !== 'running' }"
+      :class="{ 'chat-mcp-row--dim': gatedByMode || server.status !== 'running' }"
       :title="rowTitle(server)"
     >
       <input
         type="checkbox"
         role="switch"
         :checked="state.lsp.enabled[server.id]"
-        :disabled="locked"
+        :disabled="switchesDisabled"
         :aria-label="`LSP ${server.label} for this conversation`"
         @change="setChatLsp(server.id, $event.target.checked)"
       />

@@ -1,6 +1,7 @@
 import { computed, reactive, watch } from 'vue'
 import { registerChatBusyGuard, useChat } from './useChat'
 import { registerBatchGuard, useBenchmark } from './useBenchmark'
+import { agentModesLoaded, modeById, useAgentModes } from './useAgentModes'
 
 // ---------------------------------------------------------------------------
 // Batch mode: feed a numbered lot of markdown task files to WorkBench, one
@@ -70,6 +71,15 @@ export const REQUIRED_MCP_CONNECTORS = [
   { id: 'console', what: 'run mv into todos/done' },
 ]
 
+// The mode a lot runs its tasks in (D13). `code` is the *name* of the contract
+// — a lot executes coding tasks, so its turns must not inherit whatever the
+// composer happens to show, and they must not be at the mercy of a dropdown the
+// user moved while task 4 was streaming. The id is resolved against *this*
+// workspace's modes rather than being sent blind: a workspace whose author
+// renamed the coding mode has no `code`, and would silently get a different
+// agent for its tasks.
+export const LOT_TASK_MODE_ID = 'code'
+
 export function taskInstruction(taskLocation) {
   return TASK_INSTRUCTION_TEMPLATE.replace('<task_location>', taskLocation)
 }
@@ -110,6 +120,16 @@ const state = reactive({
   // still there, so the task is relaunched) or null (the check could not run).
   outcomes: [],
   status: 'idle', // idle | running | stopped | failed | finished
+  // D13: the agent mode this lot's task turns run in, resolved once at launch
+  // (`LOT_TASK_MODE_ID` against this workspace's modes) and read per turn, so a
+  // dropdown change during task 7 cannot reach task 8. null = unresolved (the
+  // workspace has no `code` mode, or the list never loaded): the task turns ask
+  // the server for its default, and `modeNote` says so.
+  pinnedMode: null,
+  // One quiet line in the batch status area explaining the pin: either that the
+  // workspace has no `code` mode, or — when the pinned mode closes a hub — what
+  // that means for the tasks. null while nothing needs saying.
+  modeNote: null,
 })
 
 // A batch owns the conversation even in the fraction of a second between two
@@ -171,6 +191,7 @@ export function useBatch() {
   // options, and the between-task wipe below must not read like a dialog reset.
   const { state: chat, sendBatchTurn, stop, reset: resetChat } = useChat()
   const { state: benchmark, setTab } = useBenchmark()
+  const { state: modes } = useAgentModes()
 
   // A refusal about the conversation lands on the WorkBench error line: the
   // dialog is closed by then, so the message has to be visible where the user
@@ -239,19 +260,72 @@ export function useBatch() {
   // conversation-scoped filters, not the Settings-activated set. When the
   // snapshot could not load the request carries no filter at all (the server
   // keeps every activated connector), so there is nothing to judge.
+  //
+  // The lot's pinned mode belongs to the *same* check (D13): a mode whose
+  // `mcptools` is false makes those connectors unreachable for every task,
+  // which is the identical failure — one list, one reason, one place the user
+  // learns why Launch is disabled. Nothing is pinned here; this only judges.
   function ensureToolsAvailable() {
-    if (!chat.mcp.loaded) return true
-    const missing = REQUIRED_MCP_CONNECTORS.filter(
-      (connector) => chat.mcp.enabled[connector.id] !== true,
-    )
-    if (!missing.length) return true
-    const names = missing.map((connector) => `${connector.id} (${connector.what})`)
+    const needs = []
+    const fixes = []
+    if (chat.mcp.loaded) {
+      const missing = REQUIRED_MCP_CONNECTORS.filter(
+        (connector) => chat.mcp.enabled[connector.id] !== true,
+      )
+      if (missing.length) {
+        const names = missing.map(
+          (connector) => `${connector.id} (${connector.what})`,
+        )
+        needs.push(`the MCP connectors ${names.join(' and ')}`)
+        fixes.push(
+          'activate them (Settings → MCP), then tick them in the WorkBench ' +
+            'MCP panel for this conversation',
+        )
+      }
+    }
+    const mode = lotMode()
+    if (mode && mode.mcptools === false) {
+      needs.push(
+        `a \`${LOT_TASK_MODE_ID}\` mode with MCP tools — this one has none, ` +
+          'so a task could not move its own file',
+      )
+      fixes.push('switch the WorkBench dropdown to a mode that has tools')
+    }
+    if (!needs.length) return true
     fail(
-      `Batch mode needs the MCP connectors ${names.join(' and ')} — switch them ` +
-        'on (Settings → MCP to activate one, then the WorkBench MCP panel for ' +
-        'this conversation) and launch again. They cannot change mid-lot.',
+      `Batch mode needs ${needs.join(' and ')} — ${fixes.join('; ')} and ` +
+        'launch again. Neither can change mid-lot.',
     )
     return false
+  }
+
+  // The workspace's mode a lot runs its tasks in, or null when there is none to
+  // pin — the modes list could not be read, or this workspace renamed the coding
+  // mode. Never a guess: the id is the app's contract (`LOT_TASK_MODE_ID`), the
+  // list belongs to the workspace.
+  function lotMode() {
+    return agentModesLoaded() ? modeById(LOT_TASK_MODE_ID) : null
+  }
+
+  // D13, step 2: hold that verdict for the whole run. It is read per turn —
+  // never copied into the composer's selection — so a dropdown change during
+  // task 7 cannot reach task 8. An unresolved pin is *not* a refusal: the tasks
+  // then carry no `agentMode` and the server's default answers, which is what a
+  // lot ran under before modes existed, plus one line saying so.
+  function pinLotMode() {
+    const mode = lotMode()
+    state.pinnedMode = mode ? LOT_TASK_MODE_ID : null
+    if (mode) {
+      state.modeNote = null
+      return
+    }
+    // The two ways there is nothing to pin are worth telling apart: a workspace
+    // that renamed the coding mode runs on *its* default, and one whose list
+    // could not be read runs on whatever the server decides.
+    state.modeNote = agentModesLoaded()
+      ? `no "${LOT_TASK_MODE_ID}" mode in this workspace; tasks run in ` +
+        `"${modes.default ?? LOT_TASK_MODE_ID}"`
+      : 'the agent-mode list could not be read; tasks run in the server default'
   }
 
   // A second, quiet listing of the same lot — the completion check's only
@@ -322,6 +396,12 @@ export function useBatch() {
   //
   // `attempt` is how many times this task has already been relaunched: it only
   // selects the message text (the retry note), never a different flow.
+  //
+  // The turn carries the lot's pinned mode (D13), read fresh each turn and
+  // never the composer's selection: every task of one lot runs under one set of
+  // rules whatever the dropdown is showing while they stream. A null pin (no
+  // `code` mode in this workspace) sends no `agentMode` at all, so the server's
+  // default answers — see `pinLotMode`.
   async function runOneTurn(task, attempt = 0) {
     const lotText =
       state.includeLot && state.listing?.lot?.text ? state.listing.lot.text : null
@@ -330,6 +410,7 @@ export function useBatch() {
     if (
       !sendBatchTurn(taskInstructionForAttempt(task.taskLocation, attempt), {
         batchContext: lotText,
+        agentMode: state.pinnedMode,
       })
     ) {
       return 'not-started'
@@ -376,6 +457,15 @@ export function useBatch() {
     if (state.active || !canLaunch.value) return // one batch at a time
     if (!ensureFreshChat()) return
     if (!ensureToolsAvailable()) return
+    // Resolved once per run, after the refusals (a lot that never launched owns
+    // no pin) and read per turn (see `runOneTurn`) — so a dropdown change
+    // during task 7 cannot reach task 8. The D7 lock can never conflict with
+    // it: a lot starts on an empty thread and every task turn begins on one,
+    // and a thread with no turns holds no lock — so the mode the lot was
+    // *authored* in was already released before the first task turn. A lot
+    // never runs as that mode; it runs in this one, which is also why the
+    // composer's select is inert for the whole run (am-07's rendering rule).
+    pinLotMode()
 
     const tasks = state.listing.tasks
     state.total = state.listing.taskCount
@@ -488,6 +578,10 @@ export function useBatch() {
     state.index = 0
     state.current = null
     state.outcomes = []
+    // The mode pin belongs to one run: a lot about to be re-launched resolves it
+    // again (`pinLotMode` in `launch`), and a cleared run has no line to keep.
+    state.pinnedMode = null
+    state.modeNote = null
   }
 
   // Cancel / Esc / backdrop click: the form is dropped, nothing is launched.

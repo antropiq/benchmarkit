@@ -1,6 +1,14 @@
 import { nextTick, reactive } from 'vue'
 import { renderMarkdown, TOOL_LINE_MARKER } from '../lib/markdown'
 import { createReasoningBuffer } from '../lib/reasoning-buffer'
+import {
+  agentModePayloadId,
+  applySessionAgentMode,
+  clearAgentModeNotice,
+  loadAgentModes,
+  registerAgentModeTurnCounter,
+  syncAgentModeLock,
+} from './useAgentModes'
 
 const state = reactive({
   messages: [], // { role, raw, html, streaming, images } in conversation order
@@ -151,6 +159,16 @@ function clearImage() {
   state.pendingImage = null
 }
 
+// Everything a conversation needs freshly snapshotted: the agent-mode list and
+// both hub allowlists. The three are per-workspace and per-settings, so every
+// entry point into a conversation (boot, the WorkBench tab's watch, a restart)
+// calls this one function instead of picking a subset — which is what keeps the
+// mode dropdown from being the one thing that stayed stale.
+export async function loadChatHubs() {
+  loadAgentModes()
+  await Promise.all([loadChatMcp(), loadChatLsp()])
+}
+
 // Snapshot the Settings-activated connectors for a new conversation. Never
 // touches a locked (already-started) conversation; on failure the panel
 // stays hidden and send() omits the mcpEnabled filter, so chat keeps
@@ -200,6 +218,11 @@ export function registerChatBusyGuard(isBusy) {
 function chatBusy() {
   return state.phase !== 'idle' || !!busyGuard?.()
 }
+
+// How many turns this conversation already holds — the fact the agent-mode lock
+// (D7) is a rule about. Injected into useAgentModes rather than imported: the
+// dependency direction stays acyclic (useChat -> useAgentModes, never back).
+registerAgentModeTurnCounter(() => state.messages.length > 0)
 
 function setChatMcp(id, on) {
   if (state.mcp.locked || chatBusy()) return
@@ -445,9 +468,10 @@ function messagePayload(message) {
 
 export const SESSION_FILE_FORMAT = 'benchmarkit-chat-session'
 // v2 added the optional per-assistant-turn `reasoning` list, v3 started saving
-// the attached images instead of stripping them. Older files simply carry no
-// image parts, so the loader needs no version branch.
-export const SESSION_FILE_VERSION = 3
+// the attached images instead of stripping them, v4 records the conversation's
+// agent mode in the envelope. Older files simply carry no image parts and no
+// `agentMode`, so the loader needs no version branch either way.
+export const SESSION_FILE_VERSION = 4
 // Stands in for a loaded image part whose data URL is unusable (a hand-edited
 // or truncated file), so an image-only turn keeps a non-empty content (an
 // empty one would 422 the next send).
@@ -498,9 +522,18 @@ export function conversationJson(messages) {
   }
   // No `stats` block on purpose: tok/s and ctx badges are client-only render
   // state, and the loader stays tolerant of a future version adding one back.
+  //
+  // `agentMode` is the one piece of *conversation* state the envelope carries
+  // (am-07): the mode is not a message and never belongs in the list, but a
+  // saved thread was written by one persona, and re-opening it in another would
+  // change what its next turn means. Omitted when the mode list is not loaded
+  // (or never was): a file without the key is a v3 file's shape, and the loader
+  // then leaves the workspace's default alone.
+  const agentMode = agentModePayloadId()
   return {
     format: SESSION_FILE_FORMAT,
     version: SESSION_FILE_VERSION,
+    ...(agentMode ? { agentMode } : {}),
     messages: items,
   }
 }
@@ -584,8 +617,10 @@ function normalizeLoadedReasoning(reasoning, index) {
 }
 
 // Validates a session file's text and returns its turns as
-// `{ messages: [{ role, content, images, reasoning }] }` (`images` being the
-// restored `{ dataUrl, name, size }` entries of that turn). Throws with a precise
+// `{ messages: [{ role, content, images, reasoning }], agentMode }` (`images`
+// being the restored `{ dataUrl, name, size }` entries of that turn, and
+// `agentMode` the mode id the envelope carried — null for a v3 file, a bare
+// array, or an envelope without that key). Throws with a precise
 // message: silently dropping a system/tool turn would change the
 // conversation's meaning, so an invalid file must fail loudly. Unknown extra
 // keys are ignored, and a bare `[{role, content}, ...]` array is accepted for
@@ -598,6 +633,7 @@ export function parseSessionFile(text) {
     throw new Error('Not a valid JSON file.')
   }
   let items = null
+  let agentMode = null
   if (Array.isArray(parsed)) {
     items = parsed
   } else if (parsed && typeof parsed === 'object') {
@@ -610,6 +646,13 @@ export function parseSessionFile(text) {
       throw new Error('Not a chat session file: no "messages" list found.')
     }
     items = parsed.messages
+    // A mode id of the wrong shape is tolerated rather than fatal: this key is
+    // conversation state the parser has no opinion about, and the rule that
+    // judges it ("is this a mode the *current* workspace offers?") belongs to
+    // useAgentModes, where a v3 file with no key keeps the workspace default.
+    if (typeof parsed.agentMode === 'string' && parsed.agentMode.trim()) {
+      agentMode = parsed.agentMode.trim()
+    }
   } else {
     throw new Error('Not a chat session file: expected a JSON object or array.')
   }
@@ -639,7 +682,7 @@ export function parseSessionFile(text) {
     messages.push({ role: item.role, content, images, reasoning })
   }
   if (!messages.length) throw new Error('Session file holds no usable message.')
-  return { messages }
+  return { messages, agentMode }
 }
 
 function describeError(body, fallback) {
@@ -907,7 +950,18 @@ async function readStream(response, assistant) {
 // per task, while the displayed transcript keeps accumulating). The client
 // never sends a system message: `core/chat.py` stays the only place one is
 // created.
-async function startTurn({ userMessage, history, batchContext = null }) {
+// `agentMode` (the last entry): the mode **this turn** runs in. An interactive
+// send passes the composer's selection; a batch task turn passes the runner's
+// pin (D13) — a lot is one job executed under one set of rules, and the
+// dropdown the user may be touching meanwhile is not part of it. `undefined`
+// means "ask the server for its default" (the pre-feature shape), which is also
+// what `useBatch` passes when its pin could not be resolved.
+async function startTurn({
+  userMessage,
+  history,
+  batchContext = null,
+  agentMode = undefined,
+}) {
   userStopped = false
   // Fresh turn: a previous turn's pause must not survive into it (its
   // fragment already carries its own `paused` flag, which is per message).
@@ -951,6 +1005,11 @@ async function startTurn({ userMessage, history, batchContext = null }) {
     // so (display state, like `truncated` — never written to session JSON).
     paused: false,
   })
+  // The thread now has a turn — the second half of the D7 rule: a
+  // contract-owning mode (the server's `editable: false`) becomes unleaveable
+  // from here on. Queried rather than asserted, so the lock can never disagree
+  // with the message list it is a rule about.
+  syncAgentModeLock()
   // Keep the reactive proxy so token mutations re-render.
   const assistant = state.messages[state.messages.length - 1]
   activeMessage = assistant
@@ -973,6 +1032,17 @@ async function startTurn({ userMessage, history, batchContext = null }) {
       payload.lspEnabled = Object.keys(state.lsp.enabled).filter(
         (id) => state.lsp.enabled[id],
       )
+    }
+    // The agent mode for this turn (am-07). Omitted when the mode list failed
+    // to load, so the server's own default applies — the same rule as the hub
+    // allowlists above, for the same reason: a dropdown that could not be
+    // filled must not silently hand the conversation to a different persona.
+    // `agentMode === undefined` → the composer's selection; a resolved id (the
+    // batch runner's pin) → that id, whatever the select shows; `null` → omit
+    // the key so the server's default applies.
+    const modeId = agentMode === undefined ? agentModePayloadId() : agentMode
+    if (modeId) {
+      payload.agentMode = modeId
     }
     if (batchContext) {
       // The lot's big picture (batch mode): the server appends it to its own
@@ -1061,7 +1131,7 @@ export function useChat() {
   // change that would never come. The payload deliberately carries this turn
   // alone: `state.messages` is never used to build a batch request, so task N+1
   // arrives with no trace of task N's transcript (B6).
-  function sendBatchTurn(text, { batchContext = null } = {}) {
+  function sendBatchTurn(text, { batchContext = null, agentMode = undefined } = {}) {
     const trimmed = typeof text === 'string' ? text.trim() : ''
     if (!trimmed || state.phase !== 'idle') return false
     startTurn({
@@ -1074,6 +1144,7 @@ export function useChat() {
       },
       history: [{ role: 'user', content: trimmed }],
       batchContext,
+      agentMode,
     })
     return true
   }
@@ -1126,6 +1197,9 @@ export function useChat() {
     // Drop the message and everything after it (its replies and tool badges)
     // so the edited text re-sends onto a clean conversation tail.
     state.messages.splice(index)
+    // An edited-away thread can be empty, and the D7 lock is a rule about the
+    // thread — so it is re-derived here too (queried, never asserted).
+    syncAgentModeLock()
     state.error = null
   }
 
@@ -1195,6 +1269,12 @@ export function useChat() {
       loadChatMcp()
       loadChatLsp()
     }
+    // The mode the file was saved with (v4 envelope) is conversation state too:
+    // useAgentModes judges it against *this* workspace — an unknown id falls
+    // back to the workspace default with one notice line, never a silent swap of
+    // persona and never a refused load — and restores the D7 lock, because a
+    // restored thread *is* that thread.
+    applySessionAgentMode(parsed.agentMode)
     state.error = null
     state.pendingImage = null
     // state.session.startedAt stays 0: the stopwatch reads 00:00:00 for a
@@ -1217,14 +1297,22 @@ export function useChat() {
     // `assistant.streaming` is already false (the guard in applyEvent).
     state.pausePending = false
     userPaused = false
+    // A cleared thread has no turns, so the D7 mode lock is released — before
+    // the `refetchHubs` early return, next to the hub unlocks below: batch
+    // mode's between-task wipe resets without refetching, and it unlocks too
+    // (a lot never runs *as* the mode that authored it, D13).
+    syncAgentModeLock(false)
+    // The session-mode notice explained a conversation that no longer exists.
+    clearAgentModeNotice()
     if (!refetchHubs) return
     // New conversation: MCP and LSP toggles unlock against freshly fetched
     // snapshots, keeping the previous on/off choices (the loaders seed the
-    // new lists from them).
+    // new lists from them). The mode list is refreshed by the same call: a
+    // modes file edited by hand while the lot ran (or while this tab sat
+    // idle) takes effect on the next conversation.
     state.mcp.locked = false
-    loadChatMcp()
     state.lsp.locked = false
-    loadChatLsp()
+    loadChatHubs()
   }
 
   return {
@@ -1247,5 +1335,8 @@ export function useChat() {
     loadChatLsp,
     setChatLsp,
     restartLsp: () => restartHub('lsp'),
+    // The three together (modes + both hubs), for the entry points that want a
+    // fresh conversation snapshot rather than one list.
+    loadChatHubs,
   }
 }

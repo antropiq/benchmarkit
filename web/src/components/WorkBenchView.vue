@@ -13,7 +13,7 @@ import { useBatch } from '../composables/useBatch.js'
 import { anyHub, bothHubs } from '../lib/chat-hubs.js'
 import WorkBenchToolsDock from './WorkBenchToolsDock.vue'
 
-const { state, editLast, clearImage, loadChatLsp, loadChatMcp } = useChat()
+const { state, editLast, clearImage, loadChatHubs } = useChat()
 const { state: batch } = useBatch()
 const { state: benchmarkState, loadConfig } = useBenchmark()
 const { loadMemory } = useMemory()
@@ -29,8 +29,9 @@ watch(
   (tab) => {
     if (tab === 'chat') {
       loadConfig()
-      loadChatMcp()
-      loadChatLsp()
+      // The hub allowlists *and* the agent-mode list: the dropdown, the panels'
+      // gray-out and the payload's agentMode all come from that one fetch.
+      loadChatHubs()
       loadMemory()
     }
   },

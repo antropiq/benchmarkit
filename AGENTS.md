@@ -65,6 +65,7 @@ progress through it.
 | `core/chat.py` | One streamed chat reply, including the shared tool-call loop. |
 | `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
 | `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
+| `core/agent_modes{,_defaults}.py` | The WorkBench modes: the read/validate/seed side of `.nojae/agent-modes.json`, and the seeded personas + the app-owned mode's rendered text. |
 | `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call answering from the workspace policy's verdict. Reads are bounded; writes are refused by `ro`/`hidden` and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. |
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
@@ -101,6 +102,11 @@ route list belongs to `api/routes.py` — what matters architecturally:
   `threading.Event` polled both between questions and inside the stream reader.
 - **Chat**: one request per reply, streamed back over SSE. The client re-posts
   the whole history each time; the server keeps no conversation state.
+- **Every WorkBench turn runs in an agent mode** — a workspace-owned persona in
+  `.nojae/agent-modes.json` that replaces `LLM_SYSPROMPT` for chat (never for the
+  benchmark) and may switch a whole hub off. Settings ∩ conversation ∩ mode: the
+  mode narrows, it never grants. AGENTS.md itself is always injected, and one
+  mode is app-owned and not editable from the file.
 - **Configuration**: `.env` and the hub declaration files are edited from the UI
   and take effect hot — an app restart is never needed.
 
@@ -130,7 +136,7 @@ Measurement rules hold across every stream:
 | `results.json` | Run output, written once when a run ends. |
 | `mcp_connectors/externals.json` | MCP connectors: `remote` (HTTP) or `local` (stdio). |
 | `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
-| `<working location>/.nojae/` | The workspace's reserved folder: `read-write-policy.json` holds its own read-write rules (seeded when a folder becomes the working location, edited only outside the app), and `trash/` holds the dated batches the Editor's deletes move. |
+| `<working location>/.nojae/` | The workspace's reserved folder. Its two files — `read-write-policy.json` (per-workspace read/write rules) and `agent-modes.json` (the WorkBench personas) — follow one rule: seeded by exclusive create when a folder becomes the working location, then edited only outside the app. `trash/` holds the dated batches the Editor's deletes move. |
 
 Any new file in `resources/` becomes a selectable set. The `.env`, `.env.test`
 and the hub declaration files are gitignored, may hold secrets, and each has a
@@ -158,12 +164,12 @@ has no template — it is written by the seeding code. These rules tie them toge
   invalidates them all at once: the Editor's tree re-roots (cached listings,
   branches and selection are forgotten, not re-listed) and every tab of the root
   it leaves closes, unsaved edits reported rather than negotiated with.
-- **A targeted workspace gets a `.nojae/read-write-policy.json`** — seeded with
-  a default at the two moments a folder becomes the working location (boot, and
-  the settings switch), by exclusive create so an edited file is never
-  clobbered. Seeding failure is a note, never a refused switch. The folder is
-  **reserved by code**: hidden from the tree, the read and git status, and it is
-  edited only outside the app.
+- **A targeted workspace gets its two `.nojae` files** (the read-write policy
+  and the agent modes) — seeded with a default at the two moments a folder
+  becomes the working location (boot, and the settings switch), by exclusive
+  create so an edited file is never clobbered. Seeding failure is a note, never
+  a refused switch. The folder is **reserved by code**: hidden from the tree,
+  the read and git status, and it is edited only outside the app.
 - **Path rules come from two levels, one verdict.** Level A is the app's own
   rules about files it writes (`**/.env**`, `logs/**`), live only while the
   working location *is* the install dir — so another project's `.env` is an
@@ -211,6 +217,10 @@ has no template — it is written by the seeding code. These rules tie them toge
   through the shared deny-list (`core/batch.py`) and *read/written* only
   through the connectors; its loop is client-side (`useBatch.js`), so a reload
   discards a running lot.
+- **A lot runs its tasks in one mode, pinned at launch** — the workspace's
+  coding mode, never the composer's selection, so a dropdown move mid-lot can
+  reach no task. A workspace that has no such mode launches on the server's
+  default and says so rather than being refused.
 - **A batch task is finished when its file left the lot folder**: that move is
   the agent's own acknowledgement, and re-listing is the only way the loop can
   see it. A task whose file is still there is relaunched with a retry note,

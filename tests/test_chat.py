@@ -5,13 +5,15 @@ import json
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 from fastapi.testclient import TestClient
 
 from src.api import routes
 from src.api.server import create_app
+from src.core import agent_modes
+from src.core import agent_modes_defaults as modes_defaults
 from src.core import chat as chat_core
 from src.core.models import DEFAULT_LLM_SYSPROMPT, EndpointsConfig
 
@@ -340,6 +342,108 @@ class TestStreamChat:
         assert chat_core.TOOL_NOTICE.strip() in system
         assert system.endswith("tools are documented in AGENTS.md")
 
+    # -- mode_instructions: the mode's own generated blocks (am-04) ----------
+
+    def _captured_system(self, monkeypatch, **kwargs) -> str:
+        captured = {}
+
+        def fake_completion(**kw):
+            captured.update(kw)
+            return iter([])
+
+        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}], "m", "http://s/v1",
+            lambda e: None, **kwargs,
+        )
+        return captured["messages"][0]["content"]
+
+    def test_mode_instructions_are_appended_after_the_project_instructions(
+        self, monkeypatch
+    ):
+        content = self._captured_system(
+            monkeypatch,
+            sysprompt="Answer concisely.",
+            agent_instructions="project root is /srv/proj",
+            mode_instructions="the lot conventions",
+        )
+        assert content == (
+            "Answer concisely.\n\nproject root is /srv/proj\n\nthe lot conventions"
+        )
+
+    def test_mode_instructions_are_no_op_when_absent_or_blank(self, monkeypatch):
+        # The regression guard: for anyone who never touches the feature the
+        # system message is byte-identical to the one chat produced before.
+        plain = self._captured_system(
+            monkeypatch, sysprompt="Answer concisely.",
+            agent_instructions="Project root /x",
+        )
+        for blank in (None, ""):
+            assert self._captured_system(
+                monkeypatch, sysprompt="Answer concisely.",
+                agent_instructions="Project root /x", mode_instructions=blank,
+            ) == plain
+        assert "conventions" not in plain
+
+    def test_mode_instructions_do_not_suppress_the_tool_notice(self, monkeypatch):
+        # Mirror of the agent_instructions case above: the blocks are appended
+        # *after* the notice heuristic has run, so text about tools in them
+        # cannot switch the notice off.
+        content = self._captured_system(
+            monkeypatch,
+            sysprompt="Answer concisely.",
+            tools=[{"type": "function", "function": {"name": "use_thing"}}],
+            tool_executor=lambda name, args: "ok",
+            mode_instructions="the tools here write files in todos/",
+        )
+        assert chat_core.TOOL_NOTICE.strip() in content
+        assert content.endswith("the tools here write files in todos/")
+
+    def test_a_persona_that_already_offers_tools_gets_no_notice(self, monkeypatch):
+        # The persona arrives as ``sysprompt``, so the existing word check
+        # judges it: a mode whose own text already speaks of tools needs no
+        # nudge, and ``mode_instructions`` below cannot talk it out of one.
+        content = self._captured_system(
+            monkeypatch,
+            sysprompt="Use the tools to prove the change.",
+            tools=[{"type": "function", "function": {"name": "use_thing"}}],
+            tool_executor=lambda name, args: "ok",
+        )
+        assert content.count(chat_core.TOOL_NOTICE.strip()) == 0
+        assert content.startswith("Use the tools")
+
+    def test_five_part_order_is_persona_notice_agents_mode_lot(self, monkeypatch):
+        content = self._captured_system(
+            monkeypatch,
+            sysprompt="PERSONA.",
+            tools=[{"type": "function", "function": {"name": "use_thing"}}],
+            tool_executor=lambda name, args: "ok",
+            agent_instructions="AGENTS_MD_BLOCK",
+            mode_instructions="MODE_BLOCKS",
+            batch_instructions="LOT_BIG_PICTURE",
+        )
+        order = [
+            content.index("PERSONA."),
+            content.index(chat_core.TOOL_NOTICE.strip()),
+            content.index("AGENTS_MD_BLOCK"),
+            content.index("MODE_BLOCKS"),
+            content.index("LOT_BIG_PICTURE"),
+        ]
+        assert order == sorted(order)
+        assert len(set(order)) == 5
+
+    def test_stream_chat_never_learns_what_a_mode_is(self):
+        """The seam: this module takes text, so the benchmark path is untouched."""
+        import inspect
+
+        source = inspect.getsource(chat_core)
+        assert "agent_modes" not in source
+        assert "mode_instructions" in source
+        names = list(inspect.signature(chat_core.stream_chat).parameters)
+        assert "mode" not in names
+        assert names.index("agent_instructions") < names.index("mode_instructions")
+        assert names.index("mode_instructions") < names.index("batch_instructions")
+
     def test_call_failure_emits_error(self, monkeypatch):
         def boom(**kwargs):
             raise RuntimeError("down")
@@ -520,7 +624,7 @@ def _oversized_data_url() -> str:
 class TestChatEndpoint:
     def test_happy_path_streams_frames(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             emit({"event": "token", "text": "Hel"})
             emit({"event": "token", "text": "lo"})
             emit({"event": "done", "took": 1.0, "ttft": 0.1, "tokens": 3,
@@ -539,7 +643,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             seen["model"] = model
             seen["server_url"] = server_url
             seen["messages"] = messages
@@ -565,7 +669,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             seen["messages"] = messages
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -591,7 +695,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             seen["messages"] = messages
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -645,7 +749,7 @@ class TestChatEndpoint:
 
     def test_forwards_configured_api_key(self, monkeypatch, tmp_path):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             emit({"api_key_seen": api_key, "event": "done", "took": 0.0,
                   "ttft": 0.0, "tokens": 0, "tokensEstimated": False})
 
@@ -679,7 +783,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             seen["instructions"] = agent_instructions
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -697,7 +801,7 @@ class TestChatEndpoint:
         seen = {}
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             seen["instructions"] = agent_instructions
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
                   "tokensEstimated": False})
@@ -708,7 +812,7 @@ class TestChatEndpoint:
 
     def test_error_event_terminates_stream(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             emit({"event": "error", "message": "boom"})
 
         monkeypatch.setattr(routes, "stream_chat", fake)
@@ -722,7 +826,7 @@ class TestChatEndpoint:
         # The whole event dict is JSON-serialized into the frame, so the flag
         # the WorkBench view needs to mark the bubble reaches the browser.
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             emit({"event": "error", "message": "cut short", "truncated": True})
 
         monkeypatch.setattr(routes, "stream_chat", fake)
@@ -792,7 +896,7 @@ class TestChatPauseEndpoint:
         released = threading.Event()
 
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             seen["pause_event"] = pause_event
             started.set()
             # The route always hands the stream a flag; the default None only
@@ -841,7 +945,7 @@ class TestChatPauseEndpoint:
 
     def test_handle_is_retired_once_the_reply_ended(self, client, monkeypatch):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
-                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None):
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
             emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 1,
                   "tokensEstimated": False})
 
@@ -1092,6 +1196,262 @@ class TestStreamChatPause:
         assert names == ["usage", "tool_call", "tool_result", "pause_ack"]
 
 
+class TestAgentModePromptAssembly:
+    """am-04: the resolved mode's words reach ``POST /chat``'s system message.
+
+    Runs against a ``tmp_path`` workspace whose ``.nojae/agent-modes.json`` the
+    test writes, so the mode the route resolves is a real one read through the
+    real loader (no stand-in: what is under test is the route's use of it). The
+    stub records the ``stream_chat`` kwargs, which is where am-04 does the
+    substitution — the five-part *order* belongs to ``core.chat`` and is pinned
+    in ``TestStreamChat`` above.
+    """
+
+    @staticmethod
+    def _write_modes(root: Path, agents: Dict[str, Any], default: str = "builder"):
+        folder = root / agent_modes.POLICY_DIRNAME
+        folder.mkdir(exist_ok=True)
+        (folder / agent_modes.AGENT_MODES_FILENAME).write_text(
+            json.dumps({
+                "version": agent_modes.AGENT_MODES_VERSION,
+                "default": default,
+                "agents": agents,
+            }, indent=2),
+            encoding="utf-8",
+        )
+
+    @pytest.fixture
+    def mode_client(self, client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """``client`` on a scratch workspace with AGENTS.md, plus the stub's kwargs."""
+        (tmp_path / "AGENTS.md").write_text("# rules\n\nUse pytest.\n", encoding="utf-8")
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
+        agent_modes.invalidate_agent_modes_cache()
+        seen: Dict[str, Any] = {}
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 pause_event=None, api_key="none", sysprompt=None,
+                 agent_instructions=None, mode_instructions=None):
+            seen["sysprompt"] = sysprompt
+            seen["agent_instructions"] = agent_instructions
+            if mode_instructions is not None:
+                seen["mode_instructions"] = mode_instructions
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        try:
+            yield client, tmp_path, seen
+        finally:
+            agent_modes.invalidate_agent_modes_cache()
+
+    @staticmethod
+    def _post(client) -> None:
+        response = client.post(
+            "/api/chat", json={"messages": [{"role": "user", "content": "hi"}]}
+        )
+        assert response.status_code == 200
+
+    def test_the_persona_replaces_the_configured_prompt(self, mode_client):
+        client, root, seen = mode_client
+        self._write_modes(root, {
+            "builder": {"label": "Builder", "systemMessage": "PERSONA TEXT"},
+        })
+        self._post(client)
+        assert seen["sysprompt"] == "PERSONA TEXT"
+        # D1: alternatives, never stacked — the configured prompt is gone.
+        assert DEFAULT_LLM_SYSPROMPT not in seen["sysprompt"]
+
+    def test_an_empty_persona_falls_back_to_the_configured_prompt(
+        self, mode_client
+    ):
+        # The escape hatch, as a supported path: `"systemMessage": ""` on the
+        # default mode restores the pre-mode behaviour with no code change.
+        client, root, seen = mode_client
+        self._write_modes(root, {"builder": {"label": "Builder",
+                                             "systemMessage": ""}})
+        self._post(client)
+        assert seen["sysprompt"] == DEFAULT_LLM_SYSPROMPT
+
+    def test_a_missing_persona_key_is_the_same_fallback(self, mode_client):
+        client, root, seen = mode_client
+        self._write_modes(root, {"builder": {"label": "Builder"}})
+        self._post(client)
+        assert seen["sysprompt"] == DEFAULT_LLM_SYSPROMPT
+
+    def test_a_mode_without_blocks_keeps_the_call_shape(self, mode_client):
+        # ``mode_instructions`` is passed only when the mode has blocks (the
+        # conditional shape already used for ``batch_instructions``), so every
+        # chat request that exists today is unaffected.
+        client, root, seen = mode_client
+        self._write_modes(root, {"builder": {"label": "Builder",
+                                             "systemMessage": "PERSONA"}})
+        self._post(client)
+        assert "mode_instructions" not in seen
+
+    def test_the_app_owned_mode_blocks_reach_the_call(self, mode_client,
+                                                      monkeypatch):
+        # Only the reserved Todo builder carries blocks, and it cannot be the
+        # file's ``default`` (D9), so the route's rendering of them is exercised
+        # by handing it that mode directly.
+        client, _root, seen = mode_client
+        monkeypatch.setattr(
+            routes.agent_modes, "resolve_mode",
+            lambda mode_id: (modes_defaults.todo_builder_mode(), []),
+        )
+        self._post(client)
+        assert seen["mode_instructions"] == "\n\n".join(
+            modes_defaults.todo_builder_mode().instructions
+        )
+        assert modes_defaults.lot_conventions_block() in seen["mode_instructions"]
+
+    def test_the_project_instructions_arrive_for_a_tools_off_mode(
+        self, mode_client
+    ):
+        # am-00's invariant as a test: AGENTS.md is unconditional. A mode with
+        # both tool flags false still gets the project block.
+        client, root, seen = mode_client
+        self._write_modes(root, {"builder": {
+            "label": "Builder", "mcptools": False, "lsptools": False,
+            "systemMessage": "PERSONA TEXT",
+        }})
+        self._post(client)
+        assert seen["agent_instructions"].endswith("Use pytest.")
+        assert f"project root is {root}" in seen["agent_instructions"]
+
+    def test_the_modes_file_is_resolved_per_request(self, mode_client):
+        # Hot edit, no second cache layer: the persona of the *next* turn of a
+        # conversation is the one the file says now.
+        client, root, seen = mode_client
+        self._write_modes(root, {"builder": {"label": "Builder",
+                                             "systemMessage": "PERSONA ONE"}})
+        self._post(client)
+        assert seen["sysprompt"] == "PERSONA ONE"
+        self._write_modes(root, {"builder": {"label": "Builder",
+                                             "systemMessage": "PERSONA TWO"}})
+        self._post(client)
+        assert seen["sysprompt"] == "PERSONA TWO"
+
+    def test_a_broken_modes_file_still_chats_on_the_defaults(self, mode_client):
+        # D11 on the request path: a typo costs the user their persona, not the
+        # conversation.
+        client, root, _seen = mode_client
+        folder = root / agent_modes.POLICY_DIRNAME
+        folder.mkdir(exist_ok=True)
+        (folder / agent_modes.AGENT_MODES_FILENAME).write_text(
+            "{ not json", encoding="utf-8")
+        self._post(client)
+        assert _seen["sysprompt"] == "\n".join(
+            modes_defaults.CODE_PERSONA)
+
+    def test_a_workspace_with_no_modes_file_chats_on_the_same_defaults(
+        self, mode_client
+    ):
+        # am-04 §9: the behaviour does not depend on whether am-03's seed
+        # happened — a workspace created before it shipped, or one the seeder
+        # could not write, resolves to the same built-in ``code`` persona.
+        client, _root, seen = mode_client
+        self._post(client)
+        assert seen["sysprompt"] == "\n".join(modes_defaults.CODE_PERSONA)
+        assert "mode_instructions" not in seen
+
+    def test_nothing_anywhere_can_suppress_the_project_instructions(self):
+        # am-00's invariant, stated as a test: AGENTS.md is always injected.
+        # Neither the core, the modes vocabulary nor a request body carries a
+        # knob for it, so no caller — a later feature or a hand-edited file —
+        # can ask for a conversation without them.
+        import inspect
+
+        def suppressed_names(names) -> list:
+            """Any name that reads like a switch over the instruction blocks."""
+            out = []
+            for name in names:
+                lowered = name.lower()
+                if "agents_md" in lowered or "agentsmd" in lowered:
+                    out.append(name)
+                elif lowered.startswith(("include_", "without_", "skip_",
+                                         "no_", "suppress_")):
+                    out.append(name)
+            return sorted(out)
+
+        assert suppressed_names(chat_core.stream_chat.__code__.co_varnames) == []
+        assert suppressed_names(routes.ChatIn.model_fields) == []
+        assert suppressed_names(agent_modes.MODE_KEYS) == []
+        assert suppressed_names(agent_modes.TOP_LEVEL_KEYS) == []
+        # The two instruction arguments are the only injection points, and both
+        # are appended to the system message, never allowed to replace it: the
+        # route passes ``agent_instructions=agent_instructions_block()`` with no
+        # condition anywhere around it.
+        params = list(inspect.signature(chat_core.stream_chat).parameters)
+        assert [p for p in params if "instructions" in p] == [
+            "agent_instructions", "mode_instructions", "batch_instructions",
+        ]
+        route_source = inspect.getsource(routes)
+        # Exactly one call site, passed unconditionally — never through the
+        # conditional-kwarg shape the two optional blocks use.
+        assert route_source.count(
+            "agent_instructions=agent_instructions_block(),") == 1
+        assert '"agent_instructions"' not in route_source
+
+    def test_the_five_parts_arrive_in_order_through_the_route(self, mode_client,
+                                                              monkeypatch):
+        """End to end: persona → notice → AGENTS.md → mode blocks → lot.
+
+        The stub above only sees the kwargs; this lets the *real* ``stream_chat``
+        run (with litellm stubbed) so the assertion is on the system message that
+        would leave the process, with a persona, blocks and ``batchContext`` all
+        in play at once.
+        """
+        client, root, _seen = mode_client
+        # A hub with one live connector, so tools really are passed and the
+        # notice has a place in the message (gating the hubs per mode is
+        # am-05's job, not this task's).
+        class Hub:
+            def status(self):
+                return []
+
+            def active_tool_defs(self, ids):
+                return ([{"type": "function", "function": {"name": "read_file"}}],
+                        {"read_file": "console"})
+
+            def call_tool_sync(self, cid, name, args):
+                return "ok"
+
+        client.app.state.mcp = Hub()
+        monkeypatch.setattr(routes, "_active_connector_ids", lambda: ["console"])
+        captured: Dict[str, Any] = {}
+        monkeypatch.setattr(routes, "stream_chat", chat_core.stream_chat)
+        monkeypatch.setattr(
+            "src.core.chat.completion",
+            lambda **kwargs: captured.update(kwargs) or iter([]),
+        )
+        # A mode of the same shape as the reserved one — persona plus blocks —
+        # with a persona that does not use the word "tool", so the notice is
+        # expected (its own behaviour is pinned in TestStreamChat above).
+        monkeypatch.setattr(
+            routes.agent_modes, "resolve_mode",
+            lambda mode_id: (agent_modes.AgentMode(
+                id="builder", label="Builder", system_message="PERSONA TEXT",
+                mcptools=True, lsptools=False, editable=False,
+                instructions=("MODE BLOCKS", "SECOND MODE BLOCK"),
+            ), []),
+        )
+        response = client.post("/api/chat", json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "batchContext": "The lot: tasks 1 to 8.",
+        })
+        assert response.status_code == 200
+        content = captured["messages"][0]["content"]
+        parts = [
+            content.index("PERSONA TEXT"),
+            content.index(chat_core.TOOL_NOTICE.strip()),
+            content.index("# rules"),
+            content.index("MODE BLOCKS\n\nSECOND MODE BLOCK"),
+            content.index("The lot: tasks 1 to 8."),
+        ]
+        assert parts == sorted(parts)
+        assert len(set(parts)) == 5
+
+
 class TestChatMcpFilter:
     """``mcpEnabled`` (Chat tab conversation toggles) intersects the active ids."""
 
@@ -1172,3 +1532,288 @@ class TestChatMcpFilter:
                   "mcpEnabled": "beta"},
         )
         assert response.status_code == 422
+
+
+class TestAgentModeToolGate:
+    """am-05: the mode's two booleans decide whether a hub reaches the *model*.
+
+    Three levels gate the tool loop and they only ever **intersect** (D4):
+    Settings (``_active_connector_ids`` / ``_active_server_ids``), the mode
+    (``mcptools`` / ``lsptools``) and the conversation (``mcpEnabled`` /
+    ``lspEnabled``). ``_chat_tool_kwargs`` is where they meet, so most of what
+    is asserted here is the kwargs dict the route hands ``stream_chat`` —
+    including the one assertion that is the requirement rather than a detail:
+    a gated request has **no ``tools`` key at all**, never ``tools=[]``, which
+    is a different request to an OpenAI-compatible server.
+    """
+
+    class RequestStub:
+        """Just enough ``Request`` for the two hub lookups (``app.state``)."""
+
+        def __init__(self, app):
+            self.app = app
+
+    @staticmethod
+    def _request(app):
+        return TestAgentModeToolGate.RequestStub(app)
+
+    class Hub:
+        """Answers ``active_tool_defs`` from the ids it was *given*, as MCP does."""
+
+        installed = True
+
+        def __init__(self):
+            self.requested_ids: List[List[str]] = []
+
+        def status(self):
+            return []
+
+        def active_tool_defs(self, ids):
+            self.requested_ids.append(list(ids))
+            tools = [
+                {"type": "function", "function": {"name": f"use_{cid}"}}
+                for cid in ids
+            ]
+            return tools, {f"use_{cid}": cid for cid in ids}
+
+        def call_tool_sync(self, cid, name, args, timeout=30.0):
+            return "ok"
+
+    @staticmethod
+    def _mode(mcptools: bool, lsptools: bool) -> agent_modes.AgentMode:
+        return agent_modes.AgentMode(
+            id="gated", label="Gated", system_message="PERSONA",
+            mcptools=mcptools, lsptools=lsptools,
+        )
+
+    @pytest.fixture
+    def hubs(self, client, monkeypatch):
+        """Both hubs live and Settings-activated; nothing is mode-gated yet."""
+        monkeypatch.setattr(routes, "_active_connector_ids", lambda: ["console"])
+        monkeypatch.setattr(routes, "_active_server_ids", lambda: ["pyright"])
+        mcp, lsp = self.Hub(), self.Hub()
+        client.app.state.mcp = mcp
+        client.app.state.lsp = lsp
+        return client, mcp, lsp
+
+    @staticmethod
+    def _names(kwargs) -> List[str]:
+        return [d["function"]["name"] for d in kwargs.get("tools", [])]
+
+    def test_both_flags_false_leaves_no_tools_key_at_all(self, hubs):
+        client, mcp, lsp = hubs
+        # The connector is Settings-activated *and* ticked in the conversation;
+        # the mode still takes it away, and it does so by emptying the list the
+        # hub is asked for — no tool definition is ever serialised.
+        kwargs = routes._chat_tool_kwargs(
+            self._request(client.app), ["console"], ["pyright"],
+            mode=self._mode(False, False),
+        )
+        assert kwargs == {}
+        assert mcp.requested_ids == [[]] and lsp.requested_ids == [[]]
+        # The requirement, stated as the assertion: no ``tools`` **key**, never
+        # ``tools == []`` — litellm forwards what it is handed, and an empty
+        # array is a different request to an OpenAI-compatible server.
+        assert "tools" not in kwargs
+        assert "tool_executor" not in kwargs
+        assert "tool_servers" not in kwargs
+        # The iteration cap belongs to the tool loop, so gating the only hub
+        # that had tools must not leave one behind (the LSP-only branch of the
+        # merge is where it would leak from).
+        assert "max_tool_iterations" not in kwargs
+
+    def test_gating_the_only_hub_with_tools_drops_the_iteration_cap(self, hubs,
+                                                                   monkeypatch):
+        # Only MCP has tools here, and the mode closes it. The merge's LSP-only
+        # branch (``{**lsp_kwargs, "max_tool_iterations": …}``) must not fire for
+        # an empty ``lsp_kwargs``: the request has no tool loop at all, so a cap
+        # alone would be a ``stream_chat`` call shape no hub asked for.
+        client, mcp, lsp = hubs
+        monkeypatch.setattr(routes, "_active_server_ids", lambda: [])
+        kwargs = routes._chat_tool_kwargs(
+            self._request(client.app), ["console"], mode=self._mode(False, True)
+        )
+        assert kwargs == {}
+        assert mcp.requested_ids == [[]]
+        assert lsp.requested_ids == [[]]
+        for key in ("tools", "tool_executor", "tool_servers",
+                    "max_tool_iterations"):
+            assert key not in kwargs
+
+    def test_mcp_gate_leaves_the_lsp_hub_alone(self, hubs):
+        client, mcp, lsp = hubs
+        kwargs = routes._chat_tool_kwargs(
+            self._request(client.app), ["console"], ["pyright"],
+            mode=self._mode(False, True),
+        )
+        assert mcp.requested_ids == [[]]
+        assert lsp.requested_ids == [["pyright"]]
+        # One hub off, the other still whole — the gate is per hub, not global.
+        assert self._names(kwargs) == ["use_pyright"]
+        assert kwargs["tool_servers"] == {"use_pyright": "pyright"}
+
+    def test_lsp_gate_leaves_the_mcp_hub_alone(self, hubs):
+        client, mcp, lsp = hubs
+        kwargs = routes._chat_tool_kwargs(
+            self._request(client.app), ["console"], ["pyright"],
+            mode=self._mode(True, False),
+        )
+        assert lsp.requested_ids == [[]]
+        assert mcp.requested_ids == [["console"]]
+        assert self._names(kwargs) == ["use_console"]
+
+    def test_a_mode_flag_cannot_grant_a_settings_disabled_hub(self, hubs,
+                                                             monkeypatch):
+        # The invariant a future "let the mode pick the connectors" refactor
+        # would break: the mode only ever *narrows*, so both flags being true
+        # hands the model nothing that Settings unticked.
+        client, mcp, lsp = hubs
+        monkeypatch.setattr(routes, "_active_connector_ids", lambda: [])
+        monkeypatch.setattr(routes, "_active_server_ids", lambda: [])
+        kwargs = routes._chat_tool_kwargs(
+            self._request(client.app), mode=self._mode(True, True)
+        )
+        assert kwargs == {}
+        assert mcp.requested_ids == [[]]
+        assert lsp.requested_ids == [[]]
+
+    def test_a_conversation_toggle_still_narrows_a_mode_open_hub(self, hubs,
+                                                                monkeypatch):
+        # Settings stays the authority at the finest level too: an open mode
+        # does not re-tick a connector this thread switched off.
+        client, mcp, lsp = hubs
+        monkeypatch.setattr(routes, "_active_connector_ids",
+                            lambda: ["alpha", "beta"])
+        kwargs = routes._chat_tool_kwargs(
+            self._request(client.app), ["beta"], [], mode=self._mode(True, False)
+        )
+        assert mcp.requested_ids == [["beta"]]
+        assert lsp.requested_ids == [[]]
+        assert self._names(kwargs) == ["use_beta"]
+        # …and a thread that switches the last one off ends with no tools, even
+        # though its mode opens the hub (the empty list means "nothing in it",
+        # which is what the mode gate relies on too).
+        kwargs = routes._chat_tool_kwargs(
+            self._request(client.app), [], [], mode=self._mode(True, True)
+        )
+        assert kwargs == {}
+
+    def test_mode_none_keeps_the_pre_feature_call_shape(self, hubs, monkeypatch):
+        # The regression guard: every call site that existed before the feature
+        # (and every existing test in this file) sees exactly the kwargs it saw
+        # then — same keys, same merged tool list, same cap.
+        client, _mcp, _lsp = hubs
+        monkeypatch.setenv("MAX_TOOL_ITERATION", "7")
+        request = self._request(client.app)
+        without = routes._chat_tool_kwargs(request)
+        with_mode = routes._chat_tool_kwargs(request, mode=self._mode(True, True))
+        assert set(without) == {
+            "tools", "tool_executor", "tool_servers", "max_tool_iterations"
+        }
+        assert without["max_tool_iterations"] == 7
+        assert self._names(without) == ["use_console", "use_pyright"]
+        assert without["tool_servers"] == {
+            "use_console": "console", "use_pyright": "pyright",
+        }
+        assert self._names(with_mode) == self._names(without)
+        assert set(with_mode) == set(without)
+        # Both hubs really did merge, so the cases above are removing something.
+        assert without["tool_executor"]("use_pyright", {}) == "ok"
+
+    # -- the same verdict, through ``POST /api/chat`` --------------------------
+
+    @staticmethod
+    def _write_modes(root: Path, agents: Dict[str, Any], default: str = "builder"):
+        folder = root / agent_modes.POLICY_DIRNAME
+        folder.mkdir(exist_ok=True)
+        (folder / agent_modes.AGENT_MODES_FILENAME).write_text(
+            json.dumps({
+                "version": agent_modes.AGENT_MODES_VERSION,
+                "default": default,
+                "agents": agents,
+            }, indent=2),
+            encoding="utf-8",
+        )
+
+    @pytest.fixture
+    def route_client(self, client, tmp_path: Path, monkeypatch):
+        """Real ``stream_chat`` on a scratch workspace; litellm is the spy."""
+        (tmp_path / "AGENTS.md").write_text("# rules\n\nUse pytest.\n", encoding="utf-8")
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
+        agent_modes.invalidate_agent_modes_cache()
+        hub = self.Hub()
+        client.app.state.mcp = hub
+        monkeypatch.setattr(routes, "_active_connector_ids", lambda: ["console"])
+        captured: Dict[str, Any] = {}
+        monkeypatch.setattr(routes, "stream_chat", chat_core.stream_chat)
+        monkeypatch.setattr(
+            "src.core.chat.completion",
+            lambda **kwargs: captured.update(kwargs) or iter([]),
+        )
+        try:
+            yield client, tmp_path, hub, captured
+        finally:
+            agent_modes.invalidate_agent_modes_cache()
+
+    def test_a_tools_off_mode_reaches_litellm_with_no_tools(self, route_client):
+        client, root, hub, captured = route_client
+        self._write_modes(root, {"builder": {
+            "label": "Builder", "mcptools": False, "lsptools": False,
+            "systemMessage": "PERSONA TEXT",
+        }})
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}],
+                  "mcpEnabled": ["console"]},
+        )
+        assert response.status_code == 200
+        assert hub.requested_ids == [[]]
+        assert "tools" not in captured
+        # D3: with no tools in play, the notice is not appended either — the
+        # prompt and the affordance cannot disagree.
+        assert chat_core.TOOL_NOTICE.strip() not in captured["messages"][0]["content"]
+        # AGENTS.md is unaffected by the gate (am-00's invariant).
+        assert "# rules" in captured["messages"][0]["content"]
+
+    def test_a_tools_on_mode_keeps_the_tools_and_the_notice(self, route_client):
+        # Same request, same persona, one flipped flag: the tool array and the
+        # notice are both back, which is what makes the test above about the
+        # mode rather than about the persona's wording.
+        client, root, hub, captured = route_client
+        self._write_modes(root, {"builder": {
+            "label": "Builder", "mcptools": True, "lsptools": False,
+            "systemMessage": "PERSONA TEXT",
+        }})
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}],
+                  "mcpEnabled": ["console"]},
+        )
+        assert response.status_code == 200
+        assert hub.requested_ids == [["console"]]
+        assert self._names(captured) == ["use_console"]
+        assert chat_core.TOOL_NOTICE.strip() in captured["messages"][0]["content"]
+
+    def test_the_shipped_chat_mode_is_a_tools_off_mode(self, route_client,
+                                                       monkeypatch):
+        # am-00's two ``chat`` bullets against the defaults users actually get:
+        # the persona's "you have no tools here" is a fact about the request,
+        # not a request, and it comes from the shipped file rather than a
+        # hand-written one.
+        chat = modes_defaults.DEFAULT_AGENTS_DOCUMENT["agents"]["chat"]
+        assert (chat["mcptools"], chat["lsptools"]) == (False, False)
+        client, root, hub, captured = route_client
+        self._write_modes(root, {"chat": dict(chat)}, default="chat")
+        monkeypatch.setattr(routes, "_active_server_ids", lambda: ["pyright"])
+        client.app.state.lsp = self.Hub()
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hi"}],
+                  "mcpEnabled": ["console"], "lspEnabled": ["pyright"]},
+        )
+        assert response.status_code == 200
+        assert "tools" not in captured
+        assert "max_tool_iterations" not in captured
+        system = captured["messages"][0]["content"]
+        assert chat_core.TOOL_NOTICE.strip() not in system
+        assert "PERSONA" not in system  # the real persona, not a stub's

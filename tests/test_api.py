@@ -1,3 +1,4 @@
+import json
 import os
 import threading
 import time
@@ -11,6 +12,9 @@ from fastapi.testclient import TestClient
 from src.api.server import create_app
 from src.core.models import EndpointsConfig, VerifierAgent
 from src.api import routes
+from src.core import agent_modes
+from src.core import agent_modes_defaults as modes_defaults
+from src.core import batch as batch_core
 
 
 def _config() -> EndpointsConfig:
@@ -669,6 +673,15 @@ class TestPathLocationEndpoint:
         assert body["key"] == "BENCHMARKIT_PATH_LOCATION"
         assert body["path"] == default_path_location()
         assert body["default"] == default_path_location()
+        # am-03: the read half reports both reserved-folder files, in the shape
+        # the settings dialog renders. A GET seeds nothing, so the install dir
+        # answers whatever boot left there — the point is the shape, not the
+        # state (the state itself belongs to tests/test_agent_modes_seed.py).
+        modes = body["agentModes"]
+        assert set(modes) == {"state", "path", "error"}
+        assert modes["path"].endswith(
+            agent_modes.POLICY_DIRNAME + os.sep + agent_modes.AGENT_MODES_FILENAME
+        )
 
     def test_post_sets_the_env_and_restarts_both_hubs(self, hub_client, tmp_path):
         target = tmp_path / "other-project"
@@ -683,6 +696,12 @@ class TestPathLocationEndpoint:
         # repaint its panels without a second round-trip.
         assert "connectors" in response.json()["mcp"]
         assert "servers" in response.json()["lsp"]
+        # am-03: the switch seeds the new root's agent-modes file and says so,
+        # beside the policy block (the full seeding behaviour is
+        # tests/test_agent_modes_seed.py; this pins the payload key).
+        modes = response.json()["agentModes"]
+        assert modes["state"] == "created"
+        assert modes["error"] is None
 
     def test_post_canonicalises_symlinks_and_dots(self, hub_client, tmp_path):
         real = tmp_path / "real"
@@ -722,3 +741,454 @@ class TestPathLocationEndpoint:
         assert response.status_code == 409
         assert os.environ.get("BENCHMARKIT_PATH_LOCATION") == before
 
+
+class TestHubListingsAreModeBlind:
+    """am-05 §4: the hub panels answer the *global* state, never per mode.
+
+    A user who ticks connectors in Settings and picks Chat gets no tools, and
+    the panels are where they would look for the reason. The answer is *not* a
+    per-mode listing — that would make Settings a function of the dropdown and
+    two routes would report two truths. So the mode question is answered once,
+    by ``GET /api/agent-modes`` (am-06) carrying ``mcptools``/``lsptools``, and
+    these routes gain nothing at all: same payload, and no mode parameter.
+    """
+
+    def test_hub_listings_take_no_mode_parameter(self, hub_client):
+        spec = hub_client.get("/openapi.json").json()["paths"]
+        for route in ("/api/mcp", "/api/lsp"):
+            operation = spec[route]["get"]
+            names = {p["name"] for p in operation.get("parameters", [])}
+            assert names == set(), names
+
+    def test_hub_listing_payload_has_no_mode_dependent_field(self, hub_client):
+        # The payload keys are exactly the pre-mode set: the panel's ``active``
+        # flag is the Settings verdict, which a mode can only narrow, so nothing
+        # in here can depend on which mode the composer happens to hold.
+        mcp = hub_client.get("/api/mcp").json()
+        lsp = hub_client.get("/api/lsp").json()
+        assert set(mcp) == {
+            "installed", "connectors", "maxIterations", "externalsError",
+        }
+        assert set(lsp) == {
+            "installed", "servers", "maxIterations", "serversError",
+        }
+
+    def test_the_mode_flags_are_reported_once_by_the_mode_reader(self, hub_client):
+        # One route answers the mode question: the two booleans are on the mode
+        # objects am-01 resolves, which is all the frontend needs to gray a
+        # panel out — so no hub route has to know about modes.
+        assert set(("mcptools", "lsptools")) <= set(agent_modes.MODE_KEYS)
+        resolved = agent_modes.resolve_modes()["modes"]
+        assert resolved, "the built-in defaults must always resolve"
+        for mode in resolved:
+            assert isinstance(mode.mcptools, bool)
+            assert isinstance(mode.lsptools, bool)
+        # And the hub listings carry no mode anywhere (keys pinned above).
+        assert "mode" not in str(hub_client.get("/api/mcp").json()).lower()
+        assert "mode" not in str(hub_client.get("/api/lsp").json()).lower()
+
+
+def _modes_document(agents: Dict[str, Any], default: str = "code") -> Dict[str, Any]:
+    """One well-formed modes document, spelled with its JSON keys."""
+    return {
+        "version": agent_modes.AGENT_MODES_VERSION,
+        "default": default,
+        "agents": agents,
+    }
+
+
+def _write_modes(root: Path, document: Dict[str, Any]) -> Path:
+    """Write ``<root>/.nojae/agent-modes.json`` by hand (the app never does)."""
+    folder = root / agent_modes.POLICY_DIRNAME
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / agent_modes.AGENT_MODES_FILENAME
+    path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def mode_root(client, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """A scratch working location with no modes file, cache forgotten.
+
+    Every agent-modes test needs a root it owns: the alternative is answering
+    about the developer's real ``.nojae``, whose contents belong to their
+    machine. The invalidation on both sides keeps another test's cached entry
+    from being read here, and this test's from being read there.
+    """
+    root = tmp_path / "mode-workspace"
+    root.mkdir()
+    monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(root))
+    agent_modes.invalidate_agent_modes_cache()
+    try:
+        yield root
+    finally:
+        agent_modes.invalidate_agent_modes_cache()
+
+
+class TestAgentModesEndpoint:
+    """am-06 §3: ``GET /api/agent-modes`` is the app's only reader of the file."""
+
+    def test_with_no_file_the_four_built_in_modes_answer(self, client, mode_root):
+        response = client.get("/api/agent-modes")
+        assert response.status_code == 200
+        body = response.json()
+        assert [mode["id"] for mode in body["modes"]] == [
+            modes_defaults.CHAT_MODE_ID, modes_defaults.CODE_MODE_ID,
+            modes_defaults.ARCHITECT_MODE_ID, modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+        assert [mode["label"] for mode in body["modes"]] == [
+            modes_defaults.CHAT_LABEL, modes_defaults.CODE_LABEL,
+            modes_defaults.ARCHITECT_LABEL, modes_defaults.TODO_BUILDER_LABEL,
+        ]
+        # D9 as data, not as an id the client hardcodes: the app-owned mode is
+        # last and the only one not editable.
+        assert body["modes"][-1]["editable"] is False
+        assert all(mode["editable"] for mode in body["modes"][:-1])
+        assert body["default"] == modes_defaults.CODE_MODE_ID
+        assert body["findings"] == []
+        # am-03 seeds on demand only: a GET never leaves a file behind.
+        assert body["source"] == {
+            "path": str(mode_root / agent_modes.POLICY_DIRNAME
+                        / agent_modes.AGENT_MODES_FILENAME),
+            "exists": False,
+            "loaded": False,
+            "version": None,
+        }
+        assert not (mode_root / agent_modes.POLICY_DIRNAME).exists()
+
+    def test_the_two_booleans_are_the_hub_gate_the_mode_reports(
+        self, client, mode_root
+    ):
+        # am-05 §4: these four flags are all the frontend needs to gray a hub
+        # panel out, so they have to match the gate ``_chat_tool_kwargs`` applies.
+        client.get("/api/agent-modes")
+        resolved = {mode.id: mode for mode in agent_modes.resolve_modes()["modes"]}
+        body = client.get("/api/agent-modes").json()
+        for mode in body["modes"]:
+            assert mode["mcptools"] is resolved[mode["id"]].mcptools
+            assert mode["lsptools"] is resolved[mode["id"]].lsptools
+
+    def test_a_mode_object_carries_exactly_the_five_published_fields(
+        self, client, mode_root
+    ):
+        agent_modes.ensure_agent_modes_file(str(mode_root))
+        for mode in client.get("/api/agent-modes").json()["modes"]:
+            assert set(mode) == {"id", "label", "mcptools", "lsptools", "editable"}
+
+    def test_the_seeded_file_is_reported_as_loaded_with_no_findings(
+        self, client, mode_root
+    ):
+        state = agent_modes.ensure_agent_modes_file(str(mode_root))
+        assert state["state"] == "created"
+        body = client.get("/api/agent-modes").json()
+        assert body["source"]["exists"] is True
+        assert body["source"]["loaded"] is True
+        assert body["source"]["version"] == agent_modes.AGENT_MODES_VERSION
+        assert body["findings"] == [], "the seeded file must load cleanly"
+        assert body["default"] == modes_defaults.CODE_MODE_ID
+
+    def test_a_hand_broken_file_still_answers_200_and_names_the_pointer(
+        self, client, mode_root
+    ):
+        # D11 on the HTTP edge: the dropdown has to render *and* say which
+        # pointer is wrong, so the payload is the defaults plus the findings —
+        # a 4xx/5xx would hide the fix (am-00's open question, settled here).
+        _write_modes(mode_root, _modes_document({
+            "chat": {"label": "Chat", "mcptools": False, "lsptools": False},
+            "code": {"label": "Code", "mcptools": True, "lsptools": True},
+            "architect": {"label": "Architect", "mcptool": True},
+        }))
+        response = client.get("/api/agent-modes")
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["findings"]) == 1
+        finding = body["findings"][0]
+        assert set(finding) == {"kind", "message"}
+        assert finding["kind"] == "error"
+        assert "agents.architect.mcptool" in finding["message"]
+        assert "unknown key" in finding["message"]
+        # The good entries stand; the bad one is gone; the app-owned mode is
+        # still appended.
+        assert [mode["id"] for mode in body["modes"]] == [
+            "chat", "code", modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+
+    def test_the_payload_carries_no_persona_and_no_generated_blocks(
+        self, client, mode_root
+    ):
+        # §3's deliberate absences, checked on the serialised payload rather
+        # than on the dict, so a refactor that adds the fields back by accident
+        # fails here instead of in review.
+        agent_modes.ensure_agent_modes_file(str(mode_root))
+        blob = json.dumps(client.get("/api/agent-modes").json())
+        assert "systemMessage" not in blob
+        assert "instructions" not in blob
+        # And the persona text itself is nowhere, under either spelling.
+        assert modes_defaults.CODE_PERSONA[0] not in blob
+        assert batch_core.DEFAULT_LOT_DIR not in blob
+
+    def test_the_route_is_a_reader_and_leaves_nothing_behind(
+        self, client, mode_root
+    ):
+        before = sorted(p.name for p in mode_root.iterdir())
+        for _ in range(3):
+            assert client.get("/api/agent-modes").status_code == 200
+        assert sorted(p.name for p in mode_root.iterdir()) == before
+
+    def test_the_route_takes_no_query_parameter(self, client, mode_root):
+        # §4: it answers *about* the file, and a ``?path=`` would turn the one
+        # purpose-built reader into a general way to reach the reserved folder.
+        spec = client.get("/openapi.json").json()["paths"]
+        operation = spec["/api/agent-modes"]["get"]
+        assert {p["name"] for p in operation.get("parameters", [])} == set()
+        assert set(operation["responses"]) == {"200"}
+
+    def test_the_reserved_mode_is_listed_whatever_the_file_says(
+        self, client, mode_root
+    ):
+        # Two different files, both list it (and last, and not editable): the
+        # app-owned mode cannot be removed, renamed or redefined by a file.
+        _write_modes(mode_root, _modes_document(
+            {"planner": {"label": "Planner", "mcptools": True}},
+            default="planner",
+        ))
+        first = client.get("/api/agent-modes").json()
+        assert [mode["id"] for mode in first["modes"]] == [
+            "planner", modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+        assert first["default"] == "planner"
+
+        _write_modes(mode_root, _modes_document({
+            "chat": {"label": "My Chat", "mcptools": False, "lsptools": False},
+            modes_defaults.TODO_BUILDER_MODE_ID: {"label": "Mine"},
+        }, default="chat"))
+        # Only the note about the reserved entry: the file's own modes loaded,
+        # and its ``default`` names one of them (the loader's own rules).
+        second = client.get("/api/agent-modes").json()
+        assert [mode["id"] for mode in second["modes"]] == [
+            "chat", modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+        # The file's entry is ignored, benchmarkit's definition answers (D9),
+        # and the note says so instead of failing the request.
+        builder = second["modes"][-1]
+        assert builder["label"] == modes_defaults.TODO_BUILDER_LABEL
+        assert builder["editable"] is False
+        assert [finding["kind"] for finding in second["findings"]] == ["note"]
+        assert "cannot be set here" in second["findings"][0]["message"]
+
+    def test_the_dropdown_order_is_the_files_order(self, client, mode_root):
+        _write_modes(mode_root, _modes_document({
+            "zulu": {"label": "Zulu"},
+            "alpha": {"label": "Alpha"},
+            "mike": {"label": "Mike"},
+        }, default="mike"))
+        body = client.get("/api/agent-modes").json()
+        assert [mode["id"] for mode in body["modes"]] == [
+            "zulu", "alpha", "mike", modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+        assert body["default"] == "mike"
+
+
+class _ChatHubDouble:
+    """Hub double answering ``active_tool_defs`` from the ids it is given."""
+
+    installed = True
+
+    def __init__(self) -> None:
+        self.requested_ids: List[List[str]] = []
+
+    def status(self) -> List[Dict[str, Any]]:
+        return []
+
+    def active_tool_defs(self, ids):
+        self.requested_ids.append(list(ids))
+        tools = [{"type": "function", "function": {"name": f"use_{cid}"}}
+                 for cid in ids]
+        return tools, {f"use_{cid}": cid for cid in ids}
+
+    def call_tool_sync(self, cid, name, args, timeout=30.0):
+        return "ok"
+
+
+
+@pytest.fixture
+def chat_stub(client, monkeypatch: pytest.MonkeyPatch):
+    """``client`` with a live MCP hub and a ``stream_chat`` that records kwargs.
+
+    The recording shape mirrors ``tests/test_chat.py``'s stubs: the five named
+    instruction/prompt keywords plus whatever tool kwargs the route passes, so
+    the *absence* of a key is as observable as its value — which is the whole
+    point of the tool-gate assertions below.
+    """
+    hub = _ChatHubDouble()
+    client.app.state.mcp = hub
+    client.app.state.lsp = _ChatHubDouble()
+    monkeypatch.setattr(routes, "_active_connector_ids", lambda: ["console"])
+    monkeypatch.setattr(routes, "_active_server_ids", lambda: [])
+    seen: Dict[str, Any] = {}
+    asked: List[Optional[str]] = []
+
+    real_resolve = agent_modes.resolve_mode
+
+    def spy_resolve(mode_id):
+        asked.append(mode_id)
+        return real_resolve(mode_id)
+
+    def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+             pause_event=None, api_key="none", sysprompt=None,
+             agent_instructions=None, mode_instructions=None, **tools):
+        seen["sysprompt"] = sysprompt
+        if mode_instructions is not None:
+            seen["mode_instructions"] = mode_instructions
+        seen.update(tools)
+        emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+              "tokensEstimated": False})
+
+    monkeypatch.setattr(routes.agent_modes, "resolve_mode", spy_resolve)
+    monkeypatch.setattr(routes, "stream_chat", fake)
+    return client, seen, hub, asked
+
+
+def _chat(client, **extra):
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    body.update(extra)
+    return client.post("/api/chat", json=body)
+
+
+class TestChatAgentModeField:
+    """am-06 §1-§2: ``ChatIn.agentMode`` selects a mode, and a typo refuses.
+
+    The field and the gate are the same task because a client that could pick a
+    mode which changed the *prompt* but not the *tool set* would get half a mode
+    — so both edges are asserted here, through the hub double's allowlist.
+    """
+
+    def test_an_unknown_mode_is_422_naming_it_and_listing_the_real_ones(
+        self, chat_stub, mode_root
+    ):
+        client, seen, _hub, _asked = chat_stub
+        response = _chat(client, agentMode="nope")
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "'nope'" in detail
+        for mode_id in ("chat", "code", "architect",
+                        modes_defaults.TODO_BUILDER_MODE_ID):
+            assert mode_id in detail
+        # Nothing streamed: the worker never ran.
+        assert seen == {}
+
+    def test_a_refused_mode_does_not_own_the_pause_handle(
+        self, chat_stub, mode_root
+    ):
+        # §2: the 422 is raised *before* ``_arm_chat_handle``, so a request that
+        # will never stream cannot leave a stale handle for the next one.
+        client, _seen, _hub, _asked = chat_stub
+        assert routes._CHAT_HANDLE is None
+        assert _chat(client, agentMode="nope").status_code == 422
+        assert routes._CHAT_HANDLE is None
+        assert _chat(client).status_code == 200
+
+    def test_a_mode_id_of_the_wrong_shape_is_422_from_the_model(
+        self, chat_stub, mode_root
+    ):
+        # The *shape* check lives in the model (cheap, static); existence lives
+        # in ``resolve_mode``. An id that could never be a mode id never even
+        # reaches the file lookup.
+        client, seen, _hub, _asked = chat_stub
+        for bad in ("Nope", "9lives", "has space", "x" * 33):
+            assert _chat(client, agentMode=bad).status_code == 422, bad
+        assert seen == {}
+        # It is the *shape* only: none of these reached the loader, so a
+        # ``Literal``/enum would not have been needed either — and none of them
+        # can be repaired by editing the file, unlike the 422 above.
+        assert _asked == []
+
+    def test_an_empty_agent_mode_asks_for_the_default_instead_of_refusing(
+        self, chat_stub, mode_root
+    ):
+        # ``resolve_mode`` reads empty as "the file's default"; a client that
+        # sends the field empty gets that, not a shape error.
+        client, _seen, _hub, asked = chat_stub
+        assert _chat(client, agentMode="   ").status_code == 200
+        assert asked == [None]
+
+    def test_no_agent_mode_uses_the_file_default_and_the_old_tool_kwargs(
+        self, chat_stub, mode_root
+    ):
+        # A client predating the feature: the seeded default is ``code``, whose
+        # gate is open, so the tool arguments are exactly what they were before
+        # modes existed. They are *not* identical on ``sysprompt`` — from am-04
+        # the default mode supplies a persona, which is the point of the
+        # feature — so the persona is asserted separately, never as prose.
+        client, seen, hub, asked = chat_stub
+        agent_modes.ensure_agent_modes_file(str(mode_root))
+        assert _chat(client).status_code == 200
+        assert asked == [None]
+        assert set(seen) == {
+            "sysprompt", "tools", "tool_executor", "tool_servers",
+            "max_tool_iterations",
+        }
+        assert hub.requested_ids == [["console"]]
+        assert seen["tool_servers"] == {"use_console": "console"}
+        # …identical in *content* too, not just in keys: the four tool arguments
+        # an old client got are the four this one gets.
+        assert seen["tools"] == [
+            {"type": "function", "function": {"name": "use_console"}}
+        ]
+        assert callable(seen["tool_executor"])
+        assert seen["max_tool_iterations"] == routes.max_tool_iteration()
+        # The mode itself, asserted separately from the prose that carries it.
+        default = agent_modes.resolve_mode(None)[0]
+        assert default.id == modes_defaults.CODE_MODE_ID
+        assert seen["sysprompt"] == default.system_message
+
+    def test_the_selected_mode_narrows_the_tool_set_as_well_as_the_prompt(
+        self, chat_stub, mode_root
+    ):
+        client, seen, hub, asked = chat_stub
+        agent_modes.ensure_agent_modes_file(str(mode_root))
+        assert _chat(client, agentMode="chat").status_code == 200
+        assert asked == ["chat"]
+        # D3: no ``tools`` key at all (never ``tools=[]``), and the hub was
+        # narrowed to an empty allowlist rather than skipped.
+        assert "tools" not in seen
+        assert "tool_executor" not in seen
+        assert hub.requested_ids == [[]]
+        assert seen["sysprompt"] == agent_modes.resolve_mode("chat")[0].system_message
+
+        seen.clear()
+        assert _chat(client, agentMode="code").status_code == 200
+        assert "tools" in seen
+        assert hub.requested_ids == [[], ["console"]]
+
+    def test_the_app_owned_mode_is_reachable_and_its_blocks_arrive(
+        self, chat_stub, mode_root
+    ):
+        # The whole reason the reserved mode is published: a user can pick it.
+        client, seen, _hub, asked = chat_stub
+        response = _chat(client, agentMode=modes_defaults.TODO_BUILDER_MODE_ID)
+        assert response.status_code == 200
+        assert asked == [modes_defaults.TODO_BUILDER_MODE_ID]
+        assert seen["mode_instructions"] == "\n\n".join(
+            modes_defaults.todo_builder_mode().instructions
+        )
+        assert modes_defaults.lot_conventions_block() in seen["mode_instructions"]
+
+    def test_a_selected_mode_is_resolved_against_the_file_as_it_is_now(
+        self, chat_stub, mode_root
+    ):
+        # Hot edit through the HTTP edge: the same client, two files, two
+        # personas — no restart and no second cache.
+        client, seen, _hub, _asked = chat_stub
+        _write_modes(mode_root, _modes_document(
+            {"planner": {"label": "Planner", "systemMessage": "PERSONA ONE"}},
+            default="planner",
+        ))
+        assert _chat(client, agentMode="planner").status_code == 200
+        assert seen["sysprompt"] == "PERSONA ONE"
+        _write_modes(mode_root, _modes_document(
+            {"planner": {"label": "Planner", "systemMessage": "PERSONA TWO"}},
+            default="planner",
+        ))
+        assert _chat(client, agentMode="planner").status_code == 200
+        assert seen["sysprompt"] == "PERSONA TWO"

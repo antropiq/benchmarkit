@@ -10,6 +10,7 @@ import WorkBenchView from './components/WorkBenchView.vue'
 import { useBenchmark } from './composables/useBenchmark'
 import { useTabTitle } from './composables/useTabTitle'
 import { useSessionSound } from './composables/useSessionSound'
+import { loadChatHubs } from './composables/useChat'
 
 // Lazy on purpose: Monaco and xterm are heavy, and the Benchmark tab is the
 // app's default screen — it must never download them. The Editor tab's first
@@ -46,6 +47,11 @@ onMounted(() => {
   // The app bar shows the active working location, so fetch it at boot too —
   // not only when the settings dialog opens.
   loadPathLocation()
+  // The WorkBench tab is mounted from the start (v-show), so its composer's
+  // mode dropdown and the tools dock must not wait for a tab click that may
+  // never come. The tab's own watch keeps them fresh on re-entry; this is the
+  // first fill.
+  loadChatHubs()
 })
 
 const config = computed(() => state.config)

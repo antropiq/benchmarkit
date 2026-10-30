@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useChat } from '../composables/useChat'
 import { useBatch } from '../composables/useBatch'
+import { hubGateReason, modeBlocksHub } from '../composables/useAgentModes'
 import { mcpVisible } from '../lib/chat-hubs'
 
 const { state, setChatMcp, restartMcp } = useChat()
@@ -26,7 +27,17 @@ const locked = computed(
   () => state.mcp.locked || state.phase !== 'idle' || batch.active,
 )
 
+// D4's coarsest switch: the active agent mode can switch the whole hub off. The
+// panel then renders **disabled with a reason** rather than disappearing — the
+// toggles stay real (Settings owns them) and a hidden control that reappears on
+// a mode change reads as a bug. `modeBlocksHub` is false when the mode list
+// never loaded, which is exactly the pre-feature rendering.
+const gatedByMode = computed(() => modeBlocksHub('mcp'))
+const gateReason = computed(() => hubGateReason('mcp'))
+const switchesDisabled = computed(() => locked.value || gatedByMode.value)
+
 function rowTitle(connector) {
+  if (gatedByMode.value) return gateReason.value
   if (batch.active) {
     return 'Unavailable while a batch runs — stop it to change the tools'
   }
@@ -77,18 +88,23 @@ const restartTitle = computed(() => {
         </svg>
       </button>
     </div>
+    <!-- The one sentence saying why the whole column went inert. The panel
+         stays visible: the switches are real and Settings still owns them. -->
+    <p v-if="gatedByMode" class="caption chat-hub-gate" role="status">
+      {{ gateReason }}
+    </p>
     <label
       v-for="connector in state.mcp.connectors"
       :key="connector.id"
       class="chat-mcp-row"
-      :class="{ 'chat-mcp-row--dim': connector.status !== 'running' }"
+      :class="{ 'chat-mcp-row--dim': gatedByMode || connector.status !== 'running' }"
       :title="rowTitle(connector)"
     >
       <input
         type="checkbox"
         role="switch"
         :checked="state.mcp.enabled[connector.id]"
-        :disabled="locked"
+        :disabled="switchesDisabled"
         :aria-label="`MCP ${connector.label} for this conversation`"
         @change="setChatMcp(connector.id, $event.target.checked)"
       />

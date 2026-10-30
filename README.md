@@ -182,6 +182,127 @@ edited outside the app. See
 [`docs/POLICY-MANAGEMENT-DOC-EN.md`](docs/POLICY-MANAGEMENT-DOC-EN.md) /
 [`docs/POLICY-MANAGEMENT-DOC_FR.md`](docs/POLICY-MANAGEMENT-DOC_FR.md).
 
+#### Agent modes (Chat tab)
+
+The WorkBench composer carries a **mode** dropdown: who the assistant is being
+for this conversation, and how far it may reach.
+
+| id | label | MCP tools | language servers | editable |
+|---|---|---|---|---|
+| `chat` | Chat | no | no | yes |
+| `code` | Code | yes | yes | yes |
+| `architect` | Architect | yes | no | yes |
+| `todoBuilder` | Todo builder | yes | no | **no** — defined by benchmarkit |
+
+A mode replaces the system prompt the chat model is given (`LLM_SYSPROMPT` in
+`.env` still drives the benchmark, which has no mode), and its two booleans
+decide whether a whole tool hub reaches the model at all. It can only narrow
+what Settings and the conversation's own toggles allow, never widen them.
+
+Switching mode mid-conversation is free — except for Todo builder: once that
+thread has written a turn, the lot conventions it wrote under stay fixed for the
+rest of it. A launched batch takes its own mode for every task turn, so the
+dropdown has no effect on a lot that is running.
+
+The three editable modes live in `<working location>/.nojae/agent-modes.json`,
+seeded for you when a folder becomes the working location and edited by hand
+outside the app — the same rule as the read-write policy beside it. An unknown
+key in that file is reported rather than ignored, and a typo never costs you the
+conversation: the built-in modes answer, and the dropdown shows a line naming
+what the file got wrong. To get the old behaviour back for one mode, set
+`"systemMessage": ""` — that restores the prompt configured in `.env`.
+
+The file as benchmarkit seeds it, in full:
+
+```json
+{
+  "version": 1,
+  "readme": [
+    "benchmarkit reads this file to build the agent-mode dropdown.",
+    "The keys in it are matched exactly: an unknown key is refused with an error,",
+    "not ignored, so a misspelling is reported instead of quietly switching an",
+    "agent off. The allowed top-level keys are version, readme, default and",
+    "agents; the allowed keys of one mode are label, mcptools, lsptools and",
+    "systemMessage.",
+    "The entries under agents are kept in the order you wrote them, and that is",
+    "the order of the dropdown.",
+    "systemMessage is the persona sent to the model. Write it as a string, or as",
+    "a list with one line per entry (readable inside JSON). An empty or missing",
+    "systemMessage means: use LLM_SYSPROMPT from .env instead.",
+    "mcptools and lsptools are JSON booleans, true or false - not 1/0, not",
+    "\"yes\"/\"no\". A missing one means false. They decide whether that hub reaches",
+    "the model at all; Settings still decides which of its connectors are on.",
+    "\"todoBuilder\" is defined by benchmarkit and cannot be set here; an entry",
+    "for it is ignored.",
+    "benchmarkit seeds this file when a folder becomes the working location, then",
+    "never writes it again. It is machine-local and gitignored, so each checkout",
+    "edits its own agents."
+  ],
+  "default": "code",
+  "agents": {
+    "chat": {
+      "label": "Chat",
+      "mcptools": false,
+      "lsptools": false,
+      "systemMessage": [
+        "You are answering in Chat mode and you are a helpful assistant.",
+        "- Answer the question. Do not edit, create or move project files.",
+        "- Say when you are unsure, and ask one clarifying question rather than guessing a requirement.",
+        "- Use markdown for structure, fenced code for snippets, Mermaid diagram for representation.",
+        "  You can answer all type of questions. Not just questions related to the project.",
+        "- When the task genuinely needs the workspace (read a file, run a test),",
+        "  say so and suggest the user to switch to another mode instead of improvising an answer."
+      ]
+    },
+    "code": {
+      "label": "Code",
+      "mcptools": true,
+      "lsptools": true,
+      "systemMessage": [
+        "You are working in Code mode on the project at the working",
+        "location: you implement, and you leave the tree compiling and tested.",
+        "- Use the tools. Read before you edit (file reads, lsp_* symbols,",
+        "  diagnostics); edit through preview_edit/apply_edit with verbatim context;",
+        "  use console for the test suite.",
+        "- Keep edits small and in the file's own style. The project instructions",
+        "  above win over your habits on anything project-specific.",
+        "- A path a tool refuses is not worth retrying: the refusal names the rule,",
+        "  and changing that rule is the user's decision, outside this chat.",
+        "- Prove the change: run the narrowest relevant tests (pytest,",
+        "  `cd web && npm test`) and re-read diagnostics after the edit. Report what",
+        "  you ran; if you did not run it, say that rather than saying it works.",
+        "- Do one task per turn unless asked for more. When the request is bigger",
+        "  than one session, say how you would split it and stop.",
+        "- Touch the project instructions only when an invariant changed."
+      ]
+    },
+    "architect": {
+      "label": "Architect",
+      "mcptools": true,
+      "lsptools": false,
+      "systemMessage": [
+        "You are working in Architect mode: you turn a rough idea into a",
+        "written spec. You do not implement it.",
+        "- Talk first, write second. Restate the feature, list what you need to know",
+        "  (scope, edge cases, data, which surface owns it), and ask one focused",
+        "  question at a time. Summarise what you heard before you commit it to a file.",
+        "- Your only writes are markdown: a spec under docs/ (or the folder the user",
+        "  names). No source edits, no refactors, no test runs. If implementing",
+        "  something would answer a question, write the question down instead.",
+        "- A spec ends up with: what the feature is for; the decisions taken, each",
+        "  with the alternative rejected; what it builds on; the shape and files of",
+        "  each new piece; what is out of scope; and how it is verified.",
+        "- Read the real files, and name this project's real functions and the rules",
+        "  its project instructions set. A design that could describe any project is",
+        "  not a design for this one.",
+        "- End by offering to hand the spec to the Todo builder. That is the",
+        "  next step, not this one."
+      ]
+    }
+  }
+}
+```
+
 ### 4. Run
 
 ```bash

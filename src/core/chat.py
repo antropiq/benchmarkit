@@ -154,6 +154,7 @@ def stream_chat(
     tool_servers: Optional[Dict[str, str]] = None,
     max_tool_iterations: int = 25,
     agent_instructions: Optional[str] = None,
+    mode_instructions: Optional[str] = None,
     batch_instructions: Optional[str] = None,
 ) -> None:
     """Stream one chat reply, emitting ``token`` / ``reasoning`` / ``done``.
@@ -201,12 +202,16 @@ def stream_chat(
     user configured. Like the notice above, it is appended to the text of the
     system message (the Chat API only ever sends plain-text system messages).
 
+    ``mode_instructions`` (an agent mode's own generated blocks) rides between
+    the two below — text only; this function never learns what a mode is.
+
     ``batch_instructions`` (batch mode's lot big picture) is appended *after*
-    the project instructions, so the system message reads
-    sysprompt → tool notice → AGENTS.md → big picture: the project's rules stay
-    the closest thing to the conversation, and the lot description — framed as
-    context below, not as a task — is the furthest. It is re-sent on every task
-    turn because the per-task context reset means nothing else carries it.
+    the project instructions and the mode blocks, so the system message reads
+    sysprompt → tool notice → AGENTS.md → mode blocks → big picture: the
+    project's rules stay the closest thing to the conversation, and the lot
+    description — framed as context below, not as a task — is the furthest. It
+    is re-sent on every task turn because the per-task context reset means
+    nothing else carries it.
     """
     if not messages or messages[0].get("role") != "system":
         messages = [
@@ -227,6 +232,18 @@ def stream_chat(
         messages[0] = {
             "role": "system",
             "content": _content_text(messages[0]) + "\n\n" + agent_instructions,
+        }
+    if mode_instructions:
+        # The active mode's own standing instructions (the reserved Todo
+        # builder carries the batch-lot conventions). After the project
+        # instructions and before the lot big picture: AGENTS.md stays the
+        # closest thing to the conversation, and the lot description stays
+        # the furthest. It is a separate argument from agent_instructions
+        # for the same reason those are separate: the TOOL_NOTICE word
+        # check above must judge prompt-like text only.
+        messages[0] = {
+            "role": "system",
+            "content": _content_text(messages[0]) + "\n\n" + mode_instructions,
         }
     if batch_instructions and batch_instructions.strip():
         # The lot's big picture closes the system message (see the docstring):

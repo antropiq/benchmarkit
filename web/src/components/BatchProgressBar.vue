@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useBatch } from '../composables/useBatch'
+import { modeById } from '../composables/useAgentModes'
 
 // The batch meter, rendered under the stopwatch only while a batch is running
 // (or just after it ended, so its outcome stays readable). Reuses the
@@ -22,6 +23,18 @@ const visible = computed(
 const value = computed(() => Math.min(state.index, state.total))
 
 const caption = computed(() => `${state.prefix} · ${state.dir}`)
+
+// D13: one lot, one mode. The bar names the mode its turns run in, and when
+// the workspace has no `code` mode to pin it says so instead of pretending the
+// dropdown has anything to do with the run.
+const modeCaption = computed(() => {
+  if (state.modeNote) return state.modeNote
+  if (!state.pinnedMode) return null
+  // The workspace's own label for the id the runner pinned — the dropdown and
+  // this line must not call the same agent by two names.
+  const label = modeById(state.pinnedMode)?.label ?? state.pinnedMode
+  return `tasks run in ${label} mode`
+})
 
 // The counter names the task being worked on, so it reads 1/3 while the first
 // turn streams (not 0/3: `state.index` only counts turns that already ran to
@@ -85,6 +98,9 @@ const title = computed(() => {
 <template>
   <section v-if="visible" class="batch-progress" aria-label="Batch progress">
     <p class="caption">{{ caption }}</p>
+    <p v-if="modeCaption" class="caption batch-mode-caption" role="status">
+      {{ modeCaption }}
+    </p>
     <div class="progress-row">
       <progress :value="value" :max="state.total" :aria-label="ariaLabel"></progress>
     </div>

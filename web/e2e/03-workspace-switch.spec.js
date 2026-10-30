@@ -81,6 +81,18 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
 
   await setRoot(page, scratchAbs)
 
+  // am-03's acceptance, on the real switch and the real disk: a brand-new
+  // workspace ends up with exactly the two reserved-folder files — the policy
+  // pol-05 seeds and the agent-modes file am-03 seeds — and nothing else.
+  expect(fs.readdirSync(path.join(scratchAbs, '.nojae')).sort()).toEqual([
+    'agent-modes.json',
+    'read-write-policy.json',
+  ])
+  // And the seeded file is a real document, not a stub: the personas the loader
+  // falls back to are the ones this workspace can now edit.
+  const modes = JSON.parse(fs.readFileSync(path.join(scratchAbs, '.nojae', 'agent-modes.json'), 'utf8'))
+  expect(Object.keys(modes.agents)).toEqual(['chat', 'code', 'architect'])
+
   // The tree re-rooted: the root row names the new folder and lists its own
   // README.md, and nothing of the previous root's listing is on screen.
   const rootRow = page.locator('.tree-row--root')
@@ -102,8 +114,8 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   // The scratch folder the spec created is back in the listing (it is a
   // top-level folder of this workspace, and no policy rule names it). What the
   // root can *not* list is `.nojae` — reserved, and holding this workspace's
-  // policy *and* its trash — and `logs`, which benchmarkit's own rules hide as
-  // the app's backups.
+  // policy, its agent-modes file (am-03) *and* its trash — and `logs`, which
+  // benchmarkit's own rules hide as the app's backups.
   await expect(page.locator('.tree-row[data-path="e2e-ws-root"]')).toBeVisible()
   await expect(page.locator('.tree-row[data-path="logs"]')).toHaveCount(0)
   await expect(page.locator('.tree-row[data-path=".nojae"]')).toHaveCount(0)
