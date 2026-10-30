@@ -19,6 +19,7 @@ logs/
 # pane can actually see and write.
 /e2e-write/
 /e2e-ws-root/
+/e2e-modes-root/
 mcp_connectors/externals.json
 # LSP declaration file: may carry secrets in its per-entry `env` maps.
 lsp_connectors/lsp_servers.json
