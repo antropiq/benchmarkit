@@ -681,6 +681,7 @@ class TestSurfaceShape:
             "/api/fs/tree": ["get"],
             "/api/fs/file": ["delete", "get", "put"],
             "/api/fs/create": ["post"],
+            "/api/fs/search": ["get"],
             "/api/fs/stat": ["get"],
             "/api/fs/status": ["get"],
             "/api/fs/diff": ["get"],

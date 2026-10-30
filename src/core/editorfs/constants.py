@@ -51,6 +51,31 @@ GIT_COMMAND_TIMEOUT = 10.0
 # bounded list plus ``truncated: true`` instead of a huge response.
 MAX_STATUS_ENTRIES = 5000
 
+# -- the workspace search (``editorfs.search``) --------------------------------
+#
+# The same three siblings' rule applied to a scan that reads *contents* rather
+# than names: each bound is one number a test patches by name here, and the
+# payload answers a footer sentence about which one cut rather than dropping
+# rows in silence.
+
+# Result rows one search may send. Matches past it are still counted, so
+# ``matchCount`` stays the truth about the scope while the table stays a screenful.
+MAX_SEARCH_MATCHES = 500
+
+# Files one scan opens, whatever their size — the scan's own version of
+# ``MAX_TREE_ENTRIES_PER_DIR``, but across the whole subtree instead of one
+# level, because a search walks collapsed branches the tree never listed.
+MAX_SEARCH_FILES = 5000
+
+# Total bytes one scan reads. A huge checkout is mostly artefacts: this is what
+# bounds the search's memory and its time, and a file that would overrun what is
+# left of the budget is skipped whole rather than searched in a fragment.
+MAX_SEARCH_BYTES = 32 * 1024 * 1024
+
+# One result snippet's text before the ``…``: a matched line from a minified
+# file is otherwise a cell of megabytes.
+MAX_SEARCH_SNIPPET_BYTES = 240
+
 # -- the path-policy vocabulary, mirrored from ``mcp_connectors/policy_shared`` --
 #
 # Those names live outside ``src`` so the two stdio connectors can read them

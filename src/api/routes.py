@@ -1399,6 +1399,45 @@ def build_router(state: RunState) -> APIRouter:
         except editorfs.WorkspacePathError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
+    @router.get("/fs/search")
+    def get_fs_search(
+        path: str = "",
+        q: str = "",
+        caseSensitive: bool = False,
+        regex: bool = False,
+    ) -> Dict[str, Any]:
+        """Every match of one query inside one scope of the active workspace.
+
+        ``path`` is the scope and uses the tree's convention — workspace-relative,
+        with "" meaning the whole workspace — so the row a gesture was made on is
+        what gets searched: a folder is its subtree, a file is that file's own
+        content. ``q`` also defaults to "" so an unset query reaches the core's
+        one-sentence refusal ("empty query") rather than a framework validation
+        error, and the parameter names are camelCase because that is the wire form
+        the rest of this surface uses.
+
+        All the rules live in :func:`src.core.editorfs.search.search_workspace`:
+        the walk, the one policy verdict per child (a search sees exactly what the
+        tree shows, so a hidden name is pruned and never counted), the symlinks it
+        refuses to open, the four caps and the single footer sentence the payload
+        carries. This route only turns the core's two errors into their HTTP
+        status: 400 for a pattern that is not a pattern (carrying ``re``'s own
+        message), 422 for a scope outside the working location or refused by a
+        lock, 404 for a scope that is absent or hidden.
+
+        This route reads. It opens files and reports their lines, and changes
+        nothing on disk — the write routes below the divider are the ones the
+        guard suite isolates.
+        """
+        try:
+            return editorfs.search_workspace(
+                path, query=q, case_sensitive=caseSensitive, regex=regex
+            )
+        except editorfs.SearchQueryError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
     # -- the guarded write surface (browser-only) ------------------------------
 
     @router.put("/fs/file")

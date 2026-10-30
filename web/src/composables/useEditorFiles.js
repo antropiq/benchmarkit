@@ -752,7 +752,9 @@ export function useEditorFiles() {
   // from the save path, so the app's default screen never pulls the Editor's
   // chunk in for state that only the Editor has — and a location the Editor tab
   // was never opened for has no tabs to forget.
-  registerReRootHandler(({ workspace = '' } = {}) => forgetWorkspaceBuffers({ workspace }))
+  registerReRootHandler('editorBuffers', ({ workspace = '' } = {}) =>
+    forgetWorkspaceBuffers({ workspace }),
+  )
 
   // Close the *file* buffer for a path (a diff tab of the same path is a
   // different tab and stays open).

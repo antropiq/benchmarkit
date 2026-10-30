@@ -4,7 +4,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import WorkspaceNavigator from '../src/components/WorkspaceNavigator.vue'
 import { useEditorFiles } from '../src/composables/useEditorFiles'
 import { useGitStatus } from '../src/composables/useGitStatus'
+import { useWorkspaceSearch } from '../src/composables/useWorkspaceSearch'
 import { useWorkspaceTree } from '../src/composables/useWorkspaceTree'
+import { treeMenuItems } from '../src/lib/tree-menu'
 
 // The menu as the user meets it: right-click a row of each kind and read out
 // what the tree offered. The item *table* is asserted in
@@ -16,6 +18,7 @@ import { useWorkspaceTree } from '../src/composables/useWorkspaceTree'
 const tree = useWorkspaceTree()
 const files = useEditorFiles()
 const git = useGitStatus()
+const search = useWorkspaceSearch()
 
 const LISTINGS = {
   '': [
@@ -63,6 +66,17 @@ function stubFetch() {
 // step has nothing to do — it is stubbed rather than asserted on (that promise
 // is e2e's to check).
 Element.prototype.scrollIntoView = () => {}
+// …and jsdom has no `showModal`/`close` on `<dialog>`. The navigator mounts
+// `<SearchDialog />` in *every* test of this file, so the two stubs go on the
+// prototype for all of them rather than per case — they only have to keep
+// `el.open` truthful, which is all the dialog's own watch reads (the same pair
+// useEditorWriteMatrix.test.js:385-390 patches).
+Element.prototype.showModal = function showModal() {
+  this.open = true
+}
+Element.prototype.close = function close() {
+  this.open = false
+}
 
 // One navigator per test, then the menu's own buttons read out of the teleported
 // `<body>` (that is where they live; the tree's scroll container would clip them).
@@ -95,7 +109,18 @@ beforeEach(() => {
   files.state.active = null
   git.state.entries = []
   git.state.loadedAt = 0
-  document.body.querySelectorAll('.tree-context-menu').forEach((el) => el.remove())
+  // The search composable keeps its answer on purpose, so a test that reads it
+  // has to start from an empty one rather than from the previous test's scope.
+  search.state.query = ''
+  search.state.scope = null
+  search.state.open = false
+  search.state.status = 'idle'
+  search.state.result = null
+  search.state.error = null
+  search.state.pendingReveal = null
+  // A wrapper is never unmounted (the tree rows of the previous test are
+  // harmless), but a `<dialog>` left open would answer a later test's query.
+  document.body.querySelectorAll('.tree-context-menu, dialog').forEach((el) => el.remove())
 })
 
 describe('the context menu, per row kind', () => {
@@ -104,12 +129,14 @@ describe('the context menu, per row kind', () => {
     const wrapper = await mounted()
 
     expect(await menuFor(wrapper, '')).toEqual([
+      'Search…',
       'New file…',
       'New folder…',
       'Refresh',
       'Copy relative path',
     ])
     expect(await menuFor(wrapper, 'src')).toEqual([
+      'Search…',
       'New file…',
       'New folder…',
       'Rename…',
@@ -123,6 +150,7 @@ describe('the context menu, per row kind', () => {
     // in `.md`, so it gets Preview and a.py does not, whatever git says.
     expect(await menuFor(wrapper, 'notes.md')).toEqual([
       'Open',
+      'Search…',
       'Preview',
       'View diff…',
       'Rename…',
@@ -131,6 +159,7 @@ describe('the context menu, per row kind', () => {
     ])
     expect(await menuFor(wrapper, 'src/a.py')).toEqual([
       'Open',
+      'Search…',
       'Rename…',
       'Delete',
       'Copy relative path',
@@ -255,7 +284,133 @@ describe('the context menu, per row kind', () => {
     expect(files.recordFor('notes.md')).toBeNull()
     expect(tree.state.selected).toBeNull()
   })
+
+  // Search is the one item `scope: 'row'` gives to every row kind, so it reaches
+  // the composable rather than the tree: the menu's job is to hand over the row,
+  // and `lib/search-scope` is what turns it into folder / file / workspace. The
+  // dialog's own rendering is searchDialog.test.js; what is checked here is that
+  // the navigator's gesture lands on the right scope.
+  it('offers Search on every row kind, with the row it was made on as the scope', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+
+    await menuFor(wrapper, 'src')
+    await clickMenuItem('Search…')
+    expect(search.state.open).toBe(true)
+    expect(search.state.scope).toMatchObject({ kind: 'folder', label: 'src', path: 'src' })
+
+    search.closeDialog()
+    await menuFor(wrapper, 'src/a.py')
+    await clickMenuItem('Search…')
+    expect(search.state.scope).toMatchObject({ kind: 'file', label: 'src/a.py', path: 'src/a.py' })
+
+    // The root row's scope is the workspace itself, so its label is the
+    // workspace's own name — never the empty string that row's path *is*.
+    search.closeDialog()
+    tree.state.workspace = '/work/machine/demo'
+    await menuFor(wrapper, '')
+    await clickMenuItem('Search…')
+    expect(search.state.scope).toMatchObject({
+      kind: 'workspace',
+      label: tree.rootLabel(),
+      path: '',
+    })
+    search.closeDialog()
+  })
+
+  it("the Search item's hint names all three scopes", async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    await menuFor(wrapper, 'src')
+    expect(menuItemTitle('Search…')).toBe(
+      'Search inside this folder, this file, or the whole workspace',
+    )
+  })
+
+  // The table, not a `v-if`, decides whether a menu is opened at all — `openMenu`
+  // returns early on an empty list. Search is a `scope: 'row'` item, so it is now
+  // part of the floor of every shape the table can be handed, and the leanest one
+  // the navigator actually has (the root row: no Open, not mutable) still gets a
+  // menu.
+  it('a row that offers almost nothing still gets a menu, because of Search', async () => {
+    expect(
+      treeMenuItems({ dir: false, isRoot: true, mutable: false, trashRetentionDays: 30 }).map(
+        (item) => item.id,
+      ),
+    ).toEqual(['search', 'copy-path'])
+
+    stubFetch()
+    const wrapper = await mounted()
+    expect(await menuFor(wrapper, '')).toContain('Search…')
+  })
 })
+
+describe('the header search button', () => {
+  // The button's subject is the tree's, so the disabled state is the same answer
+  // `commandTarget()` gives the chords: no focused row that exists, no button.
+  it('is disabled while there is no row to search, enabled once one is', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    const button = wrapper.find('.editor-nav-search')
+    expect(button.exists()).toBe(true)
+
+    tree.state.focused = 'src'
+    await wrapper.vm.$nextTick()
+    expect(button.attributes('disabled')).toBeUndefined()
+
+    // A focused row that stopped existing (a re-list dropped it) leaves the
+    // command with no subject, so the button goes idle again rather than
+    // promising a search of a path the tree no longer shows.
+    tree.state.focused = 'gone'
+    await wrapper.vm.$nextTick()
+    expect(button.attributes('disabled')).toBeDefined()
+  })
+
+  it('a click raises the dialog on the focused row', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    tree.state.focused = 'src'
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.editor-nav-search').trigger('click')
+
+    expect(search.state.open).toBe(true)
+    expect(search.state.scope).toMatchObject({ kind: 'folder', label: 'src', path: 'src' })
+    // The tree's selection is untouched: a search is not a file open.
+    expect(tree.state.selected).toBeNull()
+    search.closeDialog()
+  })
+
+  // §2.9's reason for mounting the dialog inside the navigator: the button that
+  // raises it and the scope label it renders need the same subject. A click on
+  // the row must therefore find a real `<dialog>` in the document.
+  it('the dialog is mounted inside the navigator, and the click shows it', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    tree.state.focused = 'src/a.py'
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.editor-nav-search').trigger('click')
+    await flushPromises()
+
+    const dialog = document.querySelector('.editor-search-dialog')
+    expect(dialog).not.toBeNull()
+    expect(dialog.open).toBe(true)
+    expect(dialog.querySelector('.editor-search-scope-path')?.textContent.trim()).toBe('src/a.py')
+    search.closeDialog()
+    await flushPromises()
+    expect(document.querySelector('.editor-search-dialog').open).toBe(false)
+  })
+})
+
+// The hint of one menu item, read off the button that carries it — the same
+// buttons `clickMenuItem` finds, so a test cannot pass on a label whose title
+// belongs to another item.
+function menuItemTitle(label) {
+  const item = [...document.querySelectorAll('.tree-context-menu [role="menuitem"]')].find(
+    (node) => node.textContent.trim() === label,
+  )
+  if (!item) throw new Error(`no menu item ${label}`)
+  return item.getAttribute('title')
+}
 
 async function clickMenuItem(label) {
   const items = [...document.querySelectorAll('.tree-context-menu [role="menuitem"]')]

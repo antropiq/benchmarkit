@@ -64,6 +64,29 @@ export function picoMonacoTheme() {
     : 'vs-dark'
 }
 
+// The reveal of a search hit (spec §2.6): the coordinates come from a *scan*,
+// which may be stale by the time the buffer holds the file (it changed since).
+// Monaco's own behaviour for an out-of-range position is not part of this
+// contract, so the clamp happens here: the line is capped to the model's line
+// count, the column to that line's max column.
+//
+// It is a pure helper taking the two model facts as arguments (`lineCount`, and
+// a `maxColumnFor(line)` callback) because the only Monaco instance that knows
+// them lives inside a component jsdom cannot drive — this is the half of the
+// reveal that can be tested without a browser.
+//
+// A position that is not two positive integers (absent, fractional, negative,
+// NaN, not an object) is rejected as `null`: a reveal that cannot be applied is
+// a no-op, never an error the pane has to handle.
+export function clampReveal(position, lineCount, maxColumnFor) {
+  if (!position || typeof position !== 'object') return null
+  const { line, column } = position
+  if (!Number.isInteger(line) || !Number.isInteger(column)) return null
+  if (line < 1 || column < 1) return null
+  const clampedLine = Math.min(line, Math.max(lineCount, 1))
+  return { line: clampedLine, column: Math.min(column, maxColumnFor(clampedLine)) }
+}
+
 // The server sends the language id it chose for a file
 // (`core/editorfs/files.py`), and an unknown extension is honestly
 // `plaintext`. Monaco has no grammar for two of the ids it can receive, so

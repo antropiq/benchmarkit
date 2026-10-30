@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 // The code pane's editor surface. Bundled with the Editor tab's lazy chunk
 // (App.vue's defineAsyncComponent), never with the entry chunk — Monaco and
@@ -18,6 +18,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as monaco from 'monaco-editor'
 import '../styles/monaco-pico.css'
 import {
+  clampReveal,
   ensureMonacoWorkers,
   monacoLanguageId,
   monoFontFamily,
@@ -57,6 +58,51 @@ let themeObserver = null
 // swap or a reload) so the content listener stays silent for those, and only
 // real user edits reach `content-change`.
 let applyingExternal = false
+
+// --- The reveal: "put the caret on this search hit" -----------------------
+//
+// The pane owns *which* hit and when to ask; this surface owns how, and the
+// queue lives here because only this component knows when its model swap has
+// finished (search-08). A reveal cannot be applied at the moment of the row
+// click, for two independent reasons:
+//
+//   * the file may not be open yet, so there is no `editor` to move — the
+//     reveal waits for `onMounted` (drain at its end);
+//   * when the file *is* already open, the pane keeps this one instance across
+//     tab switches and the `props.content` watcher below calls `model.setValue`
+//     — which clears the cursor. So the reveal drains at the end of that
+//     watcher too, after the swap, which is what lets a reveal queued for a
+//     buffer that is still being fetched land once its text arrives.
+//
+// `revealPosition` also drains on the next tick, covering the case where
+// neither of those is scheduled: the right text is already on screen, so the
+// watcher never runs and the mount long happened.
+const pendingReveal = ref(null) // { line, column }
+
+function flushPendingReveal() {
+  if (!pendingReveal.value || !editor || !model) return
+  const position = clampReveal(
+    pendingReveal.value,
+    model.getLineCount(),
+    (line) => model.getLineMaxColumn(line),
+  )
+  pendingReveal.value = null
+  if (!position) return
+  // This order: `setPosition` on an off-screen line does not scroll.
+  editor.revealLineInCenter(position.line)
+  editor.setPosition({ lineNumber: position.line, column: position.column })
+}
+
+function revealPosition({ line, column } = {}) {
+  if (!Number.isInteger(line) || !Number.isInteger(column) || line < 1 || column < 1) {
+    return // a reveal that cannot be applied is a no-op, never an error
+  }
+  pendingReveal.value = { line, column }
+  void nextTick(flushPendingReveal)
+}
+
+// The only imperative surface this component has.
+defineExpose({ revealPosition })
 
 onMounted(() => {
   model = monaco.editor.createModel(
@@ -125,6 +171,7 @@ onMounted(() => {
     attributes: true,
     attributeFilter: ['data-theme'],
   })
+  flushPendingReveal()
 })
 
 // Content: go through the model, never `create` again. The guard matters:
@@ -151,6 +198,11 @@ watch(
     } finally {
       applyingExternal = false
     }
+    // `setValue` cleared the cursor, so a reveal queued for this buffer (a hit
+    // clicked while its file was still being fetched) is applied here — the
+    // first moment the new text is in the model. Draining anywhere earlier is
+    // the synchronous-reveal bug the queue exists to avoid.
+    flushPendingReveal()
   },
 )
 

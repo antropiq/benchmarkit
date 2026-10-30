@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { useWorkspaceTree } from '../src/composables/useWorkspaceTree'
+import { registerReRootHandler, useWorkspaceTree } from '../src/composables/useWorkspaceTree'
 import { useEditorFiles } from '../src/composables/useEditorFiles'
 import { useEditorNotices } from '../src/composables/useEditorNotices'
 import { useGitStatus } from '../src/composables/useGitStatus'
@@ -236,5 +236,87 @@ describe('the tab strip: every tab of the old root closes', () => {
     expect(notices.state.notices[0].tone).toBe('warn')
     expect(notices.state.notices[0].text).toContain('1 tab closed with unsaved changes')
     expect(notices.state.notices[0].text).toContain(NEW_ROOT)
+  })
+})
+
+// The registry the tabs are forgotten through, on its own. It used to be one
+// slot, and the search composable is a second holder of the same event: results
+// whose paths are relative to a root that no longer exists. A single slot makes
+// whichever holder registered last the only one that cleans up — tabs surviving
+// a switch whose results were cleared, or the reverse — and neither half is
+// visible from the test file that covers it.
+describe('the re-root registry: one event, several holders', () => {
+  const PROBE_KEY = 'probe'
+
+  beforeEach(() => {
+    resetState()
+    vi.restoreAllMocks()
+  })
+
+  // A probe left registered would run in every suite that follows.
+  afterEach(() => {
+    registerReRootHandler(PROBE_KEY, null)
+    registerReRootHandler('probeSecond', null)
+  })
+
+  it('runs both holders on one switch — neither displaces the other', async () => {
+    stubRoots()
+    await files.openFile('README.md')
+    const seen = []
+    registerReRootHandler(PROBE_KEY, (payload) => seen.push(payload))
+
+    await tree.reRoot(NEW_ROOT)
+
+    expect(seen).toEqual([{ workspace: NEW_ROOT }])
+    expect(files.state.open).toHaveLength(0)
+  })
+
+  // The shape the buffer holder really has: the same key re-registered by a
+  // factory body that runs again on every mount, each time with a *fresh*
+  // closure. An implementation that dedups by function identity would append one
+  // handler per mount and run the old ones too.
+  it('re-registering a key replaces it instead of appending', async () => {
+    stubRoots()
+    const calls = []
+    for (let i = 0; i < 3; i += 1) {
+      registerReRootHandler(PROBE_KEY, () => calls.push(i))
+    }
+
+    await tree.reRoot(NEW_ROOT)
+
+    expect(calls).toEqual([2])
+  })
+
+  // One holder failing is its own bug. Cancelling the *next* holder's cleanup
+  // turns it into two, and the visible one (an open tab of a root that is gone)
+  // is not the one that threw.
+  it('a subscriber that throws does not stop the others', async () => {
+    stubRoots()
+    await files.openFile('README.md')
+    const reached = []
+    registerReRootHandler(PROBE_KEY, () => {
+      throw new Error('probe exploded')
+    })
+    registerReRootHandler('probeSecond', () => reached.push('second'))
+
+    await tree.reRoot(NEW_ROOT)
+
+    expect(reached).toEqual(['second'])
+    expect(files.state.open).toHaveLength(0)
+    // Reported rather than swallowed: the tree's own error channel, which
+    // `reRoot` has already cleared by this point.
+    expect(tree.state.error).toContain('probe exploded')
+  })
+
+  it('a key is unhooked by re-registering it with a non-function', async () => {
+    stubRoots()
+    const calls = []
+    registerReRootHandler(PROBE_KEY, () => calls.push('ran'))
+    registerReRootHandler(PROBE_KEY, null)
+
+    await tree.reRoot(NEW_ROOT)
+
+    expect(calls).toEqual([])
+    expect(files.state.open).toHaveLength(0)
   })
 })

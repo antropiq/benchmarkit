@@ -3179,6 +3179,164 @@ body {
   margin-bottom: 0;
 }
 
+/* The search dialog. Same card family as the three confirms, but wide: two of
+   its columns (a file's path and a line of its text) want to breathe, and Pico's
+   own 700px `dialog > article` would ellipsise the paths into uselessness. The
+   card is not the scroller — the results area below is — so the scope line, the
+   form and the footer stay readable while 500 rows move between them. */
+.editor-search-dialog > article {
+  width: 820px;
+  max-width: 94vw;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.editor-search-dialog .caption {
+  margin: 0.25rem 0;
+}
+
+/* The read-only scope line: the path in mono (it is a path), and the kind as a
+   suffix, so `docs/old (folder)` and `docs/old (file)` read apart. The whole line
+   is a caption already, so nothing else needs a colour of its own. */
+.editor-search-scope-path {
+  font-family: var(--pico-font-family-monospace);
+}
+
+/* The field row: the input takes the width and the submit is a square cell of
+   its own beside it, so the button never steals a third of the query. */
+.editor-search-field {
+  display: flex;
+  align-items: end;
+  gap: var(--bi-space-1);
+}
+
+.editor-search-field-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.editor-search-submit {
+  flex: 0 0 auto;
+  width: auto;
+  padding: var(--pico-form-element-spacing-vertical) var(--bi-space-2);
+}
+
+/* The two switches on one line rather than Pico's stacked form rows — they are
+   two modifiers of the same query, not two questions. */
+.editor-search-switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--bi-space-3);
+  margin-bottom: var(--bi-space-1);
+}
+
+.editor-search-switches label.checkbox {
+  margin-bottom: 0;
+  font-size: 0.85rem;
+}
+
+.editor-search-error {
+  margin-bottom: var(--bi-space-1);
+}
+
+/* The server's one sentence, last in the card. Pico styles a dialog `footer` for
+   a row of buttons — right-aligned, with a divider and a negative bottom margin
+   to sit flush with the card edge. This is a caption, not a button row, so it
+   goes back to the card's own flow: left-aligned, and the divider stays (it is
+   what separates the sentence from the scroll area above it). */
+.editor-search-footer {
+  text-align: start;
+}
+
+/* The one scroller: 500 rows must not make the dialog taller than the window, so
+   the rows scroll inside a bounded box while the header above and the footer
+   below stay put. Horizontally too, because a snippet keeps its line unbroken. */
+.editor-search-results {
+  max-height: min(46vh, 26rem);
+  overflow: auto;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+  background-color: var(--bi-surface);
+}
+
+.editor-search-results .caption {
+  padding: var(--bi-space-1) var(--bi-space-2);
+}
+
+.editor-search-table {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+/* The column names stay above 500 rows of scrolling, so a row halfway down is
+   still readable. Pico already gives `th` an opaque background, which is what
+   makes sticking it possible without a band of its own. */
+.editor-search-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* The path column is the one with something long and uninteresting in it, so it
+   is the one allowed to ellipsise (the full path rides in the button's `title`). */
+.editor-search-cell-path {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-search-cell-line {
+  width: 1%;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: var(--pico-muted-color);
+}
+
+/* A row is a click target: the whole button is the row's affordance, so it
+   carries no button chrome of its own — the same flat shape the tree's rows use.
+   The path verbatim, in mono, because it is the string the tab strip will name. */
+.editor-search-hit {
+  display: inline;
+  width: auto;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--pico-primary);
+  font: inherit;
+  font-family: var(--pico-font-family-monospace);
+  text-align: start;
+}
+
+.editor-search-hit:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+/* The snippet is the file's own text: mono, unstyled, and never wrapped —
+   `white-space: pre` keeps the line's indentation exactly as the file has it,
+   which is the only thing a code snippet has to be right about. Pico gives
+   inline `code` a background and a smaller size; neither suits a whole line. */
+.editor-search-snippet {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--pico-color);
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* The matched span. Pico's own `mark` tone, so it follows the light/dark theme
+   without a new colour of its own to keep in sync. */
+.editor-search-mark {
+  background-color: var(--pico-mark-background-color);
+  color: var(--pico-mark-color);
+}
+
 /* The pane's save affordances, in the header row *beside* the tab scroller: the
    strip scrolls under its own wheel rule, so a button inside it would scroll out
    of reach. Same square cell as a chip, so the header stays one line of cells. */

@@ -292,12 +292,14 @@ test('each row offers exactly what it can honour', async ({ page }) => {
   // The root lists its own actions but is never renamable or deletable; an
   // untracked file with no buffer offers neither View diff… nor Close.
   expect(await menuItems(page, '')).toEqual([
+    'Search…',
     'New file…',
     'New folder…',
     'Refresh',
     'Copy relative path',
   ])
   expect(await menuItems(page, SCRATCH)).toEqual([
+    'Search…',
     'New file…',
     'New folder…',
     'Rename…',
@@ -307,6 +309,7 @@ test('each row offers exactly what it can honour', async ({ page }) => {
   ])
   expect(await menuItems(page, file)).toEqual([
     'Open',
+    'Search…',
     'Rename…',
     'Delete',
     'Copy relative path',
@@ -314,6 +317,7 @@ test('each row offers exactly what it can honour', async ({ page }) => {
   // The `.md` row is the only difference, and it adds exactly Preview.
   expect(await menuItems(page, markdown)).toEqual([
     'Open',
+    'Search…',
     'Preview',
     'Rename…',
     'Delete',

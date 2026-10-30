@@ -38,7 +38,7 @@ import { reactive } from 'vue'
 // conflating them would make every folder click try to open a buffer.
 // ---------------------------------------------------------------------------
 
-const ROOT = ''
+export const ROOT = ''
 
 const state = reactive({
   // Cache of one listing per path, plus the per-path fetch status.
@@ -146,10 +146,23 @@ let generation = 0
 // and keeps the two files from importing each other. A working location the
 // Editor tab was never opened for registers nothing, and re-rooting it costs
 // nothing.
-let reRootHandler = null
+//
+// It is a *list*, because the buffers are no longer the only holder: the search
+// composable clears its results on the same event. One slot would make the last
+// holder to register the only one that gets cleared — tabs surviving a switch
+// whose results were forgotten, or the reverse. Each holder registers under its
+// own key, so re-registering (a remount re-runs a factory body, and the existing
+// call site passes a fresh arrow each time) replaces that holder's entry instead
+// of appending a second copy.
+const reRootHandlers = new Map()
 
-export function registerReRootHandler(handler) {
-  reRootHandler = typeof handler === 'function' ? handler : null
+export function registerReRootHandler(key, handler) {
+  if (typeof key !== 'string' || !key) return
+  if (typeof handler !== 'function') {
+    reRootHandlers.delete(key)
+    return
+  }
+  reRootHandlers.set(key, handler)
 }
 
 // The create chord is answered by the create flow, not by this module: the tree
@@ -306,7 +319,7 @@ export function useWorkspaceTree() {
   //
   // The token bump is what makes the forget stick: a listing that was already
   // in flight answers after the switch, and its rows belong to the folder that
-  // was just left. `reRootHandler` (see the registry above) is where the open
+  // was just left. `reRootHandlers` (see the registry above) is where the open
   // buffers and the git marks — the other holders of those paths — go with it.
   //
   // `rootPath` is the location the server confirmed, adopted as the root label
@@ -324,8 +337,26 @@ export function useWorkspaceTree() {
     // and title would then point at a folder nothing is browsing. The listing
     // below writes the confirmed value as soon as the server answers.
     state.workspace = rootPath
-    reRootHandler?.({ workspace: rootPath })
+    // Every holder lets go of the old root, in registration order. One holder
+    // failing must not cancel the others' cleanup — results that were forgotten
+    // are worth as much as the tabs that closed — so each call is caught and
+    // named rather than thrown past the next subscriber.
+    const failures = []
+    for (const handler of reRootHandlers.values()) {
+      try {
+        handler({ workspace: rootPath })
+      } catch (exc) {
+        failures.push(String(exc))
+      }
+    }
     await load(ROOT)
+    // Reported *after* the listing, not on the spot: `load` clears this field on
+    // the way in, so a failure recorded before it would be erased by a listing
+    // that succeeded and never reach the user. A listing that failed says the
+    // more urgent thing, and keeps the field.
+    if (failures.length && !state.error) {
+      state.error = `Could not clear the previous workspace: ${failures.join('; ')}`
+    }
   }
 
   function expand(path) {

@@ -257,9 +257,12 @@ class TestTheVerdictIsTheOnlyRouteToTheRules:
         # The gate — which asks the verdict for every path it resolves, so no
         # other module has to — the package that re-exports it, and the three
         # surfaces that ask directly (the tree's prune, the delete's subtree
-        # walk, git status's one omission rule).
+        # walk, git status's one omission rule, the search's prune). A new
+        # surface has to appear here on purpose: the point is that one verdict
+        # answers for all of them, not that the count is five.
         assert importers == [
-            "__init__.py", "gitstatus.py", "mutate.py", "policy.py", "tree.py",
+            "__init__.py", "gitstatus.py", "mutate.py", "policy.py", "search.py",
+            "tree.py",
         ]
 
     def test_no_surface_consults_the_connector_deny_list(self):

@@ -401,6 +401,24 @@ class TestTheAgentModesReaderStaysReadOnly:
         assert handlers[0]["handler"].args.args == []
 
 
+class TestTheSearchReaderStaysARead:
+    """The same verb guard as ``/agent-modes``, for the surface it does not cover.
+
+    ``test_editorfs.py``'s verb map already lists ``/api/fs/search`` as ``["get"]``;
+    this is the sibling of the ``/agent-modes`` guard — the *verb* read out of the
+    AST, so a mutation added to the same path trips it even before the OpenAPI map
+    is consulted.
+    """
+
+    def test_no_fs_search_route_accepts_a_mutation(self):
+        routes_source = (REPO_ROOT / "src" / "api" / "routes.py").read_text(
+            encoding="utf-8"
+        )
+        registered = route_registrations(routes_source, "/fs/search")
+        assert registered, "the search route has to exist for this to mean anything"
+        assert [entry["verb"] for entry in registered] == ["get"]
+
+
 class TestTheGuardsActuallyFail:
     """A guard that cannot fail is decoration, so each is shown catching one.
 

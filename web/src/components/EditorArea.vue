@@ -6,6 +6,7 @@ import MarkdownStream from './MarkdownStream.vue'
 import EditorTreeDialogs from './EditorTreeDialogs.vue'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
+import { useWorkspaceSearch } from '../composables/useWorkspaceSearch'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useChat } from '../composables/useChat'
 import { useEditorMode } from '../composables/useEditorMode'
@@ -25,6 +26,7 @@ import { applyEditorChord } from '../lib/editor-keys'
 // surface below.
 const files = useEditorFiles()
 const tree = useWorkspaceTree()
+const search = useWorkspaceSearch()
 const bench = useBenchmark()
 const chat = useChat()
 const { paneReadonly } = useEditorMode()
@@ -107,6 +109,11 @@ const deletedNote = computed(() =>
 // pane's aria-labelledby both key on it).
 const activeIndex = computed(() => state.open.findIndex((item) => item.key === state.active))
 
+// The code pane's own instance, for the one imperative thing it accepts: the
+// reveal of a search hit (watcher below). `null` whenever the branch that
+// renders it is not — a diff tab, a preview tab, or no active tab at all.
+const editorSurface = ref(null)
+
 // A tree click opens the file it selected (append-or-focus, never refetch).
 //
 // Selections published *by* this pane (`source: 'tab'`, see useWorkspaceTree
@@ -136,6 +143,36 @@ watch(
     const record = key ? files.recordForKey(key) : null
     if (record) tree.reveal(record.path)
   },
+)
+
+// The third, independent watcher: a clicked search hit asks the pane to move
+// the caret (spec §2.6). It watches the queued coordinates *and* the active
+// tab, because the click and the buffer are not in the same moment: `openHit`
+// queues the reveal and *then* publishes the selection, so the hit's file may
+// still be fetching, or may not be a tab at all. Handing the coordinates over
+// at that moment would move the caret in whatever buffer the single shared
+// surface is showing and spend the queue, so the pane waits until the active
+// tab *is* the hit's path; the surface's own queue then absorbs the remaining
+// timing (the `setValue` of a buffer swap clears the cursor — D11).
+//
+// `flush: 'post'` belongs to the same race: for a file that only now becomes a
+// tab, the surface has to exist (rendered, model holding the text) by the time
+// it is told to reveal.
+//
+// A diff or preview tab of the hit's path has no caret to move: `editorSurface`
+// is `null` for those branches, so the `?.` makes a stale hit a no-op instead
+// of a throw, and the queue is still cleared. A hit whose file never opens
+// leaves the queue alone — the pane's refused-open message is the answer, and
+// the next click overwrites it. Once handed over, the clear is what keeps a
+// later re-render from re-applying an old reveal: the queue has one owner.
+watch(
+  [() => search.state.pendingReveal, () => tab.value],
+  ([reveal, activeTab]) => {
+    if (!reveal || !activeTab || activeTab.path !== reveal.path) return
+    editorSurface.value?.revealPosition({ line: reveal.line, column: reveal.column })
+    search.state.pendingReveal = null
+  },
+  { flush: 'post' },
 )
 
 // A click on the chip that is *already* active changes nothing in `state.active`,
@@ -497,6 +534,9 @@ onBeforeUnmount(() => {
           <!-- The tabpanel wrapper is app-owned: `aria-controls` on the chips
                points here, and Monaco's host inside it stays empty of app
                markup (it is also the scope of the Pico overrides). -->
+          <!-- `editorSurface` is how a search hit reaches the surface's one
+               exposed method; it is `null` while this branch is not rendered,
+               which is what the reveal watcher's `?.` is for. -->
           <div
             class="editor-monaco"
             id="editor-pane"
@@ -504,6 +544,7 @@ onBeforeUnmount(() => {
             :aria-labelledby="`editor-tab-${activeIndex}`"
           >
             <MonacoEditor
+              ref="editorSurface"
               :content="tab.text"
               :language="tab.language"
               :readonly="paneReadonly"

@@ -43,6 +43,13 @@ Core-only (no FastAPI, no browser concerns), a sibling of ``mcphub/`` and
   (``GET /api/fs/diff``, the two sides of one file). They answer *about* the
   working location and never change it — no stage, no commit, no checkout —
   and every path they report goes through the same policy as the tree.
+* :mod:`editorfs.search` one search of a scope: ``search_workspace``
+  (``GET /api/fs/search``, the rows of one query). It sees exactly what the tree
+  sees — one verdict per child, the same prune as ``tree`` — so no snippet from a
+  hidden file can reach a payload; and it is bounded by its own caps
+  (``MAX_SEARCH_MATCHES`` / ``_FILES`` / ``_BYTES`` / ``_SNIPPET_BYTES``), which
+  stop the scan and are reported in one footer sentence the payload carries,
+  never raised as an error.
 
 Two invariants the whole Editor surface rests on:
 
@@ -89,6 +96,7 @@ from .policy import (
     workspace_root,
 )
 from .policy_modes import mode_for, refusal_message
+from .search import SearchQueryError, search_workspace
 from .tree import list_dir
 
 # The verdict's vocabulary, from the shared module the connectors use too. Bound

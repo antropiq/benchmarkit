@@ -7,6 +7,8 @@ import { TRASH_RETENTION_DAYS, useEditorFiles } from '../composables/useEditorFi
 import { useEditorCreate } from '../composables/useEditorCreate'
 import { useEditorRename } from '../composables/useEditorRename'
 import { useGitStatus } from '../composables/useGitStatus'
+import SearchDialog from './SearchDialog.vue'
+import { useWorkspaceSearch } from '../composables/useWorkspaceSearch'
 import { useBenchmark } from '../composables/useBenchmark'
 import { useEditorMode } from '../composables/useEditorMode'
 import { treeMenuItems } from '../lib/tree-menu'
@@ -98,6 +100,11 @@ const refreshing = computed(() => !!state.nodes[ROOT]?.loading)
 const canCollapse = computed(
   () => Object.keys(state.expanded).some((path) => path !== ROOT),
 )
+// The header's Search button follows the collapse button's shape: disabled when
+// there is nothing to act on. Its subject is the focused row, and `commandTarget()`
+// is a function that answers null when that row stopped existing — calling it from
+// the template would re-evaluate it on every render, so it is a computed here.
+const canSearch = computed(() => commandTarget() !== null)
 const rootTitle = computed(
   () =>
     `${state.workspace || 'workspace root'} — click to ${
@@ -200,12 +207,21 @@ watch(() => state.focused, scrollFocusedIntoView)
 //   * Copy relative path — the tree's paths are already workspace-relative, so
 //     the value goes straight to the clipboard. For the root that is the
 //     workspace's absolute path, the only thing a reader can act on.
+//   * Search… — every row, and this item only hands the row over: the query, the
+//     scope and the results belong to `useWorkspaceSearch`, and `lib/search-scope`
+//     turns the row into one of the three scopes (a folder's subtree, one file's
+//     content, the whole workspace).
 //
 // A row that offers nothing at all gets no menu — one useless item is worse than
-// no menu — which `openMenu` checks before it positions anything.
+// no menu — which `openMenu` checks before it positions anything. `scope: 'row'`
+// items are what decide that: Search is the floor every real row now has.
 const files = useEditorFiles()
 const creator = useEditorCreate()
 const renamer = useEditorRename()
+// Search raises the dialog (mounted at the end of this template) on the
+// navigator's own subject. The query, the scope and the results are the
+// composable's state, so this component only ever calls `openFor`.
+const search = useWorkspaceSearch()
 // `items` is the menu: the table's answer for the row that was clicked. Nothing
 // else about the row is remembered — the subject is the tree's focus, which
 // `openMenu` sets first, so `commandTarget()` is the same row for a menu item
@@ -280,6 +296,10 @@ const MENU_ACTIONS = {
   // EditorArea watches to open a buffer. A refused open (binary, over the cap)
   // is then the pane's answer, the same one a left-click gets.
   open: (target) => select(entryFor(target.path)),
+  // Search gets the whole row shape, not just its path: `lib/search-scope` is
+  // what tells a folder's subtree from one file's content from the whole
+  // workspace, and that answer needs `path` and `dir`.
+  search: (target) => search.openFor(target),
   'new-file': (target) => creator.startCreate(target.path, false),
   'new-folder': (target) => creator.startCreate(target.path, true),
   'view-diff': (target) => files.openDiff(target.path),
@@ -391,6 +411,26 @@ onBeforeUnmount(() => {
             <path d="M5 12h14" />
           </svg>
         </button>
+        <!-- Search, the same command as the menu item, on the row the tree is
+             about (§2.9). It is here rather than beside the tab strip because the
+             dialog's scope label needs the navigator's own subject, and this
+             button and `<SearchDialog />` below are the same pair for the same
+             reason. Enabled only when a row is focused — with no subject the
+             command declines, so the button says so first. -->
+        <button
+          class="icon-btn editor-nav-search"
+          type="button"
+          :disabled="!canSearch"
+          aria-label="Search inside the workspace"
+          title="Search inside this folder, this file, or the whole workspace"
+          @click="search.openFor(commandTarget())"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.6-3.6" />
+          </svg>
+        </button>
       </div>
     </div>
 
@@ -495,5 +535,14 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </Teleport>
+
+    <!-- The search dialog, mounted beside the header button and the menu item
+         that raise it (§2.9): both hand over the same `commandTarget()`, and a
+         component mounted next to the state it reads is the only way the scope
+         label can name the navigator's own subject without reaching into another
+         component. It is never removed from the DOM — the composable keeps its
+         answer, and the dialog's own watch reconciles `showModal()` with
+         `state.open`. -->
+    <SearchDialog />
   </aside>
 </template>

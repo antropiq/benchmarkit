@@ -33,6 +33,18 @@ const ITEMS = [
     title: 'Open this file in the editor',
     scope: 'file',
   },
+  // Search sits immediately after Open, in the group that answers "get at this
+  // thing": its buffer, its contents, its rendered form. `scope: 'row'` covers
+  // file, folder and root, and there is no `needs` flag — asking "where is this
+  // string?" is honest for every row, unlike Close (needs a buffer) or View
+  // diff… (needs a committed side). So a folder or the root, which have no Open,
+  // get Search as their *first* item rather than buried under New file…
+  {
+    id: 'search',
+    label: 'Search…',
+    title: 'Search inside this folder, this file, or the whole workspace',
+    scope: 'row',
+  },
   // Preview sits right after Open because it is the other answer to "show me
   // this file": same file, rendered instead of as a buffer. It needs its own
   // flag rather than being read off an open record — a tree row carries no

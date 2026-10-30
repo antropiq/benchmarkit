@@ -66,7 +66,7 @@ progress through it.
 | `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
 | `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
 | `core/agent_modes{,_defaults}.py` | The WorkBench modes: the read/validate/seed side of `.nojae/agent-modes.json`, and the seeded personas + the app-owned mode's rendered text. |
-| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call answering from the workspace policy's verdict. Reads are bounded; writes are refused by `ro`/`hidden` and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. |
+| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call answering from the workspace policy's verdict. Reads are bounded; writes are refused by `ro`/`hidden` and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. The Editor's search answers about the same set of paths the tree lists: a `hidden` folder is pruned and its bytes never quoted, `ro` is searched, and no count of policy-skipped files is reported — an observation of a hidden path is still indistinguishable from absence. |
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
 | `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |

@@ -414,11 +414,18 @@ describe('the menu table: exactly the items a row kind can honour', () => {
   const file = { ...retention, dir: false, isRoot: false, mutable: true }
 
   it('the root offers creating, listing and its own path — never mutating itself', () => {
-    expect(treeMenuItemIds(root)).toEqual(['new-file', 'new-folder', 'refresh', 'copy-path'])
+    expect(treeMenuItemIds(root)).toEqual([
+      'search',
+      'new-file',
+      'new-folder',
+      'refresh',
+      'copy-path',
+    ])
   })
 
   it('a folder offers creating, mutating, listing and its path', () => {
     expect(treeMenuItemIds(folder)).toEqual([
+      'search',
       'new-file',
       'new-folder',
       'rename',
@@ -429,7 +436,7 @@ describe('the menu table: exactly the items a row kind can honour', () => {
   })
 
   it('a file offers opening and its path, and nothing it cannot do', () => {
-    expect(treeMenuItemIds(file)).toEqual(['open', 'rename', 'delete', 'copy-path'])
+    expect(treeMenuItemIds(file)).toEqual(['open', 'search', 'rename', 'delete', 'copy-path'])
   })
 
   it('Preview only for a markdown row, between Open and View diff…', () => {
@@ -438,6 +445,7 @@ describe('the menu table: exactly the items a row kind can honour', () => {
     expect(treeMenuItemIds(file)).not.toContain('preview')
     expect(treeMenuItemIds({ ...file, isMarkdown: true })).toEqual([
       'open',
+      'search',
       'preview',
       'rename',
       'delete',
@@ -450,6 +458,7 @@ describe('the menu table: exactly the items a row kind can honour', () => {
     expect(treeMenuItemIds({ ...file, hasBuffer: true })).toContain('close')
     expect(treeMenuItemIds({ ...file, diffable: true, hasBuffer: true })).toEqual([
       'open',
+      'search',
       'view-diff',
       'rename',
       'delete',
@@ -460,6 +469,7 @@ describe('the menu table: exactly the items a row kind can honour', () => {
       treeMenuItemIds({ ...file, diffable: true, hasBuffer: true, isMarkdown: true }),
     ).toEqual([
       'open',
+      'search',
       'preview',
       'view-diff',
       'rename',
@@ -490,9 +500,12 @@ describe('the menu table: exactly the items a row kind can honour', () => {
   // The caller opens *no* menu when this answers with nothing (a menu of one
   // useless item is worse than no menu). No row of a real tree is in that case —
   // every kind has an honest minimum — but the table decides that, not a `v-if`,
-  // so a caller can always ask.
+  // so a caller can always ask. This shape (not a folder, but the root, so not
+  // mutable and with no Open) is the leanest one the table can be handed, and
+  // even it gets a menu: Search and Copy relative path are both honest for it.
   it('always has a floor, so no real row is left menu-less', () => {
     expect(treeMenuItemIds({ ...retention, dir: false, isRoot: true, mutable: false })).toEqual([
+      'search',
       'copy-path',
     ])
   })
