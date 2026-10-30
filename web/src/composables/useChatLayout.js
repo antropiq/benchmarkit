@@ -33,6 +33,28 @@ function loadCollapsed() {
   }
 }
 
+// Which of the two surfaces owns the screen. Three values on one axis, so
+// "both at once, screen empty" is not a state this composable can be in (D1):
+// the exclusivity lives in the type, not in a rule the CSS would have to keep.
+export const FOCUS_NORMAL = 'normal'
+export const FOCUS_REASONING = 'reasoning'
+export const FOCUS_CONVERSATION = 'conversation'
+const FOCUS_VALUES = [FOCUS_NORMAL, FOCUS_REASONING, FOCUS_CONVERSATION]
+
+// `conversation` is a furnishing preference, of the same order as the dock
+// fold, so it persists. `reasoning` deliberately does not (D4): reloading into
+// it would boot the app with no composer — a screen with no way to speak to
+// the model.
+const LEFT_HIDDEN_KEY = 'benchmarkit:chatLeftHidden'
+
+function loadLeftHidden() {
+  try {
+    return window.localStorage.getItem(LEFT_HIDDEN_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export function useChatLayout(leftColRef, rightColRef, inputRef, dockRef) {
   const column = useSplitter(leftColRef, dockRef, {
     storageKey: 'benchmarkit:chatToolsColumn',
@@ -63,5 +85,51 @@ export function useChatLayout(leftColRef, rightColRef, inputRef, dockRef) {
     },
   })
 
-  return { column, composer, dockCollapsed }
+  // One owner arbitrates the axis (D1). Shape: `view` holds only the
+  // non-persisted half ('normal' | 'reasoning'), and `conversation` is
+  // *derived* from the persisted flag — so no caller can observe `reasoning`
+  // and a hidden left column at the same time, and wf-03 sizes from `focus`.
+  const hidden = ref(loadLeftHidden())
+  const view = ref(FOCUS_NORMAL)
+  const focus = computed(() => (hidden.value ? FOCUS_CONVERSATION : view.value))
+
+  // Every change of the axis goes through this one setter: it moves the flag,
+  // moves `view`, and writes the flag through — so `toggleLeftHidden` is
+  // allowed to be a shortcut for it rather than a second decision.
+  function setFocus(next) {
+    if (!FOCUS_VALUES.includes(next)) return
+    hidden.value = next === FOCUS_CONVERSATION
+    view.value = next === FOCUS_REASONING ? FOCUS_REASONING : FOCUS_NORMAL
+    try {
+      window.localStorage.setItem(LEFT_HIDDEN_KEY, hidden.value ? '1' : '0')
+    } catch {
+      // Storage disabled: the layout still works for the session.
+    }
+  }
+
+  // The control's own gesture: a second click on it restores, and from
+  // `conversation` it uncovers the column and maximises in the same step —
+  // the reasoning panel is not on screen while the column is out of the flow.
+  function toggleFocus() {
+    setFocus(focus.value === FOCUS_REASONING ? FOCUS_NORMAL : FOCUS_REASONING)
+  }
+
+  function toggleLeftHidden() {
+    setFocus(hidden.value ? FOCUS_NORMAL : FOCUS_CONVERSATION)
+  }
+
+  // Read-only on purpose: writing the flag directly would bypass the
+  // arbitration above and could persist a state the axis cannot represent.
+  const leftHidden = computed(() => hidden.value)
+
+  return {
+    column,
+    composer,
+    dockCollapsed,
+    focus,
+    setFocus,
+    toggleFocus,
+    leftHidden,
+    toggleLeftHidden,
+  }
 }
