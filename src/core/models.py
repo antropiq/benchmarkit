@@ -85,7 +85,7 @@ class EndpointsConfig(SamplingParams):
 
         Recognized keys: ``SERVER_URL``, ``SERVER_URL_API_KEY``,
         ``ENDPOINT``, ``LLM_SYSPROMPT``,
-        ``TEMP``, ``TOP_P``, ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``,
+        ``TEMPERATURE``, ``TOP_P``, ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``,
         ``PRESENCE_PENALTY``, ``REASONING``, ``SUPPORTS_VISION`` and the
         ``VERIFIER_AGENT_*`` block (``SYSPROMPT``, ``SERVERURL``,
         ``SERVERURL_API_KEY``, ``ENDPOINT``).
@@ -103,7 +103,7 @@ class EndpointsConfig(SamplingParams):
             "apiKey": get("SERVER_URL_API_KEY") or "",
             "endpoint": get("ENDPOINT"),
             "sysprompt": get("LLM_SYSPROMPT") or DEFAULT_LLM_SYSPROMPT,
-            "temp": get("TEMP"),
+            "temp": get("TEMPERATURE"),
             "top-p": get("TOP_P"),
             "top-k": get("TOP_K"),
             "min-p": get("MIN_P"),

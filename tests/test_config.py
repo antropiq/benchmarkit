@@ -27,7 +27,7 @@ from src.config import (
 class TestLoadEndpointsConfig:
     def test_valid_env_builds_config(self, monkeypatch: pytest.MonkeyPatch):
         for key in (
-            "SERVER_URL", "SERVER_URL_API_KEY", "ENDPOINT", "TEMP",
+            "SERVER_URL", "SERVER_URL_API_KEY", "ENDPOINT", "TEMPERATURE",
             "TOP_P", "TOP_K", "MIN_P", "REPEAT_PENALTY", "PRESENCE_PENALTY",
             "REASONING", "VERIFIER_AGENT_SYSPROMPT", "VERIFIER_AGENT_SERVERURL",
             "VERIFIER_AGENT_SERVERURL_API_KEY", "VERIFIER_AGENT_ENDPOINT",
@@ -35,7 +35,7 @@ class TestLoadEndpointsConfig:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("SERVER_URL", "http://localhost:8080/v1")
         monkeypatch.setenv("ENDPOINT", "model-a")
-        monkeypatch.setenv("TEMP", "0.7")
+        monkeypatch.setenv("TEMPERATURE", "0.7")
         monkeypatch.setenv("VERIFIER_AGENT_ENDPOINT", "judge")
 
         config, error = load_endpoints_config()
@@ -63,7 +63,7 @@ class TestLoadEndpointsConfig:
     def test_invalid_env_returns_validation_error(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setenv("TEMP", "not-a-number")
+        monkeypatch.setenv("TEMPERATURE", "not-a-number")
         config, error = load_endpoints_config()
         assert config is None
         assert error is not None

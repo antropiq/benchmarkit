@@ -382,7 +382,7 @@ class TestMcpEnvHelpers:
 
 class TestConnectorEnvironment:
     def test_relative_temp_vars_never_reach_the_connector(self, tmp_path):
-        # The sampling parameter TEMP=1 from .env must not be taken by the
+        # A relative TEMP=1 in the environment must not be taken by the
         # Node playwright driver as its temp directory (ENOENT mkdtemp '1/…').
         env = connector_environment(
             tmp_path, {"TEMP": "1", "TMP": "rel", "TMPDIR": "/var/tmp"}

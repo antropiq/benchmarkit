@@ -155,7 +155,7 @@ class TestFromEnv:
         cfg = EndpointsConfig.from_env({
             "SERVER_URL": "http://host:8080/v1",
             "ENDPOINT": "model-a",
-            "TEMP": "0.2",
+            "TEMPERATURE": "0.2",
             "TOP_P": "0.95",
             "TOP_K": "20",
             "MIN_P": "0",

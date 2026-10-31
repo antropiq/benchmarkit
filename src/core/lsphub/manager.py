@@ -192,7 +192,7 @@ class LspManager:
 
     def _environment(self, info: Dict[str, Any]) -> Dict[str, str]:
         """Spawn environment: ``connector_environment`` pins a valid TMPDIR
-        (the app's ``TEMP`` sampling variable would otherwise break Node),
+        (a relative ``TMPDIR``/``TMP``/``TEMP`` would otherwise break Node),
         then the entry's own ``env`` overrides (volta shims need a PATH that
         resolves ``node``)."""
         env = connector_environment(self._project_root)

@@ -393,14 +393,14 @@ class TestSettingsEndpoint:
     def test_save_removes_emptied_optional_key(self, client, monkeypatch):
         from src import config as config_module
 
-        monkeypatch.setenv("TEMP", "0.5")
+        monkeypatch.setenv("TEMPERATURE", "0.5")
         response = client.post("/api/settings", json=self._payload(temp=""))
         assert response.status_code == 200
         import os
 
-        assert "TEMP" not in os.environ
+        assert "TEMPERATURE" not in os.environ
         text = config_module.ENV_PATH.read_text(encoding="utf-8")
-        assert "#TEMP=" in text
+        assert "#TEMPERATURE=" in text
 
     def test_save_normalizes_supports_vision(self, client):
         import os
@@ -511,7 +511,7 @@ class TestSettingsEndpoint:
         }
         response = client.post("/api/settings", json=payload)
         assert response.status_code == 200
-        assert os.environ["TEMP"] == "0.2"
+        assert os.environ["TEMPERATURE"] == "0.2"
         assert os.environ["TOP_K"] == "20"
         assert "TOP_P" not in os.environ
         assert os.environ["ENDPOINT"] == "model-a"

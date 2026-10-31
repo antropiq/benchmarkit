@@ -15,11 +15,11 @@ def connector_environment(project_root: Path, base_env: Optional[Dict[str, str]]
     """Environment for a connector subprocess.
 
     Adds the project root to ``PYTHONPATH`` so ``mcp_connectors`` imports,
-    and pins a valid ``TMPDIR``: benchmarkit's sampling parameter ``TEMP``
-    lands in the process environment from ``.env``, and Node's
-    ``os.tmpdir()`` (the playwright driver) falls back to ``TMPDIR``/``TMP``/
-    ``TEMP`` — a sampling value like ``TEMP=1`` would otherwise be taken as
-    a relative temp directory and break browser launches.
+    and pins a valid ``TMPDIR``: Node's ``os.tmpdir()`` (the playwright
+    driver) falls back to ``TMPDIR``/``TMP``/``TEMP``, so a relative value
+    in any of them — e.g. the Windows-style ``TEMP`` carried by an ambient
+    environment — would otherwise be taken as a relative temp directory
+    and break browser launches.
     """
     env = dict(os.environ if base_env is None else base_env)
     env["PYTHONPATH"] = os.pathsep.join(

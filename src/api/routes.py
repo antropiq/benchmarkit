@@ -472,7 +472,7 @@ SETTINGS_ENV_KEYS: Dict[str, str] = {
     "apiKey": "SERVER_URL_API_KEY",
     "endpoint": "ENDPOINT",
     "sysprompt": "LLM_SYSPROMPT",
-    "temp": "TEMP",
+    "temp": "TEMPERATURE",
     "topP": "TOP_P",
     "topK": "TOP_K",
     "minP": "MIN_P",
