@@ -1290,6 +1290,7 @@ body {
    one panel's width — the timeline and the dock both just fill the column. */
 .chat-col--left {
   flex: 0 0 var(--bi-chat-tools-col-width);
+  gap: 0px;
 }
 
 .chat-col--left.chat-col--single {
@@ -1298,6 +1299,7 @@ body {
 
 .chat-col--right {
   flex: 1 1 auto;
+  gap: 0px;
 }
 
 /* The two focalisation controls, in a third flex item between the columns
@@ -1558,7 +1560,7 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
   padding: 0;
 }
 
