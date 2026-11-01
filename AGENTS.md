@@ -66,6 +66,7 @@ progress through it.
 | `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
 | `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
 | `core/agent_modes{,_defaults}.py` | The WorkBench modes: the read/validate/seed side of `.nojae/agent-modes.json`, and the seeded personas + the app-owned mode's rendered text. |
+| `core/prompt_helpers.py` | The workspace's nine prompt-helper slots (the WorkBench bullets): read, save, seed, and the one-time lift from the legacy app-level file. |
 | `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call answering from the workspace policy's verdict. Reads are bounded; writes are refused by `ro`/`hidden` and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. The Editor's search answers about the same set of paths the tree lists: a `hidden` folder is pruned and its bytes never quoted, `ro` is searched, and no count of policy-skipped files is reported — an observation of a hidden path is still indistinguishable from absence. |
 | `core/models.py` | Pydantic config models, built from env. |
 | `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
@@ -132,11 +133,10 @@ Measurement rules hold across every stream:
 | `.env` | Run configuration: endpoint, key, prompt, sampling, set, verifier. |
 | `.env.test` | e2e-only endpoint, same key set as `.env.example`. |
 | `resources/<set>.json` | Question sets — `{uuid, question, expected}`. |
-| `resources/memory_registration.json` | WorkBench memory-bullet slots (fixed, self-healing). |
 | `results.json` | Run output, written once when a run ends. |
 | `mcp_connectors/externals.json` | MCP connectors: `remote` (HTTP) or `local` (stdio). |
 | `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
-| `<working location>/.nojae/` | The workspace's reserved folder. Its two files — `read-write-policy.json` (per-workspace read/write rules) and `agent-modes.json` (the WorkBench personas) — follow one rule: seeded by exclusive create when a folder becomes the working location, then edited only outside the app. `trash/` holds the dated batches the Editor's deletes move. |
+| `<working location>/.nojae/` | The workspace's reserved folder. Its files follow one shared seeding rule and split on who edits them after: `read-write-policy.json` and `agent-modes.json` are seeded by exclusive create when a folder becomes the working location, then edited only outside the app; `prompt-helpers.json` is seeded the same way and is the app's own store, written by the WorkBench bullet picker. `trash/` holds the dated batches the Editor's deletes move. |
 
 Any new file in `resources/` becomes a selectable set. The `.env`, `.env.test`
 and the hub declaration files are gitignored, may hold secrets, and each has a
@@ -164,12 +164,13 @@ has no template — it is written by the seeding code. These rules tie them toge
   invalidates them all at once: the Editor's tree re-roots (cached listings,
   branches and selection are forgotten, not re-listed) and every tab of the root
   it leaves closes, unsaved edits reported rather than negotiated with.
-- **A targeted workspace gets its two `.nojae` files** (the read-write policy
-  and the agent modes) — seeded with a default at the two moments a folder
-  becomes the working location (boot, and the settings switch), by exclusive
-  create so an edited file is never clobbered. Seeding failure is a note, never
-  a refused switch. The folder is **reserved by code**: hidden from the tree,
-  the read and git status, and it is edited only outside the app.
+- **A targeted workspace gets its `.nojae` files** (the read-write policy, the
+  agent modes and the prompt helpers) — seeded with a default at the moments a
+  folder becomes the working location (boot, and the settings switch), by
+  exclusive create so an edited file is never clobbered. Seeding failure is a
+  note, never a refused switch. The folder is **reserved by code**: hidden from
+  the tree, the read and git status, and hand-edited only outside the app — the
+  one file the app itself writes is the prompt-helper store behind the bullets.
 - **Path rules come from two levels, one verdict.** Level A is the app's own
   rules about files it writes (`**/.env**`, `logs/**`), live only while the
   working location *is* the install dir — so another project's `.env` is an

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import { useChat } from '../composables/useChat'
-import { MEMORY_DEFAULT_COLOR, useMemory } from '../composables/useMemory'
+import { PROMPT_HELPER_DEFAULT_COLOR, usePromptHelpers } from '../composables/usePromptHelpers'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -9,28 +9,28 @@ const props = defineProps({
 })
 const emit = defineEmits(['close'])
 
-const { state: memory, saveMemory } = useMemory()
+const { state, savePromptHelper } = usePromptHelpers()
 const { appendDraft } = useChat()
 
 const dialogEl = ref(null)
 const content = ref('')
-const color = ref(MEMORY_DEFAULT_COLOR)
+const color = ref(PROMPT_HELPER_DEFAULT_COLOR)
 const error = ref('')
 
-const busy = computed(() => memory.saving)
+const busy = computed(() => state.saving)
 
 // Prefill from the slot and show, following the SettingsDialog pattern
 // (watch + showModal, backdrop click, native-close sync).
 watch(
-  () => [props.open, props.index, memory.registration],
+  () => [props.open, props.index, state.slots],
   async () => {
     await nextTick()
     const dialog = dialogEl.value
     if (!dialog) return
     if (props.open && props.index !== null && !dialog.open) {
-      const slot = memory.registration[props.index]
+      const slot = state.slots[props.index]
       content.value = slot?.content ?? ''
-      color.value = slot?.color ?? MEMORY_DEFAULT_COLOR
+      color.value = slot?.color ?? PROMPT_HELPER_DEFAULT_COLOR
       error.value = ''
       dialog.showModal()
     } else if (!props.open && dialog.open) {
@@ -50,12 +50,12 @@ function onNativeClose() {
 }
 
 async function save() {
-  if (props.index === null || memory.saving) return
+  if (props.index === null || state.saving) return
   error.value = ''
   const saved = content.value
-  const ok = await saveMemory(props.index, color.value, saved)
+  const ok = await savePromptHelper(props.index, color.value, saved)
   if (!ok) {
-    error.value = memory.error || 'Could not save the memory bullet.'
+    error.value = state.error || 'Could not save the memory bullet.'
     return
   }
   dialogEl.value?.close()

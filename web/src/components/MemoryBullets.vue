@@ -1,11 +1,15 @@
 <script setup>
 import { useChat } from '../composables/useChat'
 import { useBatch } from '../composables/useBatch'
-import { MEMORY_DEFAULT_COLOR, MEMORY_SLOT_COUNT, useMemory } from '../composables/useMemory'
+import {
+  PROMPT_HELPER_DEFAULT_COLOR,
+  PROMPT_HELPER_SLOT_COUNT,
+  usePromptHelpers,
+} from '../composables/usePromptHelpers'
 
 const emit = defineEmits(['configure'])
 
-const { state: memory } = useMemory()
+const { state } = usePromptHelpers()
 const { appendDraft } = useChat()
 const { state: batch } = useBatch()
 
@@ -13,7 +17,7 @@ const { state: batch } = useBatch()
 const TOOLTIP_MAX_CHARS = 150
 
 function slot(index) {
-  return memory.registration[index] ?? { color: MEMORY_DEFAULT_COLOR, content: '' }
+  return state.slots[index] ?? { color: PROMPT_HELPER_DEFAULT_COLOR, content: '' }
 }
 
 // An empty slot always renders default gray; the stored color is kept but
@@ -34,7 +38,7 @@ function textColor(color) {
 }
 
 function bulletStyle(data) {
-  const background = isFilled(data) ? data.color : MEMORY_DEFAULT_COLOR
+  const background = isFilled(data) ? data.color : PROMPT_HELPER_DEFAULT_COLOR
   return { background, color: textColor(background) }
 }
 
@@ -61,7 +65,7 @@ function onClick(event, index) {
 <template>
   <div class="memory-bullets" role="group" aria-label="Memory bullets">
     <button
-      v-for="n in MEMORY_SLOT_COUNT"
+      v-for="n in PROMPT_HELPER_SLOT_COUNT"
       :key="n"
       type="button"
       class="memory-bullet"

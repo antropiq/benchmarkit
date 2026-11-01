@@ -34,6 +34,7 @@ from src.core import agent_modes
 from src.core import agent_modes_defaults as defaults
 from src.core.editorfs import constants as editorfs_constants
 from src.core.editorfs import policy_file, policy_seed
+from src.core import prompt_helpers
 
 
 @pytest.fixture
@@ -329,7 +330,8 @@ class TestTheEndpoints:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         """The first of am-03's two entry points: a brand-new workspace opened
-        at boot ends up with exactly the two files and no other change."""
+        at boot ends up with exactly the files of the reserved folder — the
+        policy, the modes, and (mbl-02) the prompt helpers — and nothing else."""
         target = tmp_path / "booted-project"
         target.mkdir()
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(target))
@@ -340,10 +342,14 @@ class TestTheEndpoints:
             folder / editorfs_constants.POLICY_FILENAME
         )
         assert (folder / editorfs_constants.POLICY_FILENAME).is_file()
+        assert (
+            folder / prompt_helpers.PROMPT_HELPERS_FILENAME
+        ).is_file()
         assert sorted(name.name for name in folder.iterdir()) == sorted(
             [
                 editorfs_constants.POLICY_FILENAME,
                 agent_modes.AGENT_MODES_FILENAME,
+                prompt_helpers.PROMPT_HELPERS_FILENAME,
             ]
         )
         assert sorted(os.listdir(target)) == sorted(

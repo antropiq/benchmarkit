@@ -81,11 +81,13 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
 
   await setRoot(page, scratchAbs)
 
-  // am-03's acceptance, on the real switch and the real disk: a brand-new
-  // workspace ends up with exactly the two reserved-folder files — the policy
-  // pol-05 seeds and the agent-modes file am-03 seeds — and nothing else.
+  // The acceptance for the reserved folder's seeding, on the real switch and the
+  // real disk: a brand-new workspace ends up with exactly the three files the
+  // app seeds there — the policy (pol-05), the agent-modes file (am-03) and the
+  // prompt-helpers file (mbl-02/mbl-03) — and nothing else.
   expect(fs.readdirSync(path.join(scratchAbs, '.nojae')).sort()).toEqual([
     'agent-modes.json',
+    'prompt-helpers.json',
     'read-write-policy.json',
   ])
   // And the seeded file is a real document, not a stub: the personas the loader
@@ -119,6 +121,91 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   await expect(page.locator('.tree-row[data-path="e2e-ws-root"]')).toBeVisible()
   await expect(page.locator('.tree-row[data-path="logs"]')).toHaveCount(0)
   await expect(page.locator('.tree-row[data-path=".nojae"]')).toHaveCount(0)
+})
+
+// The nine prompt helpers behind the WorkBench bullets belong to the workspace,
+// so a switch has to replace what the row shows — without the user leaving the
+// chat tab and coming back, which until this feature was the row's only other
+// fetch. The scratch root is given its own helper through the app's writer
+// (`POST /api/prompt-helpers`, which can only address the active workspace) and
+// the row is then re-read on a *later* switch back into that root, the tab never
+// left in between: the only thing that can put that text on screen is the
+// reload `setPathLocation()` triggers.
+//
+// The boot root's own file is only ever read here, never written — its bytes are
+// compared at the end, so the test shows the write landed in the workspace it
+// was pointed at. No LLM call either: the bullet row is fetched, not generated.
+test('a switch replaces the prompt-helper bullets the composer offers', async ({
+  page,
+  request,
+}) => {
+  const original = await currentRoot(request)
+  bootRoot = original
+  expect((await create(request, SCRATCH, true)).ok()).toBe(true)
+  const scratchAbs = `${original}/${SCRATCH}`
+  const bootHelpers = path.join(original, '.nojae', 'prompt-helpers.json')
+  // Read from outside the app, because the folder is reserved: no Editor route
+  // can see it, which is the point of mbl-06.
+  const bootBytes = fs.existsSync(bootHelpers) ? fs.readFileSync(bootHelpers, 'utf8') : null
+
+  // Open WorkBench and wait for the row's own first fetch, so what is read next
+  // is the boot root's file and not the composable's nine-empty fallback.
+  await page.goto('/')
+  const firstLoad = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/api/prompt-helpers',
+  )
+  await page.getByRole('tab', { name: 'WorkBench' }).click()
+  await firstLoad
+
+  const bullets = page.locator('.chat-bullet-row .memory-bullet')
+  await expect(bullets).toHaveCount(9)
+  // A filled bullet carries its text in `title` and an empty one has no title at
+  // all, which is how the row is read without reaching into the composable.
+  const titles = () => bullets.evaluateAll((els) => els.map((el) => el.getAttribute('title')))
+  const bootTitles = await titles()
+
+  await setRoot(page, scratchAbs)
+
+  // One recognisable helper, written by the app's own writer while the scratch
+  // root is the active workspace (`POST /api/prompt-helpers` can only address
+  // that workspace, which is the whole point of the move).
+  const sentinel = 'the scratch workspace says hello'
+  const res = await request.post('/api/prompt-helpers', {
+    data: { index: 0, color: '#2ec27e', content: sentinel },
+  })
+  expect(res.ok(), await res.text()).toBe(true)
+  // It landed in *that* workspace's reserved folder...
+  const stored = JSON.parse(
+    fs.readFileSync(path.join(scratchAbs, '.nojae', 'prompt-helpers.json'), 'utf8'),
+  )
+  expect(stored.helpers[0].content).toBe(sentinel)
+  // ...and not in the boot root's file at all.
+  if (bootBytes !== null) {
+    expect(fs.readFileSync(bootHelpers, 'utf8')).toBe(bootBytes)
+  }
+  // And a write from outside the page is no reason for the screen to change:
+  // only the switch itself reloads the row.
+  await expect(page.locator(`.memory-bullet[title="${sentinel}"]`)).toHaveCount(0)
+
+  // Away and back into that root, the tab never left: its own helper is on
+  // screen, which only the reload a switch triggers can put there.
+  const reloaded = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/api/prompt-helpers',
+  )
+  await setRoot(page, original)
+  await reloaded
+  const backToScratch = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/api/prompt-helpers',
+  )
+  await setRoot(page, scratchAbs)
+  await backToScratch
+  await expect(page.locator(`.memory-bullet[title="${sentinel}"]`)).toHaveCount(1)
+
+  await setRoot(page, original)
+  await expect(page.locator(`.memory-bullet[title="${sentinel}"]`)).toHaveCount(0)
+  await expect
+    .poll(async () => (await titles()).join('\n'))
+    .toBe(bootTitles.join('\n'))
 })
 
 // The other half of "one value moves everything": the trash moves with the

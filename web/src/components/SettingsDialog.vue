@@ -1,7 +1,11 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
 import ApiKeyField from './ApiKeyField.vue'
-import { describeAgentModes, describePolicy } from '../lib/path-location-policy'
+import {
+  describeAgentModes,
+  describePolicy,
+  describePromptHelpers,
+} from '../lib/path-location-policy'
 import { useBenchmark } from '../composables/useBenchmark'
 
 const {
@@ -53,13 +57,24 @@ const agentModesSentence = computed(
   () => describeAgentModes(state.pathLocationAgentModes)?.text ?? '',
 )
 
-// One warning line per switch, not one per file: the two reserved-folder seeds
-// (pol-05's policy, am-03's modes) fail independently, but they are the outcome
-// of the *same* action, so the dialog joins whatever failed into a single
-// status paragraph. A modes-only failure still reads as "the location is set,
-// one file did not land" — never as a red switch.
+// The same pair for the prompt-helper file mbl-02 seeds in that folder: a
+// caption for what the file is, a warn line when the seed failed or when the
+// one-time lift of the older app-level file could not happen.
+const promptHelpersSentence = computed(
+  () => describePromptHelpers(state.pathLocationPromptHelpers)?.text ?? '',
+)
+
+// One warning line per switch, not one per file: the reserved-folder seeds
+// (pol-05's policy, am-03's modes, mbl-02's helpers) fail independently, but
+// they are the outcome of the *same* action, so the dialog joins whatever
+// failed into a single status paragraph. A helpers-only failure still reads as
+// "the location is set, one file did not land" — never as a red switch.
 const seedFailureNote = computed(() =>
-  [state.pathLocationPolicyNote, state.pathLocationAgentModesNote]
+  [
+    state.pathLocationPolicyNote,
+    state.pathLocationAgentModesNote,
+    state.pathLocationPromptHelpersNote,
+  ]
     .filter(Boolean)
     .join(' '),
 )
@@ -212,11 +227,12 @@ function serverDetail(server) {
                  and reports what happened. A seed that could not happen is a
                  note, not an error — the location *is* set and both hubs
                  restarted; only that project's tree stays unfiltered. -->
-            <!-- And the agent-modes file (am-03) in the same folder, reported in
-                 the same shape. The two seeds fail independently but belong to
-                 one action, so the warnings are joined into a single status
-                 line, and each file's own caption still appears unless its own
-                 seed is the one being shouted about. -->
+            <!-- And the agent-modes file (am-03) and the prompt-helper file
+                 (mbl-02) in the same folder, reported in the same shape. The
+                 seeds fail independently but belong to one action, so the
+                 warnings are joined into a single status line, and each file's
+                 own caption still appears unless its own seed is the one being
+                 shouted about. -->
             <p
               v-if="seedFailureNote"
               class="path-location-policy-note path-location-policy-note--warn"
@@ -235,6 +251,15 @@ function serverDetail(server) {
               class="caption path-location-policy-note"
             >
               {{ agentModesSentence }}
+            </p>
+            <p
+              v-if="
+                state.pathLocationPromptHelpers &&
+                !state.pathLocationPromptHelpersNote
+              "
+              class="caption path-location-policy-note"
+            >
+              {{ promptHelpersSentence }}
             </p>
           </section>
 

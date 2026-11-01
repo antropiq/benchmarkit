@@ -25,6 +25,7 @@ from src.core.lsphub import LspManager, all_servers
 from src.core.editorfs import mutate as editorfs_mutate, policy_seed
 from src.core.termhub import TerminalHub
 from src.core import agent_modes
+from src.core import prompt_helpers
 from src.config import lsp_enabled_ids
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
@@ -73,6 +74,34 @@ def _seed_agent_modes() -> Dict[str, Any]:
     if result["state"] == "failed":
         _log.warning(
             "could not seed the agent-modes file at %s: %s",
+            result["path"],
+            result["error"],
+        )
+    return result
+
+
+def _seed_prompt_helpers() -> Dict[str, Any]:
+    """Leave the workspace's default prompt-helpers file behind; never raise.
+
+    mbl-02's first of two entry points, the third sibling of the policy and
+    modes seeds and the same contract: ``ensure_prompt_helpers_file`` already
+    answers a dict instead of raising, so this wrapper only guards the
+    *unexpected*, and a helpers file this app could not write must not take the
+    boot down with it. An unseeded workspace chats on nine empty bullets —
+    :func:`load_prompt_helpers` answers the defaults for an absent file.
+
+    This is also the one moment the old app-level ``resources/`` file is read
+    (spec D6): the lift happens on the branch where the file was just created,
+    and the legacy file itself is left in place.
+    """
+    try:
+        result = prompt_helpers.ensure_prompt_helpers_file(path_location())
+    except Exception as exc:  # noqa: BLE001 — boot must survive anything here
+        _log.warning("could not seed the prompt-helpers file: %s", exc)
+        return {"state": "failed", "path": None, "error": str(exc)}
+    if result["state"] == "failed":
+        _log.warning(
+            "could not seed the prompt-helpers file at %s: %s",
             result["path"],
             result["error"],
         )
@@ -142,6 +171,15 @@ def create_app() -> FastAPI:
     # the log (and, on the switch, in the payload), never a boot failure: a
     # workspace with no modes file chats on the built-in defaults.
     _seed_agent_modes()
+    # The prompt-helpers file follows the same rule and the same two moments:
+    # same reserved folder, so this runs after the seeds that create it and is a
+    # plain file write in the usual case. Failure is a note in the log (and, on
+    # the switch, in the payload), never a boot failure — a workspace with no
+    # helpers file chats on nine empty bullets. It is *not* called from
+    # ``config.path_location()`` (spec D5): that is a per-request reader, and a
+    # reader that writes is how a stray ``.nojae`` turns up in a project someone
+    # only meant to browse; ``POST /api/path-location`` is the other moment.
+    _seed_prompt_helpers()
     # And drain the trash of whichever location that is, plus the legacy
     # ``logs/trash`` batches the pre-``.nojae`` code wrote here. Age is the only
     # signal for a batch nobody addresses any more, and a boot is the one moment

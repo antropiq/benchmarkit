@@ -1,7 +1,12 @@
 import { reactive } from 'vue'
 import { renderMarkdown } from '../lib/markdown'
-import { describeAgentModes, describePolicy } from '../lib/path-location-policy'
+import {
+  describeAgentModes,
+  describePolicy,
+  describePromptHelpers,
+} from '../lib/path-location-policy'
 import { loadAgentModes } from './useAgentModes'
+import { usePromptHelpers } from './usePromptHelpers'
 import { loadChatLsp, loadChatMcp } from './useChat'
 import { useWorkspaceTree } from './useWorkspaceTree'
 
@@ -94,6 +99,16 @@ const state = reactive({
   // alarm at all.
   pathLocationAgentModes: null,
   pathLocationAgentModesNote: null,
+  // The third file of the reserved folder (mbl-02): the workspace's prompt
+  // helpers, the nine prompts behind the bullets above the composer. Reported
+  // in the same shape under ``promptHelpers``, plus two states of its own from
+  // the one-time lift of the old app-level file (``migrated`` /
+  // ``migration-skipped``, spec D6) — the second of those is a ``warn`` the
+  // user has to act on. Unlike its two neighbours this file is the app's own
+  // store, so the sentence is about the bullets, and the bullets themselves are
+  // reloaded on a switch (``usePromptHelpers``), not just described here.
+  pathLocationPromptHelpers: null,
+  pathLocationPromptHelpersNote: null,
 })
 
 let eventSource = null
@@ -504,6 +519,8 @@ export function useBenchmark() {
       state.pathLocationPolicyNote = null
       state.pathLocationAgentModes = null
       state.pathLocationAgentModesNote = null
+      state.pathLocationPromptHelpers = null
+      state.pathLocationPromptHelpersNote = null
       refreshModelLists()
       loadQuestionSets()
       loadMcp()
@@ -830,6 +847,15 @@ export function useBenchmark() {
       const describedModes = describeAgentModes(body.agentModes)
       state.pathLocationAgentModesNote =
         describedModes && describedModes.tone === 'warn' ? describedModes.text : null
+      // And the helpers block (mbl-02) — read-only here as well, so ``absent``
+      // is the ordinary answer for a project that was never switched into, and
+      // the dialog's caption still has to say what the bullets are.
+      state.pathLocationPromptHelpers = body.promptHelpers || null
+      const describedHelpers = describePromptHelpers(body.promptHelpers)
+      state.pathLocationPromptHelpersNote =
+        describedHelpers && describedHelpers.tone === 'warn'
+          ? describedHelpers.text
+          : null
     } catch (exc) {
       state.pathLocationError = `Could not reach the API: ${exc}`
     } finally {
@@ -848,6 +874,7 @@ export function useBenchmark() {
     state.pathLocationError = null
     state.pathLocationPolicyNote = null
     state.pathLocationAgentModesNote = null
+    state.pathLocationPromptHelpersNote = null
     try {
       const res = await fetch('/api/path-location', {
         method: 'POST',
@@ -882,6 +909,15 @@ export function useBenchmark() {
       const describedModes = describeAgentModes(body.agentModes)
       state.pathLocationAgentModesNote =
         describedModes && describedModes.tone === 'warn' ? describedModes.text : null
+      // mbl-02: the third seed of the reserved folder, same tone rule again —
+      // and its two extra states mean a ``migration-skipped`` lift is one more
+      // line the user has to act on, still never a red "the switch failed".
+      state.pathLocationPromptHelpers = body.promptHelpers || null
+      const describedHelpers = describePromptHelpers(body.promptHelpers)
+      state.pathLocationPromptHelpersNote =
+        describedHelpers && describedHelpers.tone === 'warn'
+          ? describedHelpers.text
+          : null
       // The hubs just restarted: refresh both panels so the tool lists and
       // status dots show the new location.
       if (body.mcp) {
@@ -910,6 +946,13 @@ export function useBenchmark() {
       // `agentMode` in the payload), so it needs no note here — the one above
       // is about the *file being seeded*, which this endpoint just reported.
       loadAgentModes({ reseed: true })
+      // The prompt helpers belong to the workspace just activated too (spec
+      // D8): the bullet row is the only workspace state that used to survive a
+      // switch by accident, because nothing here reloaded it and the row only
+      // fetches when the chat tab mounts. Same un-awaited pattern as the two
+      // hub reloads above — the fetch is the composable's own quiet failure
+      // (its state stays nine slots plus its own error), not this save's.
+      usePromptHelpers().loadPromptHelpers()
       // The Editor tab's tree browses this location, so the whole workspace-
       // relative view of the app moves here: the tree forgets the listings it
       // cached under the old root and re-roots, and the tabs that held files of

@@ -83,12 +83,6 @@ BUILTIN_RULES: Tuple[Tuple[str, str, str], ...] = (
     # Build output: worth looking at, never worth hand-editing, and
     # ``npm run build`` overwrites whatever is there.
     ("web/dist/**", shared.READ_ONLY, "vite build output"),
-    # The memory-bullet slots the app rewrites when they drift.
-    (
-        "resources/memory_registration.json",
-        shared.READ_ONLY,
-        "fixed and self-healing, not a file to hand-edit",
-    ),
 )
 
 

@@ -19,16 +19,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from src.api.events import EventBus, sse_format
 from src.config import (
-    MEMORY_COLOR_RE,
-    MEMORY_CONTENT_MAX_CHARS,
-    MEMORY_DEFAULT_COLOR,
-    MEMORY_SLOT_COUNT,
     QUESTION_SET_DEFAULT,
     PATH_LOCATION_KEY,
     agent_instructions_block,
     list_question_sets,
     load_endpoints_config,
-    load_memory_registrations,
     load_questions,
     load_settings,
     max_tool_iteration,
@@ -36,7 +31,6 @@ from src.config import (
     path_location,
     normalize_env_flag,
     default_path_location,
-    save_memory_registration,
     save_settings,
     questions_path,
 )
@@ -45,6 +39,7 @@ from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
 from src.core import editorfs
 from src.core.editorfs import policy_seed
 from src.core import agent_modes
+from src.core import prompt_helpers
 from src.core import termhub
 from src.core.termhub import policy as term_policy
 from src.core.bench import run_benchmark
@@ -124,33 +119,35 @@ class PathLocationIn(SettingsFieldsMixin):
     path: str = ""
 
 
-class MemorySlotIn(BaseModel):
-    """One memory-bullet slot as sent by the registration dialog.
+class PromptHelperSlotIn(BaseModel):
+    """One prompt-helper bullet as sent by the slot dialog.
 
-    ``index`` addresses one of the fixed slots (the file always holds exactly
-    ``MEMORY_SLOT_COUNT``, so there is nothing to create or delete); saving
-    empty ``content`` clears the slot.
+    ``index`` addresses one of the fixed slots (this workspace's
+    ``.nojae/prompt-helpers.json`` always holds exactly
+    ``prompt_helpers.SLOT_COUNT``, so there is nothing to create or delete);
+    saving empty ``content`` clears the slot.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    index: int = Field(ge=0, le=MEMORY_SLOT_COUNT - 1)
-    color: str = MEMORY_DEFAULT_COLOR
+    index: int = Field(ge=0, le=prompt_helpers.SLOT_COUNT - 1)
+    color: str = prompt_helpers.DEFAULT_COLOR
     content: str = ""
 
     @field_validator("color")
     @classmethod
     def _require_hex_color(cls, value: str) -> str:
-        if not MEMORY_COLOR_RE.match(value):
+        if not prompt_helpers.COLOR_RE.match(value):
             raise ValueError("color must be a 6-digit hex color (e.g. #808080)")
         return value
 
     @field_validator("content")
     @classmethod
     def _cap_content(cls, value: str) -> str:
-        if len(value) > MEMORY_CONTENT_MAX_CHARS:
+        if len(value) > prompt_helpers.CONTENT_MAX_CHARS:
             raise ValueError(
-                f"content exceeds the {MEMORY_CONTENT_MAX_CHARS} character cap"
+                f"content exceeds the {prompt_helpers.CONTENT_MAX_CHARS} "
+                "character cap"
             )
         return value
 
@@ -901,21 +898,40 @@ def build_router(state: RunState) -> APIRouter:
             "current": os.environ.get("QUESTION_SET", QUESTION_SET_DEFAULT),
         }
 
-    @router.get("/memory")
-    def get_memory() -> Dict[str, Any]:
-        """Return the memory-bullet slots (self-heals the file to 9 defaults)."""
-        return {"registration": load_memory_registrations()}
+    @router.get("/prompt-helpers")
+    def get_prompt_helpers() -> Dict[str, Any]:
+        """Return this workspace's prompt-helper slots.
 
-    @router.post("/memory")
-    def post_memory(body: MemorySlotIn) -> Dict[str, Any]:
-        """Persist one memory-bullet slot and return the full registration.
+        A missing ``.nojae/prompt-helpers.json`` answers the nine default slots
+        and writes nothing — a reader that writes is how a stray ``.nojae``
+        turns up in a project someone only meant to browse. A file that cannot
+        be used (bad JSON, an unknown ``version``, a list that does not hold
+        exactly ``prompt_helpers.SLOT_COUNT`` entries) is a 422 naming the path
+        and, where the count is the complaint, the count found: it is never
+        padded, truncated or rewritten (spec D4).
+        """
+        try:
+            return {"slots": prompt_helpers.load_prompt_helpers()}
+        except prompt_helpers.PromptHelpersFileError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/prompt-helpers")
+    def post_prompt_helpers(body: PromptHelperSlotIn) -> Dict[str, Any]:
+        """Persist one prompt-helper slot and return the full set of nine.
 
         Chat-adjacent configuration, so (unlike settings/question sets) it is
         not gated while a benchmark run is in progress. Invalid index, color
-        or oversized content are rejected with 422 by the request model.
+        or oversized content are rejected with 422 by the request model; an
+        unusable file on disk is a 422 of its own, never a 500, and the bytes
+        stay as they were.
         """
-        slots = save_memory_registration(body.index, body.color, body.content)
-        return {"registration": slots}
+        try:
+            slots = prompt_helpers.save_prompt_helper(
+                body.index, body.color, body.content
+            )
+        except prompt_helpers.PromptHelpersFileError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"slots": slots}
 
     def _mcp_payload(
         request: Request, extra_errors: Optional[List[str]] = None
@@ -1224,6 +1240,17 @@ def build_router(state: RunState) -> APIRouter:
         """
         return agent_modes.agent_modes_file_state(path_location())
 
+    def _prompt_helpers_block() -> Dict[str, Any]:
+        """What the workspace's prompt-helpers file looks like, **read-only**.
+
+        The third of the reserved folder's readers: mbl-02 seeds
+        ``.nojae/prompt-helpers.json`` at the two moments a folder becomes the
+        working location, so a GET reports the file instead of leaving one
+        behind. ``absent`` is a plain fact there too — a workspace whose seed
+        failed, or one that predates the feature, chats on nine empty bullets.
+        """
+        return prompt_helpers.prompt_helpers_file_state(path_location())
+
     @router.get("/path-location")
     def get_path_location() -> Dict[str, Any]:
         """Effective working location of the MCP/LSP hubs.
@@ -1236,6 +1263,7 @@ def build_router(state: RunState) -> APIRouter:
         return _path_location_payload() | {
             "policy": _policy_block(),
             "agentModes": _agent_modes_block(),
+            "promptHelpers": _prompt_helpers_block(),
         }
 
     @router.post("/path-location")
@@ -1343,6 +1371,12 @@ def build_router(state: RunState) -> APIRouter:
         # the ``existing`` answer, which writes nothing and so never gets to the
         # invalidation inside the seeder.
         agent_modes.invalidate_agent_modes_cache()
+        # The prompt-helpers file (mbl-02) is seeded at this same moment, by the
+        # same rule, and it has **no cache to invalidate** — unlike the two
+        # above, the file is read afresh every time the chat tab opens or the
+        # location changes (nine small strings do not earn a cache and its
+        # invalidation rules), so saying nothing here is the whole mechanism.
+        helpers_block = prompt_helpers.ensure_prompt_helpers_file(expanded)
         return (
             _path_location_payload()
             | {
@@ -1350,6 +1384,7 @@ def build_router(state: RunState) -> APIRouter:
                 "lsp": lsp,
                 "policy": policy_block,
                 "agentModes": modes_block,
+                "promptHelpers": helpers_block,
             }
         )
 

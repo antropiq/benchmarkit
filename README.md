@@ -178,7 +178,10 @@ never `${BENCHMARKIT_PATH_LOCATION/web}`.
 Whichever folder you point at gets its own read-write policy in
 `.nojae/read-write-policy.json`: which of its files the Editor (and the chat
 assistant's file tools) may show, read and change. It is seeded for you and
-edited outside the app. See
+edited outside the app. That folder also holds this workspace's prompt helpers —
+the texts behind the bullets above the WorkBench textarea — in
+`.nojae/prompt-helpers.json`, and that one benchmarkit writes for you whenever
+you fill a bullet, so each project keeps its own. See
 [`docs/POLICY-MANAGEMENT-DOC-EN.md`](docs/POLICY-MANAGEMENT-DOC-EN.md) /
 [`docs/POLICY-MANAGEMENT-DOC_FR.md`](docs/POLICY-MANAGEMENT-DOC_FR.md).
 

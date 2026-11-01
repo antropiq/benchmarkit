@@ -15,6 +15,7 @@ from src.api import routes
 from src.core import agent_modes
 from src.core import agent_modes_defaults as modes_defaults
 from src.core import batch as batch_core
+from src.core import prompt_helpers
 
 
 def _config() -> EndpointsConfig:
@@ -645,6 +646,13 @@ def hub_client(client, monkeypatch, tmp_path):
     from src.core import mcphub
 
     monkeypatch.delenv("BENCHMARKIT_PATH_LOCATION", raising=False)
+    # The switch seeds the new root, and seeding is where the one-time lift
+    # looks at the old app-level file. Point that lookup at nothing: this
+    # checkout's ``resources/memory_registration.json`` belongs to the machine
+    # and would make the seeded state ``migrated`` instead of ``created``.
+    monkeypatch.setattr(
+        prompt_helpers, "LEGACY_PROMPT_HELPERS_PATH", tmp_path / "no-legacy.json"
+    )
     empty = tmp_path / "externals.json"
     empty.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH", empty)
@@ -673,14 +681,23 @@ class TestPathLocationEndpoint:
         assert body["key"] == "BENCHMARKIT_PATH_LOCATION"
         assert body["path"] == default_path_location()
         assert body["default"] == default_path_location()
-        # am-03: the read half reports both reserved-folder files, in the shape
-        # the settings dialog renders. A GET seeds nothing, so the install dir
-        # answers whatever boot left there — the point is the shape, not the
-        # state (the state itself belongs to tests/test_agent_modes_seed.py).
+        # am-03/mbl-03: the read half reports each reserved-folder file in the
+        # shape the settings dialog renders. A GET seeds nothing, so the install
+        # dir answers whatever boot left there — the point is the shape, not the
+        # state (that belongs to the seeding suites).
         modes = body["agentModes"]
         assert set(modes) == {"state", "path", "error"}
         assert modes["path"].endswith(
             agent_modes.POLICY_DIRNAME + os.sep + agent_modes.AGENT_MODES_FILENAME
+        )
+        # mbl-03: the prompt-helpers file is the third block of that answer, and
+        # read-only like the other two.
+        helpers = body["promptHelpers"]
+        assert set(helpers) == {"state", "path", "error"}
+        assert helpers["path"].endswith(
+            prompt_helpers.POLICY_DIRNAME
+            + os.sep
+            + prompt_helpers.PROMPT_HELPERS_FILENAME
         )
 
     def test_post_sets_the_env_and_restarts_both_hubs(self, hub_client, tmp_path):
@@ -702,6 +719,17 @@ class TestPathLocationEndpoint:
         modes = response.json()["agentModes"]
         assert modes["state"] == "created"
         assert modes["error"] is None
+        # mbl-03: the prompt-helpers file is seeded at the same moment, and its
+        # own state rides back in the same response.
+        helpers = response.json()["promptHelpers"]
+        assert set(helpers) == {"state", "path", "error"}
+        assert helpers["state"] == "created"
+        assert helpers["error"] is None
+        assert helpers["path"].endswith(
+            prompt_helpers.POLICY_DIRNAME
+            + os.sep
+            + prompt_helpers.PROMPT_HELPERS_FILENAME
+        )
 
     def test_post_canonicalises_symlinks_and_dots(self, hub_client, tmp_path):
         real = tmp_path / "real"

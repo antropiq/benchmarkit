@@ -1,5 +1,6 @@
-// One place to say what the two files in the workspace's reserved folder are
-// doing (pol-05's read-write policy, am-03's agent-modes file).
+// One place to say what the files in the workspace's reserved folder are doing
+// (pol-05's read-write policy, am-03's agent-modes file, mbl-02's prompt-helper
+// file).
 //
 // The server reports `{state, path, error}` for each of them on both
 // working-location endpoints. Surfaces want a sentence about each — the settings
@@ -7,9 +8,17 @@
 // Editor banner — and they must not each invent one, because the *tone* carries
 // meaning: `failed` is a warning that the switch succeeded and the seed did not,
 // `absent` is a plain fact, `created`/`existing` is reassurance that the
-// project's own config is readable and editable outside the app.
+// project's own config is readable and editable outside the app. The helper
+// file is not that kind of config: it is the app's own store (spec D1), so its
+// sentences describe what the bullets above the composer became, not who may
+// edit the file — and it answers two states of its own, `migrated` and
+// `migration-skipped` (spec D6).
 
 export const POLICY_STATES = ['created', 'existing', 'absent', 'failed']
+
+// The two extra states only the prompt-helpers file answers (spec D6's lift of
+// the old app-level file), on top of the shared four above.
+export const PROMPT_HELPER_STATES = [...POLICY_STATES, 'migrated', 'migration-skipped']
 
 // `tone` is what a caller renders it as: 'warn' is a line the user should read
 // but not act on, 'plain' is context.
@@ -79,6 +88,59 @@ export function describeAgentModes(agentModes) {
         text: `Working location is set, but benchmarkit could not create the agent-modes file (${agentModes.path ?? '?'}): ${
           agentModes.error || 'unknown error'
         }. The modes dropdown uses benchmarkit\u2019s built-in modes.`,
+      }
+    default:
+      return null
+  }
+}
+
+// The third file of the reserved folder (mbl-02): the nine prompt helpers
+// behind the bullets above the composer. It answers the four shared states in
+// the same shape, plus two of its own from the one-time lift of the old
+// app-level file (spec D6) — `migrated` is good news and stays `plain`, while
+// `migration-skipped` is a `warn` because the user has to act on it (fix the
+// old file's entry count, or fill the new bullets by hand). As with the other
+// two, `failed` repeats the "working location is set" preamble: the three seeds
+// fail independently, and a helpers-only failure must not read as a line about
+// a note that was never shown.
+export function describePromptHelpers(promptHelpers) {
+  if (!promptHelpers || !promptHelpers.state) return null
+  switch (promptHelpers.state) {
+    case 'created':
+      return {
+        tone: 'plain',
+        text: `Created this project's prompt-helper file: ${promptHelpers.path}. The bullets above the WorkBench textarea are now this project's own.`,
+      }
+    case 'existing':
+      return {
+        tone: 'plain',
+        text: `This project has its own prompt-helper file: ${promptHelpers.path}.`,
+      }
+    case 'absent':
+      return {
+        tone: 'plain',
+        text: 'This project has no prompt-helper file yet, so the bullets above the WorkBench textarea are empty until one is seeded or saved.',
+      }
+    case 'failed':
+      return {
+        tone: 'warn',
+        text: `Working location is set, but benchmarkit could not create the prompt-helper file (${promptHelpers.path ?? '?'}): ${
+          promptHelpers.error || 'unknown error'
+        }. The bullets above the WorkBench textarea are empty.`,
+      }
+    case 'migrated':
+      return {
+        tone: 'plain',
+        text: `benchmarkit moved this machine's older bullet set into ${promptHelpers.path}: the prompts that used to be app-wide (from resources/memory_registration.json) are now this project's.`,
+      }
+    case 'migration-skipped':
+      return {
+        tone: 'warn',
+        text: `Working location is set, but benchmarkit could not move this machine's older bullet set into ${
+          promptHelpers.path ?? '?'
+        }: ${
+          promptHelpers.error || 'the legacy file could not be read'
+        }. This project starts with empty bullets, and the older file was left where it is.`,
       }
     default:
       return null

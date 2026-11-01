@@ -28,6 +28,7 @@ from mcp_connectors import policy_shared as shared
 
 from src.api.server import create_app
 from src.core import editorfs
+from src.core import prompt_helpers
 from src.core.editorfs import builtin_policy
 from src.core.editorfs import policy_file, policy_seed
 from src.core.editorfs import policy_modes
@@ -128,10 +129,6 @@ class TestSelfWorkspaceRules:
             ("logs/editor_backups/x.orig", "logs/**"),
             ("web/dist/index.html", "web/dist/**"),
             ("web/dist/assets/app.js", "web/dist/**"),
-            (
-                "resources/memory_registration.json",
-                "resources/memory_registration.json",
-            ),
         ],
     )
     def test_an_app_owned_path_carries_its_rule_verbatim(
@@ -149,7 +146,6 @@ class TestSelfWorkspaceRules:
             ("web/.env.local", shared.HIDDEN),
             ("logs/trash/x", shared.HIDDEN),
             ("web/dist/index.html", shared.READ_ONLY),
-            ("resources/memory_registration.json", shared.READ_ONLY),
         ],
     )
     def test_the_mode_each_rule_gives(self, app_workspace, rel: str, mode: str):
@@ -219,6 +215,21 @@ class TestSelfWorkspaceRules:
     def test_level_a_is_narrow(self, app_workspace):
         assert policy_modes.mode_for("src/config.py").mode == shared.READ_WRITE
 
+    def test_the_old_helpers_path_is_ordinary_here_too(self, app_workspace):
+        """The behaviour change this task makes (D7), on benchmarkit's own tree.
+
+        It used to be ``ro``: browsable, and refused writes. Now no level-A rule
+        mentions it at all, because what protects the helpers is the **reserved
+        folder** the file moved into, not a pattern for one name. A leftover copy
+        of the old path is therefore an ordinary file (the app never reads it
+        again, and removing it is the user's own business).
+        """
+        old = "resources/memory_registration.json"
+        verdict = policy_modes.mode_for(old)
+        assert verdict.mode == shared.READ_WRITE
+        assert verdict.level is None
+        assert builtin_policy.builtin_rules(old) == []
+
 
 class TestForeignWorkspace:
     """The point of the task: another project's files are its own."""
@@ -236,8 +247,36 @@ class TestForeignWorkspace:
         assert policy_modes.mode_for(rel).mode == shared.READ_WRITE
 
     def test_the_app_owned_names_are_ordinary_too(self, foreign_workspace):
+        """``resources/memory_registration.json`` is the *old* app file: here it
+        is a stale leftover of somebody else's tree, so nothing about it is a
+        built-in verdict. The prompt helpers moved into the reserved folder,
+        which level A answers in **every** workspace (D7)."""
         for rel in ("resources/memory_registration.json", "web/dist"):
             assert policy_modes.mode_for(rel).level != shared.LEVEL_BUILTIN
+        assert (
+            policy_modes.mode_for("resources/memory_registration.json").mode
+            == shared.READ_WRITE
+        )
+
+    def test_the_prompt_helpers_file_is_hidden_in_a_foreign_workspace(
+        self, foreign_workspace
+    ):
+        """D7: the replacement for the deleted level-A rule is the reservation,
+        which is unconditional — so the file is invisible in a foreign project's
+        tree exactly as it is in benchmarkit's own.
+
+        Built from the module's own constants, not a literal: a rename of the
+        folder or the file must move this assertion with it rather than leave it
+        testing a path that no longer exists.
+        """
+        rel = (
+            f"{prompt_helpers.POLICY_DIRNAME}/"
+            f"{prompt_helpers.PROMPT_HELPERS_FILENAME}"
+        )
+        verdict = policy_modes.mode_for(rel)
+        assert verdict.mode == shared.HIDDEN
+        assert verdict.level == shared.LEVEL_BUILTIN
+        assert verdict.reason == builtin_policy.reserved_reason()
 
     def test_a_copy_of_the_repo_is_not_the_app(self, tmp_path: Path, monkeypatch):
         """The same file names, in a checkout this process did not boot from:
@@ -404,8 +443,41 @@ class TestTheVerdictIsWhatTheRoutesNowAnswerWith:
             assert f'"{pattern}"' in detail, rel
             assert "benchmarkit's own rules" in detail, rel
 
-    @pytest.mark.parametrize("rel", ["web/dist/index.html",
-                                     "resources/memory_registration.json"])
+    def test_the_prompt_helpers_file_is_absent_to_a_read_and_named_to_a_write(
+        self, app_workspace
+    ):
+        """D7 at the routes: the helpers file has **no level-A pattern** — the
+        reserved folder is what hides it, so the verdict comes from the folder.
+
+        This is deliberately not another row of the list above: that list asserts
+        the matched *pattern* is quoted in the 422 and never appears in the 404,
+        and neither holds for a reserved path. The 422 quotes the folder name
+        (``.nojae``), and the 404 is the ordinary absence sentence, which echoes
+        the requested path — so a hidden name inside a reserved folder is
+        indistinguishable from absence all the same, exactly as
+        ``tests/test_editorfs_write.py`` pins for a batch under ``.nojae/trash``.
+        """
+        rel = (
+            f"{prompt_helpers.POLICY_DIRNAME}/"
+            f"{prompt_helpers.PROMPT_HELPERS_FILENAME}"
+        )
+        reserved = f'"{prompt_helpers.POLICY_DIRNAME}"'
+        with TestClient(create_app()) as client:
+            read = client.get("/api/fs/file", params={"path": rel})
+            assert read.status_code == 404
+            assert "does not exist" in read.json()["detail"]
+            assert prompt_helpers.POLICY_DIRNAME not in _root_names(client)
+
+            write = client.put(
+                "/api/fs/file", json={"path": rel, "text": "hand-edited\n"}
+            )
+            assert write.status_code == 422
+            detail = write.json()["detail"]
+            assert reserved in detail
+            assert "benchmarkit's own rules" in detail
+            assert "reserved by benchmarkit" in detail
+
+    @pytest.mark.parametrize("rel", ["web/dist/index.html"])
     def test_an_app_owned_build_or_data_file_is_readable_and_locked_from_writes(
         self, app_workspace, rel: str
     ):

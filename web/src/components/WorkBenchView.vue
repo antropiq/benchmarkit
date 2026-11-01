@@ -5,7 +5,7 @@ import WorkBenchToolPanel from './WorkBenchToolPanel.vue'
 import ImageLightbox from './ImageLightbox.vue'
 import MarkdownStream from './MarkdownStream.vue'
 import { humanFileSize, useChat } from '../composables/useChat.js'
-import { useMemory } from '../composables/useMemory.js'
+import { usePromptHelpers } from '../composables/usePromptHelpers.js'
 import { useAutoScroll } from '../composables/useAutoScroll.js'
 import { useBenchmark } from '../composables/useBenchmark.js'
 import { FOCUS_REASONING, useChatLayout } from '../composables/useChatLayout.js'
@@ -17,13 +17,13 @@ import WorkBenchFocusGutter from './WorkBenchFocusGutter.vue'
 const { state, editLast, clearImage, loadChatHubs } = useChat()
 const { state: batch } = useBatch()
 const { state: benchmarkState, loadConfig } = useBenchmark()
-const { loadMemory } = useMemory()
+const { loadPromptHelpers } = usePromptHelpers()
 
 // Keep config.supportsVision (which gates the attach button) and the
 // conversation-scoped MCP snapshot fresh when the chat tab is opened:
 // settings may have been saved or .env edited meanwhile (App.vue's initial
 // loadConfig covers the first render). A locked (started) conversation
-// keeps its frozen list — loadChatMcp ignores locked state. The memory
+// keeps its frozen list — loadChatMcp ignores locked state. The prompt helper
 // bullets refresh the same way (they may have been edited meanwhile).
 watch(
   () => benchmarkState.activeTab,
@@ -33,7 +33,7 @@ watch(
       // The hub allowlists *and* the agent-mode list: the dropdown, the panels'
       // gray-out and the payload's agentMode all come from that one fetch.
       loadChatHubs()
-      loadMemory()
+      loadPromptHelpers()
     }
   },
 )
