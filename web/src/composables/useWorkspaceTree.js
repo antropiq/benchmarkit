@@ -36,6 +36,18 @@ import { reactive } from 'vue'
 // and a key press cannot disagree about which row "this folder" means. It is
 // *not* the same as `selected`, which means "the pane should open this file" —
 // conflating them would make every folder click try to open a buffer.
+//
+// And a batch of rows lives here as a **third** field (`marked` / `markAnchor`),
+// never as a use of either one above: `selected` carries size/mtime for the pane
+// and is cleared by `dropBranch`, and a batch needs none of that and would
+// inherit all of it. `marked` is the set of *file* rows the user put in a batch
+// (a folder row is refused entry by construction, which is what keeps a batch
+// safe to move); the gestures that fill it are in `select(entry, event)` and the
+// `Shift` chords below, and `batchFor(path)` is the one place that answers what a
+// command opened on a row would cover. It is composable state for the same
+// reason as the rest: the navigator is inside a `v-show` view, and the write
+// flow that consumes a batch must read it without going through a component.
+// Marking opens nothing and closes nothing — `selected` stays the pane's input.
 // ---------------------------------------------------------------------------
 
 export const ROOT = ''
@@ -51,6 +63,13 @@ const state = reactive({
   selected: null, // { path, name, dir, size, mtime } — the code pane's input
   workspace: '', // absolute path of the browsed workspace, from the server
   error: null,
+  // The batch: ordered paths of the *file* rows the user put in it, plus the
+  // path a `Shift` range grows from. Files only — `toggleMark` refuses a folder
+  // row — so a batch can never contain a subtree and no cycle check is needed
+  // anywhere it is consumed. Never a use of `selected`: marking opens no buffer
+  // and closes none, and the pane keeps its one file.
+  marked: [],
+  markAnchor: null,
   // The inline name input: `{ mode, parent, path, isDir, value, error }` while
   // the user is naming something, or null. `mode` is `'create'` (the name goes
   // into `parent`) or `'rename'` (the row at `path` is being renamed *within*
@@ -332,6 +351,11 @@ export function useWorkspaceTree() {
     state.focused = ROOT
     state.selected = null
     state.editing = null
+    // The batch too: those paths mean nothing in the new root, which is the
+    // same argument the lines above make for the focus, the selection and a
+    // half-typed name.
+    state.marked = []
+    state.markAnchor = null
     state.error = null
     // The previous root is not kept even when no new one is named: the label
     // and title would then point at a folder nothing is browsing. The listing
@@ -485,6 +509,75 @@ export function useWorkspaceTree() {
     return { path, name: entry.name, dir: !!entry.dir, parent: parentOf(path) }
   }
 
+  // -- the batch: marked rows ------------------------------------------------
+  //
+  // Marking is a *gesture-level* fact: it never issues a request, never opens a
+  // buffer and never touches `selected`. The row style (`tree-row--marked`) and
+  // the navigator's "N selected" line read these two fields, and mov-03's write
+  // flow reads `batchFor`'s answer.
+
+  // Put one *file* path in or take it out — by path, or by the row's entry when
+  // the caller has it (the click does, and its `dir` is the listing's own answer
+  // rather than a lookup). A folder row is refused entry (R4), asserted
+  // explicitly so a future gesture that marks folders fails here rather than
+  // shipping a batch that would move a tree. The toggled path becomes the
+  // anchor, so the next `Shift` gesture grows from where the pointer was.
+  function toggleMark(target) {
+    const path = typeof target === 'string' ? target : target?.path
+    if (!path) return
+    const entry = typeof target === 'string' ? entryFor(path) : target
+    if (entry?.dir) return
+    const index = state.marked.indexOf(path)
+    if (index === -1) state.marked.push(path)
+    else state.marked.splice(index, 1)
+    state.markAnchor = path
+  }
+
+  // The marks become exactly the *file* rows in the visual span between the
+  // anchor and `toPath` — a range is an answer to "which rows", not an
+  // append, so a second `Shift`+ArrowDown grows the set instead of
+  // accumulating one per keystroke. Folder rows inside the span are skipped
+  // (R4), and the span may cross parents: that is legal, and narrowing it to one
+  // folder is `batchFor`'s job, not this one's. With no anchor the gesture is its
+  // own range, so a first `Shift`+click can never invent a span from nowhere.
+  function rangeMark(toPath) {
+    const paths = visiblePaths()
+    const anchor = state.markAnchor ?? toPath
+    const from = paths.indexOf(anchor)
+    const to = paths.indexOf(toPath)
+    if (from === -1 || to === -1) return
+    const [lo, hi] = from <= to ? [from, to] : [to, from]
+    state.marked = paths
+      .slice(lo, hi + 1)
+      .filter((path) => !entryFor(path)?.dir)
+    state.markAnchor = anchor
+  }
+
+  function clearMarks() {
+    state.marked = []
+    state.markAnchor = null
+  }
+
+  // What a command opened on `path` covers — decided **once**, when the menu
+  // opens, because by the time an item is clicked the marks may have moved.
+  // The whole mark set only when the row is itself marked, there is more than
+  // one mark, and every mark shares that row's folder (R1); otherwise this one
+  // row (the N=1 case). A cross-parent selection therefore narrows visibly, and
+  // the marks stay highlighted — the dialog's list, not the highlight, is the
+  // truth the user reads before pressing anything.
+  function batchFor(path) {
+    const parent = parentOf(path)
+    const marks = state.marked
+    if (
+      marks.length >= 2 &&
+      marks.includes(path) &&
+      marks.every((item) => parentOf(item) === parent)
+    ) {
+      return { paths: [...marks], parent }
+    }
+    return { paths: [path], parent }
+  }
+
   // Selection is a row click: a folder only toggles (an open folder is not a
   // thing a code pane could load), a file is recorded.
   // The entry travels with the path, so the consumer has its size and mtime
@@ -493,8 +586,34 @@ export function useWorkspaceTree() {
   // EditorArea watches it and opens the file. Selection and the editor's active
   // buffer stay separate on purpose — a refused click (binary, over the cap)
   // selects a row without putting anything in a tab.
-  function select(entry) {
+  //
+  // The click's `event` decides what happens to the *batch* — the row component
+  // passes it through, because a gesture that never reaches this function is a
+  // gesture that does not exist:
+  //
+  //   * plain click — the marks go. A plain click is a fresh look at one row,
+  //     not a way to extend anything, and focus/`selected` behave exactly as
+  //     they did before it.
+  //   * `Ctrl`/`Cmd`+click — this path toggles in `marked`, and the normal
+  //     selection still runs, so the row under the cursor is both the row you
+  //     look at and the row you add. A folder row is refused entry and keeps
+  //     toggling as always.
+  //   * `Shift`+click — every *file* row in the visual span between
+  //     `markAnchor` and this row joins the batch. The span comes from
+  //     `visiblePaths()`, so a range can never disagree with what is rendered,
+  //     and it may cross parents: the narrowing is `batchFor`'s job, not here.
+  //
+  // Callers that are not a click at all — the `Enter`/`Space` chord, the menu's
+  // Open, a search hit — pass no event, and answer the same question a plain
+  // click does: this row, on its own.
+  function select(entry, event) {
     if (!entry) return
+    if (event?.ctrlKey || event?.metaKey) toggleMark(entry)
+    else if (event?.shiftKey) rangeMark(entry.path)
+    else {
+      clearMarks()
+      state.markAnchor = entry.path
+    }
     state.focused = entry.path
     if (entry.dir) {
       toggle(entry.path)
@@ -579,6 +698,17 @@ export function useWorkspaceTree() {
     state.focused = paths[last ? paths.length - 1 : 0]
   }
 
+  // The batch half of the four navigation chords, after the focus has moved:
+  // `Shift` extends the marks over the span the arrows just walked (from
+  // `markAnchor`, so it cannot disagree with what is rendered), and a plain
+  // arrow only moves the anchor — the row the last non-`Shift` gesture landed
+  // on, which is where the next range grows from. Marks are *not* cleared here:
+  // arrow navigation behaves as it did before this feature existed.
+  function extendMarks(event) {
+    if (event.shiftKey) rangeMark(state.focused)
+    else state.markAnchor = state.focused
+  }
+
   // Forget everything the tree knew about a path and its subtree, without
   // re-listing anything: what a rename does to the cache *before* the two
   // affected folders are re-fetched.
@@ -601,6 +731,12 @@ export function useWorkspaceTree() {
     }
     if (sameOrUnder(state.focused, path)) state.focused = parentOf(path)
     if (sameOrUnder(state.selected?.path, path)) state.selected = null
+    // A batch that outlives its own rows is worse than no batch: the marks go
+    // with the paths they name, for the focused/selected reason above.
+    if (state.marked.some((item) => sameOrUnder(item, path))) {
+      state.marked = state.marked.filter((item) => !sameOrUnder(item, path))
+    }
+    if (sameOrUnder(state.markAnchor, path)) state.markAnchor = null
   }
 
   // The entry a path refers to, looked up in its parent's listing (the tree
@@ -616,6 +752,8 @@ export function useWorkspaceTree() {
   // The one keyboard model of the tree:
   //
   //   ↑ ↓ ← → Home End   move the roving focus, open/close a branch
+  //     (with Shift on ↑ ↓ Home End: the same move, and the batch grows to
+  //      cover the span from the anchor — there is no chord *key* for a move)
   //   Enter / Space      select (open a file, toggle a folder) — unchanged
   //   n / N              New file / New folder in the focused folder
   //   F2                 rename the focused row
@@ -659,11 +797,19 @@ export function useWorkspaceTree() {
     if (event.ctrlKey || event.metaKey || event.altKey) return false
     const path = state.focused
     const directory = path === ROOT || !!entryFor(path)?.dir
-    if (event.key === 'ArrowDown') moveFocus(1)
-    else if (event.key === 'ArrowUp') moveFocus(-1)
-    else if (event.key === 'Home') focusEdge(false)
-    else if (event.key === 'End') focusEdge(true)
-    else if (event.key === 'ArrowRight') {
+    if (event.key === 'ArrowDown') {
+      moveFocus(1)
+      extendMarks(event)
+    } else if (event.key === 'ArrowUp') {
+      moveFocus(-1)
+      extendMarks(event)
+    } else if (event.key === 'Home') {
+      focusEdge(false)
+      extendMarks(event)
+    } else if (event.key === 'End') {
+      focusEdge(true)
+      extendMarks(event)
+    } else if (event.key === 'ArrowRight') {
       if (directory && !state.expanded[path]) expand(path)
       else moveFocus(1)
     } else if (event.key === 'ArrowLeft') {
@@ -738,6 +884,10 @@ export function useWorkspaceTree() {
     commandTarget,
     dropBranch,
     select,
+    toggleMark,
+    rangeMark,
+    clearMarks,
+    batchFor,
     reveal,
     entryFor,
     handleKey,

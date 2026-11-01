@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 
 import WorkspaceNavigator from '../src/components/WorkspaceNavigator.vue'
 import { useEditorFiles } from '../src/composables/useEditorFiles'
+import { useEditorMove } from '../src/composables/useEditorMove'
 import { useGitStatus } from '../src/composables/useGitStatus'
 import { useWorkspaceSearch } from '../src/composables/useWorkspaceSearch'
 import { useWorkspaceTree } from '../src/composables/useWorkspaceTree'
@@ -19,11 +20,15 @@ const tree = useWorkspaceTree()
 const files = useEditorFiles()
 const git = useGitStatus()
 const search = useWorkspaceSearch()
+const move = useEditorMove()
 
 const LISTINGS = {
+  // Two files of the root folder, so a test can build a legal two-row batch
+  // (R1: one parent) without inventing a second listing.
   '': [
     { name: 'src', path: 'src', dir: true, children: true },
     { name: 'notes.md', path: 'notes.md', dir: false, size: 4, mtime: 1000 },
+    { name: 'todo.txt', path: 'todo.txt', dir: false, size: 4, mtime: 1000 },
   ],
   src: [{ name: 'a.py', path: 'src/a.py', dir: false, size: 4, mtime: 1000 }],
 }
@@ -98,6 +103,16 @@ async function mounted() {
   return wrapper
 }
 
+// The gesture that builds a batch: Ctrl+click each named row. Through the real
+// rows, so the marks are what a user would have (a direct write to
+// `state.marked` would let a broken click pass-through go unnoticed).
+async function markRows(wrapper, ...paths) {
+  for (const path of paths) {
+    await wrapper.find(`.tree-row[data-path="${path}"]`).trigger('click', { ctrlKey: true })
+  }
+  await flushPromises()
+}
+
 beforeEach(() => {
   tree.state.nodes = {}
   tree.state.expanded = { '': true }
@@ -105,6 +120,8 @@ beforeEach(() => {
   tree.state.selected = null
   tree.state.editing = null
   tree.state.workspace = ''
+  tree.state.marked = []
+  tree.state.markAnchor = null
   files.state.open.length = 0
   files.state.active = null
   git.state.entries = []
@@ -118,6 +135,9 @@ beforeEach(() => {
   search.state.result = null
   search.state.error = null
   search.state.pendingReveal = null
+  // The move prompt is composable state too, and an open one would answer a
+  // later test's read of it.
+  move.state.movePrompt = null
   // A wrapper is never unmounted (the tree rows of the previous test are
   // harmless), but a `<dialog>` left open would answer a later test's query.
   document.body.querySelectorAll('.tree-context-menu, dialog').forEach((el) => el.remove())
@@ -154,6 +174,7 @@ describe('the context menu, per row kind', () => {
       'Preview',
       'View diff…',
       'Rename…',
+      'Move to…',
       'Delete',
       'Copy relative path',
     ])
@@ -161,6 +182,7 @@ describe('the context menu, per row kind', () => {
       'Open',
       'Search…',
       'Rename…',
+      'Move to…',
       'Delete',
       'Copy relative path',
     ])
@@ -327,6 +349,67 @@ describe('the context menu, per row kind', () => {
     )
   })
 
+  // Move to… is on *every* file row (D2: `scope: 'file'` alone, no `needs` and no
+  // gating on marks — the single move is the N=1 case of one code path), and
+  // `moveCount` is the count `batchFor` settles for the clicked row, read here as
+  // hint text only. This is the one place the singular/plural copy is pinned.
+  it("the Move item's hint counts the batch this row would move", async () => {
+    stubFetch()
+    const wrapper = await mounted()
+
+    // No marks at all: the item is there and names one file.
+    await menuFor(wrapper, 'notes.md')
+    expect(menuItemTitle('Move to…')).toBe('Move this file into another folder')
+
+    // Two marks of one folder, menu on a marked row: the whole batch.
+    await markRows(wrapper, 'notes.md', 'todo.txt')
+    await menuFor(wrapper, 'notes.md')
+    expect(menuItemTitle('Move to…')).toBe('Move these 2 files into another folder')
+
+    // The same marks, menu on an *unmarked* file: the narrowing shows in the copy
+    // before anything is sent, and the marks stay highlighted.
+    await menuFor(wrapper, 'src/a.py')
+    expect(menuItemTitle('Move to…')).toBe('Move this file into another folder')
+    expect(tree.state.marked).toEqual(['notes.md', 'todo.txt'])
+
+    // Marks that cross parents: `batchFor` narrows to the clicked row.
+    await markRows(wrapper, 'notes.md', 'src/a.py')
+    await menuFor(wrapper, 'notes.md')
+    expect(menuItemTitle('Move to…')).toBe('Move this file into another folder')
+
+    // Presence never moves with the count, and a folder row or the root row has
+    // no such item at all, marked or not (R4).
+    expect(await menuFor(wrapper, 'src')).not.toContain('Move to…')
+    expect(await menuFor(wrapper, '')).not.toContain('Move to…')
+  })
+
+  // The subject is resolved once, at the moment of the click (D4), so the move
+  // composable never reads `state.marked` later.
+  it('routes Move to… to the batch move flow, on that row', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+
+    await markRows(wrapper, 'notes.md', 'todo.txt')
+    await menuFor(wrapper, 'notes.md')
+    await clickMenuItem('Move to…')
+
+    expect(move.state.movePrompt).toMatchObject({
+      paths: ['notes.md', 'todo.txt'],
+      parent: '',
+      value: '',
+    })
+    move.cancelMove()
+    // The menu reads the batch, it never clears it.
+    expect(tree.state.marked).toEqual(['notes.md', 'todo.txt'])
+
+    // A plain right-click on one file is the N=1 case of the same item.
+    tree.clearMarks()
+    await menuFor(wrapper, 'src/a.py')
+    await clickMenuItem('Move to…')
+    expect(move.state.movePrompt).toMatchObject({ paths: ['src/a.py'], parent: 'src' })
+    move.cancelMove()
+  })
+
   // The table, not a `v-if`, decides whether a menu is opened at all — `openMenu`
   // returns early on an empty list. Search is a `scope: 'row'` item, so it is now
   // part of the floor of every shape the table can be handed, and the leanest one
@@ -398,6 +481,76 @@ describe('the header search button', () => {
     search.closeDialog()
     await flushPromises()
     expect(document.querySelector('.editor-search-dialog').open).toBe(false)
+  })
+})
+
+// The marks as the user and a screen reader meet them: a third row class, the
+// `role="tree"` selection reporting the batch rather than the pane's file, and
+// the count in the footer. The state itself is the composable's, asserted in
+// useWorkspaceTreeCommands.test.js — what lives here is the rendering.
+describe('the batch on screen', () => {
+  it('marks a row on Ctrl+click, without opening anything new', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    expect(wrapper.find('.editor-nav-selected').exists()).toBe(false)
+
+    await wrapper.find('.tree-row[data-path="src/a.py"]').trigger('click', { ctrlKey: true })
+    await wrapper.find('.tree-row[data-path="notes.md"]').trigger('click', { ctrlKey: true })
+    await flushPromises()
+
+    expect(wrapper.find('.tree-row[data-path="src/a.py"]').classes()).toContain('tree-row--marked')
+    expect(wrapper.find('.tree-row[data-path="notes.md"]').classes()).toContain('tree-row--marked')
+    expect(wrapper.find('.tree-row[data-path="src"]').classes()).not.toContain('tree-row--marked')
+    // The footer says how many, in words a scrolling tree cannot hide.
+    expect(wrapper.find('.editor-nav-selected').text()).toBe('2 selected')
+    // A marked row is still just a row: the batch never touches the pane's file.
+    expect(tree.state.selected?.path).toBe('notes.md')
+  })
+
+  // D15: a multi-selectable `role="tree"` has to report its selected set, so the
+  // marks answer `aria-selected` while they last — and the pane's file does,
+  // when they do not.
+  it('aria-selected follows the batch while there are marks', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+
+    await wrapper.find('.tree-row[data-path="notes.md"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.tree-row[data-path="notes.md"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('.tree-row[data-path="src/a.py"]').attributes('aria-selected')).toBe('false')
+
+    // Ctrl+click two rows, then take one back out: the batch and the pane's
+    // file are now two different rows, and the tree reports the batch.
+    await wrapper.find('.tree-row[data-path="src/a.py"]').trigger('click', { ctrlKey: true })
+    await wrapper.find('.tree-row[data-path="notes.md"]').trigger('click', { ctrlKey: true })
+    await wrapper.find('.tree-row[data-path="notes.md"]').trigger('click', { ctrlKey: true })
+    await flushPromises()
+    expect(tree.state.marked).toEqual(['src/a.py'])
+    expect(tree.state.selected?.path).toBe('notes.md')
+    expect(wrapper.find('.tree-row[data-path="src/a.py"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('.tree-row[data-path="notes.md"]').attributes('aria-selected')).toBe('false')
+
+    // A plain click ends the batch, and the single pane file is what the tree
+    // reports again.
+    await wrapper.find('.tree-row[data-path="src/a.py"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.tree-row[data-path="src/a.py"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('.tree-row[data-path="notes.md"]').attributes('aria-selected')).toBe('false')
+    expect(wrapper.find('.editor-nav-selected').exists()).toBe(false)
+  })
+
+  // The keyboard reaches the marks through the same composable, so a Shift+arrow
+  // in a real row has to show up as a mark on that row.
+  it('Shift+ArrowUp marks the row the focus moved to', async () => {
+    stubFetch()
+    const wrapper = await mounted()
+    await wrapper.find('.tree-row[data-path="notes.md"]').trigger('click', { ctrlKey: true })
+    await flushPromises()
+
+    await wrapper.find('.editor-nav-tree').trigger('keydown', { key: 'ArrowUp', shiftKey: true })
+    await flushPromises()
+    expect(wrapper.find('.tree-row[data-path="src/a.py"]').classes()).toContain('tree-row--marked')
+    expect(wrapper.find('.editor-nav-selected').text()).toBe('2 selected')
   })
 })
 

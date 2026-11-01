@@ -311,6 +311,7 @@ test('each row offers exactly what it can honour', async ({ page }) => {
     'Open',
     'Search…',
     'Rename…',
+    'Move to…',
     'Delete',
     'Copy relative path',
   ])
@@ -320,9 +321,334 @@ test('each row offers exactly what it can honour', async ({ page }) => {
     'Search…',
     'Preview',
     'Rename…',
+    'Move to…',
     'Delete',
     'Copy relative path',
   ])
+})
+
+// ---------------------------------------------------------------------------
+// The batch move — marked rows, one destination folder, one request. This is
+// the only layer that can show what jsdom cannot: a `Ctrl`+click that marks two
+// rows, marks that are *visible* (the row style, `aria-selected` and the
+// navigator's count line), a `<dialog>` that survives a refusal with the typed
+// value still in it (jsdom has no `showModal`), the exact text of a prefill,
+// and two files that land on disk.
+//
+// Nothing here needs a model: every step is the Editor surface plus the write
+// route. Success is asserted on the **server** (`/api/fs/stat`), the refusal on
+// the **server's own sentence**; the DOM is only the evidence that the user was
+// shown the row move.
+//
+// The scratch is a top-level folder for the same reason as everywhere else in
+// this file, and it is never `todos/`: the lot in this repository is real work,
+// and a test that moved one of its files would edit the lot.
+const NESTED = `${SCRATCH}/nested`
+const OTHER = `${SCRATCH}/other`
+
+// Byte-exact seed through the write routes, with the mtime token the save guard
+// demands — the way the rename test above seeds its known text.
+async function seedFile(request, path, text) {
+  expect((await create(request, path)).ok(), `could not create ${path}`).toBe(true)
+  const res = await request.put('/api/fs/file', {
+    data: { path, text, ifUnmodifiedSince: (await diskStat(request, path)).mtime },
+  })
+  expect(res.ok(), `could not seed ${path}: ${await res.text()}`).toBe(true)
+}
+
+// `<scratch>/nested/{a,b,c}.any` plus an empty `<scratch>/other/`: the three
+// same-parent files a batch is made of, and the destination that exists.
+async function seedScratchTree(request) {
+  for (const dir of [NESTED, OTHER]) {
+    expect((await create(request, dir, true)).ok(), `could not create ${dir}`).toBe(true)
+  }
+  for (const name of ['a.any', 'b.any', 'c.any']) {
+    await seedFile(request, `${NESTED}/${name}`, `contents of ${name}`)
+  }
+}
+
+// The move dialog is always mounted (no `v-if`, so a refusal keeps the field's
+// caret and its half-typed value), so "closed" reads as `toBeHidden`.
+const moveDialog = (page) => page.locator('.editor-move-dialog')
+const moveField = (page) => page.locator('.editor-move-destination')
+const moveError = (page) => page.locator('.editor-move-error')
+const moveButton = (page) => page.locator('.editor-move-confirm')
+
+// `Ctrl`+click *is* the marking gesture, so it is performed as the user
+// performs it rather than by reaching into the composable.
+async function markRow(page, path) {
+  await page
+    .locator(`.tree-row[data-path="${path}"]`)
+    .first()
+    .click({ modifiers: ['Control'] })
+}
+
+// "Before any request goes out" needs a counter, not a hope: the only honest
+// form of the claim that a client-side refusal costs no round trip.
+function countMoveRequests(page) {
+  let count = 0
+  page.on('request', (req) => {
+    if (req.url().includes('/api/fs/move-batch')) count += 1
+  })
+  return () => count
+}
+
+test('a marked batch moves to another folder — rows, disk and a dirty buffer all follow', async ({
+  page,
+  request,
+}) => {
+  const a = `${NESTED}/a.any`
+  const b = `${NESTED}/b.any`
+  const c = `${NESTED}/c.any`
+  await seedScratchTree(request)
+
+  await openEditor(page)
+  await openFolders(page, SCRATCH, NESTED, OTHER)
+
+  // The marks, and their being *visible*: two rows in, one row out, each answer
+  // read three ways — the row style, `aria-selected` (a multi-selectable tree
+  // reports its selected set) and the navigator's count line.
+  await markRow(page, a)
+  await markRow(page, b)
+  for (const path of [a, b]) {
+    const row = page.locator(`.tree-row[data-path="${path}"]`).first()
+    await expect(row).toHaveClass(/tree-row--marked/)
+    await expect(row).toHaveAttribute('aria-selected', 'true')
+  }
+  const unmarked = page.locator(`.tree-row[data-path="${c}"]`).first()
+  await expect(unmarked).not.toHaveClass(/tree-row--marked/)
+  await expect(unmarked).toHaveAttribute('aria-selected', 'false')
+  await expect(page.locator('.editor-nav-selected')).toHaveText('2 selected')
+
+  // A marked row of a same-parent set: the subject is the whole set.
+  await useMenuItem(page, a, 'Move to…')
+  await expect(moveDialog(page)).toBeVisible()
+  await expect(moveDialog(page).locator('h2')).toHaveText('Move 2 files')
+  await expect(moveDialog(page).locator('.editor-move-list p')).toHaveText([a, b])
+  await expect(moveField(page)).toHaveValue(NESTED)
+
+  await moveField(page).fill(OTHER)
+  await moveButton(page).click()
+
+  // The tree shows them there, and the server says they are there — the second
+  // is the witness, the first is only what the user was shown.
+  await expect(page.locator(`.tree-row[data-path="${OTHER}/a.any"]`)).toBeVisible()
+  await expect(page.locator(`.tree-row[data-path="${OTHER}/b.any"]`)).toBeVisible()
+  await expect(page.locator(`.tree-row[data-path="${OTHER}/c.any"]`)).toHaveCount(0)
+  await expect(page.locator(`.tree-row[data-path="${a}"]`)).toHaveCount(0)
+  expect(await diskExists(request, a)).toBe(false)
+  expect(await diskExists(request, b)).toBe(false)
+  expect(await diskExists(request, `${OTHER}/a.any`)).toBe(true)
+  expect(await diskExists(request, `${OTHER}/b.any`)).toBe(true)
+  expect(await diskExists(request, c)).toBe(true)
+  await expect(page.locator('.editor-notice--error')).toHaveCount(0)
+  // **One** notice for the whole batch, naming the count and the destination.
+  await expect(page.locator('.editor-notice--ok').first()).toContainText('Moved 2 files')
+  await expect(page.locator('.editor-notice--ok').first()).toContainText(OTHER)
+
+  // The rename test's proof at batch scale. Both rows are `Ctrl`+clicked, which
+  // marks them *and* selects them, so the marks and the buffers arrive in one
+  // gesture: both files are open in the strip, and the last row clicked is the
+  // active one — that is what is typed into. The pair then moves back with the
+  // edit still unwritten.
+  await markRow(page, `${OTHER}/a.any`)
+  await markRow(page, `${OTHER}/b.any`)
+  await typeAtEnd(page, ' edited here')
+  await expect(page.locator('.editor-tab-dirty')).toHaveCount(1)
+
+  await useMenuItem(page, `${OTHER}/a.any`, 'Move to…')
+  // Prefilled with the batch's own parent, spelled the way the tree spells it.
+  await expect(moveField(page)).toHaveValue(OTHER)
+  await moveField(page).fill(NESTED)
+  await moveButton(page).click()
+
+  await expect(page.locator('.editor-tab-dirty')).toHaveCount(1)
+  // **Both** chips name the new paths: `repointPath` runs for every entry of the
+  // batch, before any re-list. Waiting for this is waiting for the batch's own
+  // reconciliation rather than for a pause — a Ctrl+S sent while the modal's
+  // round trip is still running would post the pre-move path and come back
+  // refused, which is the race the ordering of the flow exists to close.
+  await expect(page.locator('.editor-tab', { hasText: 'a.any' })).toHaveAttribute(
+    'title',
+    `${NESTED}/a.any`,
+  )
+  await expect(page.locator('.editor-tab.active')).toHaveAttribute('title', b)
+  // The buffer was re-pointed, not orphaned: the records move before any
+  // re-list, so the freshness probe never sees a path that merely *left*.
+  await expect(page.locator('.editor-tab-stale')).toHaveCount(0)
+  await expect(page.locator(`.tree-row[data-path="${b}"]`).first()).toBeVisible()
+  await page.keyboard.press('Control+s')
+  await expect(page.locator('.editor-tab-dirty')).toHaveCount(0)
+  await expect(page.locator('.editor-notice--error')).toHaveCount(0)
+  expect(await diskText(request, `${OTHER}/b.any`)).toBe(null)
+  expect(await diskText(request, b)).toBe('contents of b.any edited here')
+})
+
+test('a single right-click with no marks is the N=1 case, prefilled with the file’s own folder', async ({
+  page,
+  request,
+}) => {
+  const a = `${NESTED}/a.any`
+  await seedScratchTree(request)
+
+  await openEditor(page)
+  await openFolders(page, SCRATCH, NESTED, OTHER)
+  // A buffer first, so the same tab can be checked at the other end: the batch
+  // re-points the records that name a moved path.
+  await page.locator(`.tree-row[data-path="${a}"]`).first().click()
+  await expect(page.locator('.editor-tab')).toHaveCount(1)
+
+  await useMenuItem(page, a, 'Move to…')
+  const prefill = await moveField(page).inputValue()
+  // Exactly the tree's own spelling: not the bare `nested`, and not the
+  // absolute working location (every path this app holds is relative).
+  expect(prefill).toBe(NESTED)
+  const { path: root } = await (await request.get('/api/path-location')).json()
+  expect(root).toBeTruthy()
+  expect(prefill).not.toContain(root)
+
+  // The prefill is also the no-op case, and it explains itself: the sentence is
+  // showing and the button is disabled, so the edit *is* the enable.
+  await expect(moveError(page)).toHaveText('That is where they already are')
+  await expect(moveButton(page)).toBeDisabled()
+
+  await moveField(page).fill(OTHER)
+  await expect(moveButton(page)).toBeEnabled()
+  await expect(moveDialog(page).locator('h2')).toHaveText('Move 1 file')
+  await moveButton(page).click()
+
+  await expect(page.locator(`.tree-row[data-path="${OTHER}/a.any"]`)).toBeVisible()
+  await expect(page.locator(`.tree-row[data-path="${a}"]`)).toHaveCount(0)
+  expect(await diskExists(request, a)).toBe(false)
+  expect(await diskExists(request, `${OTHER}/a.any`)).toBe(true)
+  // The tab is the same tab, re-pointed: a chip's `title` is the record's path.
+  await expect(page.locator('.editor-tab')).toHaveCount(1)
+  await expect(page.locator('.editor-tab-label')).toHaveText('a.any')
+  await expect(page.locator('.editor-tab')).toHaveAttribute('title', `${OTHER}/a.any`)
+})
+
+test('a refusal leaves the dialog open with what was typed, in the server’s words, and nothing moved', async ({
+  page,
+  request,
+}) => {
+  const a = `${NESTED}/a.any`
+  const b = `${NESTED}/b.any`
+  await seedScratchTree(request)
+
+  await openEditor(page)
+  await openFolders(page, SCRATCH, NESTED, OTHER)
+  await markRow(page, a)
+  await markRow(page, b)
+  await useMenuItem(page, a, 'Move to…')
+  await expect(moveDialog(page)).toBeVisible()
+
+  const missing = `${SCRATCH}/nope`
+  await moveField(page).fill(missing)
+  await moveButton(page).click()
+
+  // Still open, still holding the typed value: the fix is an edit, not a restart.
+  await expect(moveDialog(page)).toBeVisible()
+  await expect(moveField(page)).toHaveValue(missing)
+  // The server's own sentence, naming the folder it looked for — the promise the
+  // hint under the field made before anything was sent.
+  await expect(moveError(page)).toContainText('Parent folder does not exist')
+  await expect(moveError(page)).toContainText(missing)
+  await expect(moveDialog(page).locator('.editor-move-hint')).toContainText(
+    'The folder must already exist',
+  )
+
+  // Every source is still at home, on disk: one request, nothing applied.
+  expect(await diskExists(request, a)).toBe(true)
+  expect(await diskExists(request, b)).toBe(true)
+  expect(await diskExists(request, `${OTHER}/a.any`)).toBe(false)
+  await expect(page.locator('.editor-notice--error').first()).toContainText(
+    `Could not move 2 files → ${missing}`,
+  )
+  // The marks survive the refusal too — the batch is still a batch, so the fix
+  // is a new destination and not a fresh selection.
+  await expect(page.locator(`.tree-row[data-path="${a}"]`).first()).toHaveClass(
+    /tree-row--marked/,
+  )
+  await page.keyboard.press('Escape')
+  await expect(moveDialog(page)).toBeHidden()
+})
+
+test('a destination the client can reject costs no request; a bare name reaches the server', async ({
+  page,
+  request,
+}) => {
+  const a = `${NESTED}/a.any`
+  const b = `${NESTED}/b.any`
+  await seedScratchTree(request)
+  const moveRequests = countMoveRequests(page)
+
+  await openEditor(page)
+  await openFolders(page, SCRATCH, NESTED, OTHER)
+  await markRow(page, a)
+  await markRow(page, b)
+  await useMenuItem(page, a, 'Move to…')
+
+  // A leading slash is refused by the field's own shape check, in the client's
+  // words — and the counter is what says *no request left the browser*.
+  await moveField(page).fill('/tmp/outside')
+  await expect(moveError(page)).toContainText('relative to the working location')
+  await expect(moveButton(page)).toBeDisabled()
+  // Enter is the submit gesture too, so it has to be refused by the same check:
+  // the field answers, the dialog stays, and the counter has still seen nothing.
+  await moveField(page).press('Enter')
+  await expect(moveDialog(page)).toBeVisible()
+  expect(moveRequests()).toBe(0)
+
+  // A bare segment does not mean "relative to the sources' parent": it resolves
+  // from the workspace root like every other path here, so it reaches the
+  // server and comes back naming the folder that was looked for.
+  await moveField(page).fill('nested')
+  await expect(moveButton(page)).toBeEnabled()
+  await moveButton(page).click()
+  await expect(moveError(page)).toContainText('Parent folder does not exist')
+  await expect(moveError(page)).toContainText('nested')
+  expect(moveRequests()).toBe(1)
+
+  await expect(moveDialog(page)).toBeVisible()
+  expect(await diskExists(request, a)).toBe(true)
+  expect(await diskExists(request, b)).toBe(true)
+})
+
+test('marks across parents narrow to the clicked row — in the dialog, before anything is sent', async ({
+  page,
+  request,
+}) => {
+  const markedFile = `${NESTED}/c.any`
+  const otherFile = `${OTHER}/land.any`
+  await seedScratchTree(request)
+  await seedFile(request, otherFile, 'stays where it is')
+
+  await openEditor(page)
+  await openFolders(page, SCRATCH, NESTED, OTHER)
+
+  // Marks across parents are legal, and the tree highlights both rows.
+  await markRow(page, markedFile)
+  await markRow(page, otherFile)
+  await expect(page.locator('.editor-nav-selected')).toHaveText('2 selected')
+
+  // The batch is one file, and the dialog says so twice — the title and the
+  // list. That visible narrowing is what makes the gesture honest: the marks
+  // stay highlighted, the list is the truth.
+  await useMenuItem(page, markedFile, 'Move to…')
+  await expect(moveDialog(page).locator('h2')).toHaveText('Move 1 file')
+  await expect(moveDialog(page).locator('.editor-move-list p')).toHaveText([markedFile])
+  await expect(moveField(page)).toHaveValue(NESTED)
+
+  await moveField(page).fill(OTHER)
+  await moveButton(page).click()
+
+  await expect(page.locator(`.tree-row[data-path="${OTHER}/c.any"]`)).toBeVisible()
+  expect(await diskExists(request, markedFile)).toBe(false)
+  expect(await diskExists(request, `${OTHER}/c.any`)).toBe(true)
+  // The other mark did **not** move: it was never in the batch.
+  expect(await diskExists(request, otherFile)).toBe(true)
+  expect(await diskText(request, otherFile)).toBe('stays where it is')
+  expect(await diskExists(request, `${NESTED}/a.any`)).toBe(true)
 })
 
 // The markdown preview as the Editor performs it: the tree's Preview item opens
@@ -497,6 +823,7 @@ test('a folder renamed with F2 keeps its branch open under the new name', async 
   expect(await diskExists(request, file)).toBe(false)
   expect(await diskExists(request, `${SCRATCH}/renamed-inner/keep-me.txt`)).toBe(true)
 })
+
 
 test('a dirty buffer is never closed by one gesture — the three answers all mean what they say', async ({
   page,

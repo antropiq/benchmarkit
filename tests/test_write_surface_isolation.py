@@ -55,6 +55,9 @@ ALLOWED_HOMES = {
     Path("web/src/composables/useEditorFiles.js"),   # save / delete
     Path("web/src/composables/useEditorCreate.js"),  # create
     Path("web/src/composables/useEditorRename.js"),  # rename
+    # Declared with the route, before its caller exists: task mov-03 creates this
+    # composable, whose ``fetch`` will name the batch-move route.
+    Path("web/src/composables/useEditorMove.js"),    # move batch
 }
 
 # A connector that could speak HTTP could call a route it never names in a
@@ -270,7 +273,7 @@ class TestNoCodePathCallsThem:
 
     def test_the_write_core_is_called_from_the_routes_and_nowhere_else(self):
         writers = ("write_file", "backup_for_write", "create_path",
-                   "rename_path", "trash_path")
+                   "rename_path", "move_paths_batch", "trash_path")
         callers: List[str] = []
         for path in (REPO_ROOT / "src").rglob("*.py"):
             if path.parent.name == "editorfs":

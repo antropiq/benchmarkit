@@ -51,6 +51,14 @@ GIT_COMMAND_TIMEOUT = 10.0
 # bounded list plus ``truncated: true`` instead of a huge response.
 MAX_STATUS_ENTRIES = 5000
 
+# How many files one batch move (``move_paths_batch``) may name. The batch is
+# one request and one validation pass over every entry before any of them moves, so
+# this bounds *that*: a marked-up tree of thousands of rows would otherwise hold
+# the whole workspace inside one gesture, and a hand-built body could name the
+# entire checkout. It is not a promise that a bigger lot is impossible — the
+# client splits one lot into batches, one cap per request.
+MAX_MOVE_BATCH = 200
+
 # -- the workspace search (``editorfs.search``) --------------------------------
 #
 # The same three siblings' rule applied to a scan that reads *contents* rather

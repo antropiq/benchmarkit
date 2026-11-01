@@ -72,6 +72,8 @@ function resetState() {
   tree.state.selected = null
   tree.state.editing = null
   tree.state.error = null
+  tree.state.marked = []
+  tree.state.markAnchor = null
 }
 
 const REGISTRARS = [
@@ -436,7 +438,14 @@ describe('the menu table: exactly the items a row kind can honour', () => {
   })
 
   it('a file offers opening and its path, and nothing it cannot do', () => {
-    expect(treeMenuItemIds(file)).toEqual(['open', 'search', 'rename', 'delete', 'copy-path'])
+    expect(treeMenuItemIds(file)).toEqual([
+      'open',
+      'search',
+      'rename',
+      'move-batch',
+      'delete',
+      'copy-path',
+    ])
   })
 
   it('Preview only for a markdown row, between Open and View diff…', () => {
@@ -448,6 +457,7 @@ describe('the menu table: exactly the items a row kind can honour', () => {
       'search',
       'preview',
       'rename',
+      'move-batch',
       'delete',
       'copy-path',
     ])
@@ -461,6 +471,7 @@ describe('the menu table: exactly the items a row kind can honour', () => {
       'search',
       'view-diff',
       'rename',
+      'move-batch',
       'delete',
       'close',
       'copy-path',
@@ -473,6 +484,7 @@ describe('the menu table: exactly the items a row kind can honour', () => {
       'preview',
       'view-diff',
       'rename',
+      'move-batch',
       'delete',
       'close',
       'copy-path',
@@ -502,7 +514,9 @@ describe('the menu table: exactly the items a row kind can honour', () => {
   // every kind has an honest minimum — but the table decides that, not a `v-if`,
   // so a caller can always ask. This shape (not a folder, but the root, so not
   // mutable and with no Open) is the leanest one the table can be handed, and
-  // even it gets a menu: Search and Copy relative path are both honest for it.
+  // even it gets a menu: Search and Copy relative path are both honest for it —
+  // and Move to… is deliberately absent, because `scope: 'file'` excludes the
+  // root row (a batch is files only), which cannot raise this floor.
   it('always has a floor, so no real row is left menu-less', () => {
     expect(treeMenuItemIds({ ...retention, dir: false, isRoot: true, mutable: false })).toEqual([
       'search',
@@ -521,6 +535,15 @@ describe('the menu table: exactly the items a row kind can honour', () => {
     expect(items.find((item) => item.id === 'delete').title).toContain('45 days')
     expect(items.find((item) => item.id === 'delete').danger).toBe(true)
     expect(items.find((item) => item.id === 'refresh').danger).toBe(false)
+    // Delete is the only `danger` row: Move to… refuses rather than destroys, and
+    // the destination is chosen in a modal that lists the paths first.
+    for (const item of treeMenuItems({ ...file, moveCount: 3 })) {
+      expect(item.danger).toBe(item.id === 'delete')
+    }
+    // `moveCount` is a count of rows for the hint, never a claim about
+    // writability and never anything else's flag: a file row has the item at 0.
+    expect(treeMenuItemIds({ ...file, moveCount: 0 })).toContain('move-batch')
+    expect(treeMenuItemIds({ ...file, moveCount: 7 })).toContain('move-batch')
   })
 })
 
@@ -597,5 +620,227 @@ describe('one name input, two modes', () => {
           (String(url) === '/api/fs/create' || String(url) === '/api/fs/rename'),
       ),
     ).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The batch: marked rows as tree state. `visiblePaths()` for these listings is
+// ['', 'src', 'src/core', 'src/core/job.py', 'src/a.py', 'notes.md'], so the
+// expected spans below are that list sliced — the same list the arrows walk,
+// which is what makes a range impossible to disagree with what is rendered.
+// Nothing here moves a file: the marks are a gesture and a style.
+// ---------------------------------------------------------------------------
+
+function listingCalls(fetchMock) {
+  return fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/fs/tree')).length
+}
+
+describe('marked rows: the batch as tree state', () => {
+  beforeEach(() => {
+    resetState()
+    vi.restoreAllMocks()
+  })
+
+  // Ctrl/Cmd+click toggles one file in and out, and the row still opens: the row
+  // under the cursor is both the row you look at and the row you add.
+  it('Ctrl+click and Cmd+click toggle one file, and select it as before', async () => {
+    const fetchMock = stubListings()
+    await loaded()
+    const before = listingCalls(fetchMock)
+
+    tree.select(tree.entryFor('notes.md'), { ctrlKey: true })
+    expect(tree.state.marked).toEqual(['notes.md'])
+    expect(tree.state.markAnchor).toBe('notes.md')
+    // The click's own effect is unchanged: focus moved, the pane got the file.
+    expect(tree.state.focused).toBe('notes.md')
+    expect(tree.state.selected?.path).toBe('notes.md')
+
+    tree.select(tree.entryFor('src/a.py'), { metaKey: true })
+    expect(tree.state.marked).toEqual(['notes.md', 'src/a.py'])
+
+    // The same gesture again takes it out.
+    tree.select(tree.entryFor('notes.md'), { ctrlKey: true })
+    expect(tree.state.marked).toEqual(['src/a.py'])
+
+    // The tree's lazy-listing contract is untouched: marking issued no request.
+    expect(listingCalls(fetchMock)).toBe(before)
+  })
+
+  // R4, asserted explicitly so a future gesture that marks folders fails here
+  // rather than shipping a batch that would move a tree.
+  it('a folder row is refused entry, and keeps toggling exactly as before', async () => {
+    stubListings()
+    await loaded()
+
+    tree.select(tree.entryFor('src'), { ctrlKey: true })
+    expect(tree.state.marked).toEqual([])
+    expect(tree.state.markAnchor).toBeNull()
+    // …and the folder click itself is unchanged: it collapsed the branch, and a
+    // folder is still never the pane's file.
+    expect(!!tree.state.expanded['src']).toBe(false)
+    expect(tree.state.selected).toBeNull()
+  })
+
+  // The span is the rendered rows between the anchor and the clicked row, in
+  // visual order — folder rows inside it are skipped.
+  it('Shift+click marks the file rows of the rendered span', async () => {
+    stubListings()
+    await loaded()
+
+    // The anchor is the row the last non-Shift gesture landed on.
+    tree.select(tree.entryFor('notes.md'), {})
+    tree.select(tree.entryFor('src/a.py'), { ctrlKey: true })
+    tree.select(tree.entryFor('src/core/job.py'), { shiftKey: true })
+    // visiblePaths(): src/core/job.py (3) … src/a.py (4). Marks in visual order,
+    // which is not the order they were clicked in.
+    expect(tree.state.marked).toEqual(['src/core/job.py', 'src/a.py'])
+    // A Shift gesture does not move the anchor, so the next one grows the same
+    // range instead of restarting it.
+    expect(tree.state.markAnchor).toBe('src/a.py')
+    // The click still did its own job.
+    expect(tree.state.focused).toBe('src/core/job.py')
+    expect(tree.state.selected?.path).toBe('src/core/job.py')
+
+    // The same range, clicked from the other end (the anchor stayed at
+    // src/a.py), answers the same set in the same visual order.
+    tree.select(tree.entryFor('src/core/job.py'), { shiftKey: true })
+    expect(tree.state.focused).toBe('src/core/job.py')
+    expect(tree.state.marked).toEqual(['src/core/job.py', 'src/a.py'])
+  })
+
+  it('a Shift+click with no anchor is its own range, not a span from nowhere', async () => {
+    stubListings()
+    await loaded()
+    tree.select(tree.entryFor('src/a.py'), { shiftKey: true })
+    expect(tree.state.marked).toEqual(['src/a.py'])
+    expect(tree.state.markAnchor).toBe('src/a.py')
+  })
+
+  // A plain click is a fresh look at one row, not a way to extend anything.
+  it('a plain click clears the marks, file or folder', async () => {
+    stubListings()
+    await loaded()
+    tree.select(tree.entryFor('notes.md'), { ctrlKey: true })
+    tree.select(tree.entryFor('src/a.py'), { ctrlKey: true })
+
+    tree.select(tree.entryFor('notes.md'), {})
+    expect(tree.state.marked).toEqual([])
+    // The clicked row is the anchor of whatever range comes next.
+    expect(tree.state.markAnchor).toBe('notes.md')
+
+    tree.select(tree.entryFor('notes.md'), { ctrlKey: true })
+    tree.select(tree.entryFor('src'), {}) // a folder row too
+    expect(tree.state.marked).toEqual([])
+    expect(tree.state.markAnchor).toBe('src')
+  })
+
+  it('Shift+ArrowDown and Shift+Home produce the same span as Shift+click', async () => {
+    stubListings()
+    await loaded()
+    tree.state.focused = 'src/core/job.py'
+    tree.select(tree.entryFor('src/core/job.py'), { ctrlKey: true })
+
+    tree.handleKey(press({ key: 'ArrowDown', shiftKey: true }))
+    expect(tree.state.focused).toBe('src/a.py')
+    expect(tree.state.marked).toEqual(['src/core/job.py', 'src/a.py'])
+
+    // Another one grows the set rather than accumulating one per keystroke.
+    tree.handleKey(press({ key: 'ArrowDown', shiftKey: true }))
+    expect(tree.state.marked).toEqual(['src/core/job.py', 'src/a.py', 'notes.md'])
+    tree.handleKey(press({ key: 'ArrowDown', shiftKey: true })) // at the end already
+    expect(tree.state.marked).toEqual(['src/core/job.py', 'src/a.py', 'notes.md'])
+
+    // Shift+Home walks the whole way up; the folders in the span are skipped.
+    tree.handleKey(press({ key: 'Home', shiftKey: true }))
+    expect(tree.state.focused).toBe('')
+    expect(tree.state.marked).toEqual(['src/core/job.py'])
+
+    // A plain arrow leaves the marks alone and moves the anchor — navigation is
+    // what it always was.
+    tree.handleKey(press({ key: 'ArrowDown' }))
+    expect(tree.state.markAnchor).toBe('src')
+    expect(tree.state.marked).toEqual(['src/core/job.py'])
+  })
+
+  // Ctrl/Cmd stays out of the chord chain (the marks come from the mouse), so no
+  // keystroke can silently add a row to a batch.
+  it('a Ctrl/Cmd keystroke is not a tree chord and marks nothing', async () => {
+    stubListings()
+    await loaded()
+    for (const key of ['c', 'ArrowDown', 'Home']) {
+      expect(tree.handleKey(press({ key, ctrlKey: true }))).toBe(false)
+      expect(tree.handleKey(press({ key, metaKey: true }))).toBe(false)
+    }
+    expect(tree.state.marked).toEqual([])
+    expect(tree.state.focused).toBe('')
+  })
+
+  it('batchFor: the whole mark set only for a legal batch at the clicked row', async () => {
+    stubListings({
+      ...LISTINGS,
+      src: [...LISTINGS.src, { name: 'b.py', path: 'src/b.py', dir: false, size: 4, mtime: 1000 }],
+    })
+    await loaded()
+
+    // No marks at all: that one row (the N=1 case).
+    expect(tree.batchFor('notes.md')).toEqual({ paths: ['notes.md'], parent: '' })
+
+    tree.select(tree.entryFor('src/a.py'), { ctrlKey: true })
+    tree.select(tree.entryFor('src/b.py'), { ctrlKey: true })
+    // Two same-parent marks, menu on a marked row: both, in mark order.
+    expect(tree.batchFor('src/a.py')).toEqual({ paths: ['src/a.py', 'src/b.py'], parent: 'src' })
+    // A menu on an *unmarked* file while the batch is live: that file alone, and
+    // the marks stay highlighted (the dialog's list is the truth).
+    expect(tree.batchFor('notes.md')).toEqual({ paths: ['notes.md'], parent: '' })
+    expect(tree.state.marked).toEqual(['src/a.py', 'src/b.py'])
+    // One mark is one path even on a marked row.
+    tree.clearMarks()
+    tree.select(tree.entryFor('src/a.py'), { ctrlKey: true })
+    expect(tree.batchFor('src/a.py')).toEqual({ paths: ['src/a.py'], parent: 'src' })
+  })
+
+  it('batchFor narrows a cross-parent selection to the clicked row', async () => {
+    stubListings()
+    await loaded()
+    tree.select(tree.entryFor('src/a.py'), { ctrlKey: true })
+    tree.select(tree.entryFor('src/core/job.py'), { ctrlKey: true })
+    expect(tree.state.marked).toEqual(['src/a.py', 'src/core/job.py'])
+    expect(tree.batchFor('src/a.py')).toEqual({ paths: ['src/a.py'], parent: 'src' })
+    expect(tree.batchFor('src/core/job.py')).toEqual({
+      paths: ['src/core/job.py'],
+      parent: 'src/core',
+    })
+    // The marks themselves are untouched by the narrowing.
+    expect(tree.state.marked).toEqual(['src/a.py', 'src/core/job.py'])
+  })
+
+  it('dropBranch forgets the marks under the path that went away', async () => {
+    stubListings()
+    await loaded()
+    tree.state.marked = ['src/a.py', 'src/core/job.py', 'notes.md']
+    tree.state.markAnchor = 'src/core/job.py'
+
+    tree.dropBranch('src/core')
+    expect(tree.state.marked).toEqual(['src/a.py', 'notes.md'])
+    expect(tree.state.markAnchor).toBeNull()
+
+    tree.state.markAnchor = 'src/a.py'
+    tree.dropBranch('src')
+    expect(tree.state.marked).toEqual(['notes.md'])
+    // A branch elsewhere leaves the batch alone.
+    tree.dropBranch('nowhere')
+    expect(tree.state.marked).toEqual(['notes.md'])
+  })
+
+  it('reRoot clears every mark: they name paths of the root that was left', async () => {
+    stubListings()
+    await loaded()
+    tree.select(tree.entryFor('notes.md'), { ctrlKey: true })
+    tree.select(tree.entryFor('src/a.py'), { ctrlKey: true })
+    expect(tree.state.marked).toHaveLength(2)
+
+    await tree.reRoot('/w/other')
+    expect(tree.state.marked).toEqual([])
+    expect(tree.state.markAnchor).toBeNull()
   })
 })

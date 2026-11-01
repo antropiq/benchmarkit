@@ -24,6 +24,14 @@ const isDir = computed(() => !!props.entry.dir)
 const expanded = computed(() => !!state.expanded[path.value])
 const focused = computed(() => state.focused === path.value)
 const selected = computed(() => state.selected?.path === path.value)
+// A row of the batch. The marks are composable state (the navigator sits in a
+// `v-show` view and the write flow reads them without going through a
+// component), so this row only ever *reads* them.
+const marked = computed(() => state.marked.includes(path.value))
+// aria-selected reports the batch when there is one — a multi-selectable
+// `role="tree"` has to announce its selected set — and the pane's file
+// otherwise, which is what it means today.
+const ariaSelected = computed(() => (state.marked.length ? marked.value : selected.value))
 const node = computed(() => state.nodes[path.value] ?? null)
 const loading = computed(() => !!node.value?.loading)
 const children = computed(() =>
@@ -80,15 +88,19 @@ function onFocus() {
 </script>
 
 <template>
+  <!-- The click event travels to `select`, which is where a `Ctrl`/`Cmd` or
+       `Shift` gesture becomes a mark: without that pass-through the whole batch
+       gesture is dead (`select(entry)` used to be called with no event at all).
+       A comment cannot sit inside a tag's attribute list, so it sits here. -->
   <div
     class="tree-row"
     :class="[
       `depth-${level - 1}`,
-      { 'tree-row--focused': focused, 'tree-row--selected': selected },
+      { 'tree-row--focused': focused, 'tree-row--selected': selected, 'tree-row--marked': marked },
     ]"
     role="treeitem"
     :aria-level="level"
-    :aria-selected="selected"
+    :aria-selected="ariaSelected"
     :aria-expanded="isDir ? expanded : undefined"
     :aria-posinset="index + 1"
     :aria-setsize="setsize"
@@ -97,7 +109,7 @@ function onFocus() {
     :data-path="path"
     :data-dir="isDir ? 'true' : 'false'"
     :style="{ '--tree-depth': level - 1 }"
-    @click="select(entry)"
+    @click="select(entry, $event)"
     @focus="onFocus"
   >
     <span class="tree-chevron" :class="{ open: expanded }" aria-hidden="true">

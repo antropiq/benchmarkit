@@ -212,6 +212,28 @@ class FileRenameIn(BaseModel):
     to: str
 
 
+class FileMoveBatchIn(BaseModel):
+    """Several files into one folder that already exists (``POST /api/fs/move-batch``).
+
+    ``paths`` are the whole workspace-relative **source** paths and ``to_parent``
+    is the destination **folder** ("" is the working location) — deliberately two
+    fields, never a joined target: the server joins each source's own name to
+    that folder, so the ancestor gate always sees the folder the file really
+    lands in. That is ``FileCreateIn``'s argument in reverse — there a client
+    that joined a name to a folder could hide the joining, and here a client that
+    sent whole targets could hide a target no gate was shown.
+
+    No name field either: this route moves, it never renames. Renaming while
+    moving stays ``POST /api/fs/rename``'s job, so there is one basename rule in
+    the app, not two.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    paths: List[str]
+    to_parent: str
+
+
 class FileCreateIn(BaseModel):
     """A new file or folder (``POST /api/fs/create``).
 
@@ -1593,6 +1615,42 @@ def build_router(state: RunState) -> APIRouter:
         _refuse_if_chat_streaming("rename a file or folder")
         try:
             return editorfs.rename_path(body.frm, body.to)
+        except editorfs.WorkspacePathExists as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail_object)
+        except editorfs.WorkspacePathError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    @router.post("/fs/move-batch")
+    def post_fs_move_batch(body: FileMoveBatchIn) -> Dict[str, Any]:
+        """Several files into one existing folder — one request, or nothing moves.
+
+        The rules live in :func:`src.core.editorfs.mutate.move_paths_batch`,
+        which is ``rename_path``'s rules asked of every entry: both ends of each
+        move go through the write gate (422 naming the policy rule), an absent
+        source is 404, a **folder** in ``paths`` is 400, a symlink source is 400,
+        the destination folder must already be a directory (409 naming it — no
+        implicit ``mkdir``), and an occupied target is 409 with
+        ``{"reason": "exists", …}`` rather than ``os.rename``'s silent
+        replacement. Over the entry cap is 400 naming the cap.
+
+        The transaction is the **ordering**: every entry is validated before any
+        of them is applied, so a refusal leaves the whole set at home. The apply
+        loop itself is *not* atomic across paths — there is no filesystem
+        transaction to borrow — and it owns that: it stops at the first
+        ``OSError`` and the payload's ``moved`` array says exactly what landed
+        instead of pretending the list did.
+
+        Refused while a chat reply streams, like every other write. Nothing is
+        backed up, as for a rename: the bytes did not change. The payload answers
+        ``{"moved": [{"from", "to", "mtime"}…], "to_parent"}`` so the caller can
+        re-point its open buffers and re-list the two folders it touched.
+
+        Browser-only, like the other write routes: no connector or LSP tool may
+        reach a route under ``/fs`` that mutates disk.
+        """
+        _refuse_if_chat_streaming("move files")
+        try:
+            return editorfs.move_paths_batch(body.paths, body.to_parent)
         except editorfs.WorkspacePathExists as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail_object)
         except editorfs.WorkspacePathError as exc:

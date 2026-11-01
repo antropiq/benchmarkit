@@ -4,6 +4,7 @@ import MonacoEditor from './MonacoEditor.vue'
 import MonacoDiffViewer from './MonacoDiffViewer.vue'
 import MarkdownStream from './MarkdownStream.vue'
 import EditorTreeDialogs from './EditorTreeDialogs.vue'
+import EditorMoveDialog from './EditorMoveDialog.vue'
 import { useEditorFiles } from '../composables/useEditorFiles'
 import { useWorkspaceTree } from '../composables/useWorkspaceTree'
 import { useWorkspaceSearch } from '../composables/useWorkspaceSearch'
@@ -561,5 +562,10 @@ onBeforeUnmount(() => {
          component for all of the Editor's confirmations, whatever the later
          write tasks add to it. -->
     <EditorTreeDialogs />
+    <!-- The batch move's modal, beside the confirms: it asks about tree rows,
+         but the answer set is the pane's too — an open buffer of a moved file
+         is re-pointed by the same flow. Mounted **once**, here: a second host
+         would mean two dialogs answering one `movePrompt`. -->
+    <EditorMoveDialog />
   </section>
 </template>

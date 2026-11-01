@@ -1069,6 +1069,346 @@ class TestRename:
         assert client.post("/api/fs/rename", json={"from": "README.md"}).status_code == 422
 
 
+def move_batch(client: TestClient, paths: List[str], to_parent: str):
+    return client.post(
+        "/api/fs/move-batch", json={"paths": paths, "to_parent": to_parent}
+    )
+
+
+class TestMoveBatch:
+    """``POST /api/fs/move-batch``: N files, one folder, or nothing at all.
+
+    Every rule is the rename's, asked of every entry *before* any entry moves —
+    so each case below asserts the refusal **and the sources still at home**.
+    That second clause is the whole reason the batch is one request: N renames
+    from the browser would have the early ones on disk when the fifth is refused.
+    """
+
+    def test_two_files_land_and_both_are_readable_at_the_new_path(
+        self, workspace: Path, client, backups: Path
+    ):
+        (workspace / "archive").mkdir()
+        before = {
+            rel: (workspace / rel).stat()
+            for rel in ("README.md", "src/config.py")
+        }
+
+        response = move_batch(client, ["README.md", "src/config.py"], "archive")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["to_parent"] == "archive"
+        assert [(entry["from"], entry["to"]) for entry in body["moved"]] == [
+            ("README.md", "archive/README.md"),
+            ("src/config.py", "archive/config.py"),
+        ]
+        for entry in body["moved"]:
+            moved = workspace / entry["to"]
+            assert moved.is_file()
+            assert not (workspace / entry["from"]).exists()
+            # A move changes no bytes, so ``mtime`` is the file's own: an open
+            # buffer of it stays fresh and its save token stays valid.
+            assert entry["mtime"] == moved.stat().st_mtime
+            assert entry["mtime"] == before[entry["from"]].st_mtime
+            assert client.get(
+                "/api/fs/file", params={"path": entry["to"]}
+            ).status_code == 200
+
+    def test_a_move_writes_no_backup(self, workspace: Path, client, backups: Path):
+        """``rename_path``'s argument restated once: the bytes did not change."""
+        (workspace / "archive").mkdir()
+        assert move_batch(
+            client, ["README.md", "src/config.py"], "archive"
+        ).status_code == 200
+        if backups.exists():
+            assert list(backups.glob("*.orig")) == []
+        assert editorfs.files.list_backups(workspace / "archive" / "config.py") == []
+        assert editorfs.files.list_backups(workspace / "src" / "config.py") == []
+
+    def test_the_destination_is_normalised_and_empty_is_the_working_location(
+        self, workspace: Path, client, backups: Path
+    ):
+        """``./archive/`` answers as ``archive``; ``""`` is the root itself."""
+        (workspace / "archive").mkdir()
+        body = move_batch(client, ["src/core/job.py"], "./archive/").json()
+        assert body["to_parent"] == "archive"
+        assert body["moved"][0]["to"] == "archive/job.py"
+        assert (workspace / "archive" / "job.py").read_text(encoding="utf-8") == "y = 2\n"
+
+        root_move = move_batch(client, ["archive/job.py"], "")
+        assert root_move.status_code == 200
+        assert root_move.json()["to_parent"] == ""
+        assert (workspace / "job.py").read_text(encoding="utf-8") == "y = 2\n"
+
+    def test_one_moved_file_is_still_savable_at_its_new_path_with_its_old_token(
+        self, workspace: Path, client, backups: Path
+    ):
+        """The batch's own version of the rename's round trip."""
+        old_token = token(client, "src/config.py")
+        (workspace / "archive").mkdir()
+        assert move_batch(
+            client, ["README.md", "src/config.py"], "archive"
+        ).status_code == 200
+        response = save(client, "archive/config.py", "x = 42\n", old_token)
+        assert response.status_code == 200
+        assert (workspace / "archive" / "config.py").read_text(encoding="utf-8") == (
+            "x = 42\n"
+        )
+
+    def test_one_occupied_target_refuses_the_whole_batch_and_both_stay_at_home(
+        self, workspace: Path, client
+    ):
+        """The ordering proof, and the only test that shows it: nothing moved."""
+        (workspace / "archive").mkdir()
+        (workspace / "archive" / "README.md").write_text(
+            "someone else\n", encoding="utf-8"
+        )
+
+        response = move_batch(client, ["README.md", "src/config.py"], "archive")
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["reason"] == "exists"
+        assert detail["path"] == "archive/README.md"
+        assert detail["dir"] is False
+        assert (workspace / "README.md").read_text(encoding="utf-8") == "# hi\n"
+        assert (workspace / "src" / "config.py").read_text(encoding="utf-8") == "x = 1\n"
+        assert (workspace / "archive" / "README.md").read_text(encoding="utf-8") == (
+            "someone else\n"
+        )
+        assert not (workspace / "archive" / "config.py").exists()
+
+    def test_an_occupied_target_folder_is_409_too(self, workspace: Path, client):
+        """``os.rename`` moves a file *onto* nothing but refuses a folder; here
+        the name is checked before the call either way."""
+        (workspace / "archive").mkdir()
+        (workspace / "archive" / "config.py").mkdir()
+        response = move_batch(client, ["src/config.py"], "archive")
+        assert response.status_code == 409
+        assert response.json()["detail"]["dir"] is True
+        assert (workspace / "src" / "config.py").is_file()
+        assert (workspace / "archive" / "config.py").is_dir()
+
+    def test_an_occupied_target_dangling_symlink_is_409(self, workspace: Path, client):
+        (workspace / "archive").mkdir()
+        (workspace / "archive" / "README.md").symlink_to(workspace / "never-existed")
+        response = move_batch(client, ["README.md"], "archive")
+        assert response.status_code == 409
+        assert response.json()["detail"]["reason"] == "exists"
+        assert (workspace / "README.md").is_file()
+        assert (workspace / "archive" / "README.md").is_symlink()
+
+    def test_moving_into_the_sources_own_folder_is_409_never_a_200_no_op(
+        self, workspace: Path, client
+    ):
+        """Stated so nobody "fixes" it by skipping: the target *is* the source,
+        so it is occupied. The dialog refuses this case in its own field, and a
+        hand-built body gets the same answer the rename's check gives."""
+        response = move_batch(client, ["src/config.py"], "src")
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["reason"] == "exists"
+        assert detail["path"] == "src/config.py"
+        assert (workspace / "src" / "config.py").read_text(encoding="utf-8") == "x = 1\n"
+
+    # ``(rules, the path the rule locks, the fragment of the rule quoted)``.
+    # A locked *source* and a locked *destination* are the rename's both-ends
+    # rule per entry. A hidden path answers 422 here and never the 404 a read of
+    # it answers: every entry of a batch is a write.
+    LOCKED_SIDES = [
+        ([], ".git/config", '".git"'),                      # hidden by the seed
+        ([], "node_modules/left-pad/index.js", '"**/node_modules"'),
+        ([{"path": "keys", "mode": "ro"}], "keys/id_ed25519", '"keys"'),
+        ([{"path": "deploy", "mode": "hidden"}], "deploy/server.pem", '"deploy"'),
+    ]
+
+    @pytest.mark.parametrize(("rules", "rel", "quoted"), LOCKED_SIDES)
+    def test_a_locked_source_is_422_naming_the_rule_and_stays_whole(
+        self, workspace: Path, client, rules: List[Dict[str, str]], rel: str,
+        quoted: str,
+    ):
+        if rules:
+            write_policy(workspace, rules)
+        target = workspace / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("original\n", encoding="utf-8")
+        (workspace / "archive").mkdir(exist_ok=True)
+
+        response = move_batch(client, ["README.md", rel], "archive")
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "workspace policy" in detail, detail
+        assert quoted in detail, detail
+        assert target.read_text(encoding="utf-8") == "original\n"
+        assert (workspace / "README.md").is_file()
+        assert not (workspace / "archive" / "README.md").exists()
+
+    @pytest.mark.parametrize(("rules", "rel", "quoted"), LOCKED_SIDES)
+    def test_a_locked_destination_is_422_naming_the_rule_and_nothing_moved(
+        self, workspace: Path, client, rules: List[Dict[str, str]], rel: str,
+        quoted: str,
+    ):
+        folder = rel.rpartition("/")[0]
+        if rules:
+            write_policy(workspace, rules)
+        (workspace / folder).mkdir(parents=True, exist_ok=True)
+
+        response = move_batch(client, ["README.md", "src/config.py"], folder)
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert "workspace policy" in detail, detail
+        assert quoted in detail, detail
+        assert (workspace / "README.md").read_text(encoding="utf-8") == "# hi\n"
+        assert (workspace / "src" / "config.py").read_text(encoding="utf-8") == "x = 1\n"
+
+    def test_a_missing_destination_is_409_naming_it_and_is_not_created(
+        self, workspace: Path, client
+    ):
+        """R3: the folder has to be there already — no implicit ``mkdir``."""
+        response = move_batch(client, ["README.md", "src/config.py"], "archive")
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert "Parent folder does not exist" in detail
+        assert "archive" in detail
+        assert not (workspace / "archive").exists()
+        assert (workspace / "README.md").is_file()
+        assert (workspace / "src" / "config.py").is_file()
+
+    def test_a_destination_that_is_a_file_is_the_same_409_sentence(
+        self, workspace: Path, client
+    ):
+        """R3 says "must already be a **directory**", so a file destination is
+        the missing-folder answer, not a different one."""
+        response = move_batch(client, ["README.md"], "src/config.py")
+        assert response.status_code == 409
+        assert "Parent folder does not exist: src/config.py" in (
+            response.json()["detail"]
+        )
+        assert (workspace / "README.md").is_file()
+        assert (workspace / "src" / "config.py").read_text(encoding="utf-8") == "x = 1\n"
+
+    def test_a_folder_in_the_batch_is_400_and_survives_whole(
+        self, workspace: Path, client
+    ):
+        """R4 enforced server-side: the route cannot be talked into a tree."""
+        (workspace / "archive").mkdir()
+        response = move_batch(client, ["README.md", "src"], "archive")
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "folder" in detail
+        assert "src" in detail
+        assert (workspace / "src" / "config.py").is_file()
+        assert (workspace / "src" / "core" / "job.py").is_file()
+        assert (workspace / "README.md").is_file()
+        assert not (workspace / "archive" / "README.md").exists()
+
+    def test_a_symlink_in_the_batch_is_400_and_the_link_is_untouched(
+        self, workspace: Path, client
+    ):
+        (workspace / "target.py").write_text("the real file\n", encoding="utf-8")
+        (workspace / "shortcut.py").symlink_to(workspace / "target.py")
+        (workspace / "archive").mkdir()
+
+        response = move_batch(client, ["README.md", "shortcut.py"], "archive")
+        assert response.status_code == 400
+        assert "symbolic link" in response.json()["detail"]
+        assert (workspace / "shortcut.py").is_symlink()
+        assert (workspace / "README.md").is_file()
+        assert not (workspace / "archive" / "shortcut.py").exists()
+
+    def test_a_missing_source_is_404_naming_it(self, workspace: Path, client):
+        (workspace / "archive").mkdir()
+        response = move_batch(client, ["nope.py", "README.md"], "archive")
+        assert response.status_code == 404
+        assert "does not exist" in response.json()["detail"]
+        assert (workspace / "README.md").is_file()
+        assert not (workspace / "archive" / "README.md").exists()
+
+    @pytest.mark.parametrize(
+        "raw", ["../etc/hosts", "/etc/hosts", "~/x", "src/../../etc", "a\0b"]
+    )
+    def test_an_escape_on_either_field_is_422(self, workspace: Path, client, raw: str):
+        assert move_batch(client, [raw], "src").status_code == 422
+        assert move_batch(client, ["README.md"], raw).status_code == 422
+        assert (workspace / "README.md").is_file()
+        assert (workspace / "src" / "config.py").is_file()
+        assert not (workspace / "src" / "README.md").exists()
+
+    def test_empty_paths_is_400_and_over_cap_is_400_naming_the_cap(
+        self, workspace: Path, client, monkeypatch: pytest.MonkeyPatch
+    ):
+        assert move_batch(client, [], "src").status_code == 400
+        monkeypatch.setattr(editorfs.constants, "MAX_MOVE_BATCH", 2)
+        response = move_batch(
+            client, ["README.md", "src/config.py", "src/core/job.py"], "src"
+        )
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "2" in detail, detail
+        assert "3" in detail, detail
+        assert (workspace / "README.md").is_file()
+        assert (workspace / "src" / "core" / "job.py").is_file()
+
+    def test_two_entries_aiming_at_one_name_are_refused_and_nothing_moved(
+        self, workspace: Path, client
+    ):
+        """Step 6's hand-built-body guard (D13): unreachable from the UI, where a
+        batch shares one parent — so the second ``os.rename`` can never silently
+        replace what the first one moved."""
+        (workspace / "archive").mkdir()
+        (workspace / "notes" / "one").mkdir(parents=True)
+        (workspace / "notes" / "two").mkdir(parents=True)
+        (workspace / "notes" / "one" / "same.md").write_text("first\n", encoding="utf-8")
+        (workspace / "notes" / "two" / "same.md").write_text("second\n", encoding="utf-8")
+
+        response = move_batch(
+            client, ["notes/one/same.md", "notes/two/same.md"], "archive"
+        )
+        assert response.status_code == 400
+        assert "same name" in response.json()["detail"]
+        assert (workspace / "notes" / "one" / "same.md").read_text(encoding="utf-8") == (
+            "first\n"
+        )
+        assert (workspace / "notes" / "two" / "same.md").read_text(encoding="utf-8") == (
+            "second\n"
+        )
+        assert not (workspace / "archive" / "same.md").exists()
+
+        # The same file named twice is the same collision.
+        response = move_batch(client, ["src/config.py", "src/config.py"], "archive")
+        assert response.status_code == 400
+        assert (workspace / "src" / "config.py").is_file()
+
+    def test_the_working_location_cannot_be_an_entry(self, workspace: Path, client):
+        (workspace / "archive").mkdir()
+        for raw in ("", "."):
+            response = move_batch(client, [raw], "archive")
+            assert response.status_code == 400
+            assert "working location itself" in response.json()["detail"]
+        assert (workspace / "README.md").is_file()
+
+    def test_a_cross_device_move_is_refused_rather_than_copied(
+        self, workspace: Path, client, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The rename's ``EXDEV`` sentence, reached through the shared answer."""
+        (workspace / "archive").mkdir()
+
+        def cross_device(_frm: str, _to: str) -> None:
+            raise OSError(18, "Invalid cross-device link")
+
+        monkeypatch.setattr(os, "rename", cross_device)
+        response = move_batch(client, ["README.md", "src/config.py"], "archive")
+        assert response.status_code == 409
+        assert "different filesystems" in response.json()["detail"]
+        assert (workspace / "README.md").is_file()
+        assert (workspace / "src" / "config.py").is_file()
+
+    def test_malformed_bodies_are_422_not_500(self, client):
+        assert client.post("/api/fs/move-batch", json={"to_parent": "src"}).status_code == 422
+        assert client.post("/api/fs/move-batch", json={"paths": []}).status_code == 422
+        assert client.post(
+            "/api/fs/move-batch", json={"paths": "README.md", "to_parent": "src"}
+        ).status_code == 422
+
+
 def trash_path(client: TestClient, path: str):
     return client.request("DELETE", "/api/fs/file", params={"path": path})
 
@@ -1538,6 +1878,24 @@ class TestChatStreamGate:
         assert (workspace / "src" / "config.py").is_file()
         assert not trash.exists()
 
+    def test_a_move_batch_while_a_reply_streams_is_409(
+        self, client, workspace: Path, backups: Path
+    ):
+        """The reply may be writing the source folder *or* the destination."""
+        (workspace / "archive").mkdir()
+        cancel_event = threading.Event()
+        routes._arm_chat_handle(cancel_event, threading.Event())
+        try:
+            response = move_batch(client, ["README.md", "src/config.py"], "archive")
+            assert response.status_code == 409
+            assert "while a chat reply is streaming" in response.json()["detail"]
+        finally:
+            routes._clear_chat_handle(cancel_event)
+        assert (workspace / "README.md").is_file()
+        assert (workspace / "src" / "config.py").is_file()
+        assert not (workspace / "archive" / "README.md").exists()
+        assert not backups.exists()
+
 
 class TestMissingAndShape:
     def test_saving_a_missing_path_is_404(self, client):
@@ -1573,6 +1931,7 @@ class TestWritesStayBrowserOnly:
 
         The write core is the whole mutating half — ``write_file`` for a buffer,
         ``create_path`` for a new name, ``rename_path`` for a move,
+        ``move_paths_batch`` for a batch of them,
         ``trash_path`` for a removal — so a scan of ``src`` for those names
         answers "who can write" without trusting the prose. The package's own
         files are skipped (they *define* them).
@@ -1583,6 +1942,7 @@ class TestWritesStayBrowserOnly:
             "backup_for_write",
             "create_path",
             "rename_path",
+            "move_paths_batch",
             "trash_path",
         )
         callers: List[str] = []
@@ -1658,10 +2018,21 @@ def call_write(client: TestClient, which: str, path: str, extra: Dict[str, Any] 
         return rename(client, "README.md", path)
     if which == "delete":
         return trash_path(client, path)
+    if which == "move-src":
+        # The batch's source end: one locked path among the sources, an
+        # innocent destination folder.
+        return move_batch(client, [path], "src/core")
+    if which == "move-dst":
+        # The batch's destination end: the folder the whole batch lands in. A
+        # root-level file as the only source, so its target name cannot collide
+        # with anything already inside the folder under test — the gate has to
+        # be what refuses this, not the occupied check.
+        return move_batch(client, ["README.md"], path)
     raise AssertionError(f"unknown write kind {which!r}")  # a matrix hole, not a typo
 
 
-WRITE_KINDS = ["save", "create", "rename-src", "rename-dst", "delete"]
+WRITE_KINDS = ["save", "create", "rename-src", "rename-dst", "delete",
+               "move-src", "move-dst"]
 
 
 class TestWriteMatrix:
@@ -1959,7 +2330,8 @@ class TestPolicyFileIsBroken:
         expected = str(path)
         for which, extra in (("save", {"token": None}), ("create", None),
                              ("rename-src", None), ("rename-dst", None),
-                             ("delete", None)):
+                             ("delete", None), ("move-src", None),
+                             ("move-dst", None)):
             response = call_write(client, which, "src/config.py", extra)
             assert response.status_code == 422, which
             detail = response.json()["detail"]

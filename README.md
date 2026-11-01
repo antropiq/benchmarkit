@@ -38,6 +38,16 @@ same configured model interactively.
   benchmarkit's own `.gitignore`, so in a *foreign* project's `git status` it
   shows as untracked; the app never edits a repository it was pointed at, so it
   will not add it to your `.gitignore` for you.
+- **A group of files moves in one gesture** — mark rows with `Ctrl`+click,
+  right-click one and answer `Move to…` with a destination folder: the files
+  move whole into a folder that already exists, in one request, so either the
+  set has moved or nothing has, and a file that is open keeps its tab and its
+  unsaved edits at the new path. The WorkBench's batch mode works through a
+  `todos/` folder of task files, so moving one **into** `todos/` re-arms it as
+  a pending task on the loop's next listing and moving one **out** retires it —
+  the loop reads the filesystem, not a flag, so the gesture is not a no-op. No
+  guard is added for it: the app has no way to know a `.md` is a task, and
+  `todos/` is an ordinary folder to every other surface.
 - **Optional MCP tools in Chat** — declare MCP connectors (remote HTTP or
   local stdio) in `mcp_connectors/externals.json` and tick them in Settings so
   the chat model can browse the web, read docs or run whitelisted shell

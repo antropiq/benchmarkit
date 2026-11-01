@@ -32,8 +32,10 @@ Core-only (no FastAPI, no browser concerns), a sibling of ``mcphub/`` and
   ``create_path`` (the create route) makes one empty file or one folder, never
   over an existing name; ``rename_path`` (the rename route) moves one path to a
   new one — both ends and both parent chains gated, never over an occupied
-  target; and ``trash_path`` (the delete route) moves one file or one whole
-  folder into a dated batch under the **active workspace's** trash
+  target; ``move_paths_batch`` (the move-batch route) moves N *files* into one
+  folder that is already there, checking every entry before applying any so a
+  batch moves whole or not at all; and ``trash_path`` (the delete route) moves a
+  file or a whole folder into a dated batch under the **active workspace's** trash
   (``mutate.trash_dir()`` — ``<workspace>/.nojae/trash``, per call) — never
   ``unlink``ed, and all-or-nothing on the subtree's verdict. The parent chain
   and the leaf name both go through the same write gate, which is one policy
@@ -77,6 +79,7 @@ from .gitstatus import file_diff, git_status
 from .mutate import (
     WorkspacePathExists,
     create_path,
+    move_paths_batch,
     rename_path,
     sweep_trash,
     trash_batches,

@@ -10,6 +10,9 @@ sibling of ``tree.py``/``files.py``. Entry points:
   rename with a different parent *is* a move, so it is one operation — and the
   one where the policy has the most ways to go wrong, because two
   user-supplied paths describe one filesystem action.
+* :func:`move_paths_batch` — the move-batch route: N files into one folder that
+  already exists, the same rules as a rename asked of every entry **before the
+  first one moves**, so the set either moves whole or nothing moves at all.
 * :func:`trash_path` — the delete route: one file or one whole folder, **moved**
   into a dated batch under the active workspace's own trash (``trash_dir()``,
   ``<workspace>/.nojae/trash``) and never ``unlink``ed, so a
@@ -36,7 +39,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import constants
 from .files import fsync_dir
@@ -185,6 +188,33 @@ def _parent_missing_error(parent_rel: str) -> WorkspacePathError:
     )
 
 
+def _rename_oserror(
+    from_rel: str, to_rel: str, target: str, exc: OSError
+) -> WorkspacePathError:
+    """The one answer for an ``os.rename`` that failed — the two movers share it.
+
+    ``EXDEV`` is refused by name rather than worked around (copy-then-delete is
+    not atomic and loses the mode and the extended attributes); ``ENOENT`` /
+    ``ENOTDIR`` mean a folder went away between the gate and here, which is the
+    same answer the gate gives; ``ENOTEMPTY`` / ``EEXIST`` mean something arrived
+    at the target name after the occupied check, which is the same answer the
+    check gives. Anything else is a 500 with both paths in the sentence.
+    """
+    if exc.errno == errno.EXDEV:
+        return WorkspacePathError(
+            409,
+            f"Cannot move {from_rel} to {to_rel}: they are on different "
+            "filesystems, and a copy-then-delete would not be atomic",
+        )
+    if exc.errno in (errno.ENOENT, errno.ENOTDIR):
+        return _parent_missing_error(to_rel.rpartition("/")[0])
+    if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+        return _exists_answer(to_rel, target)
+    return WorkspacePathError(
+        500, f"Could not rename {from_rel} to {to_rel}: {exc}"
+    )
+
+
 def rename_path(frm: str, to: str) -> Dict[str, Any]:
     """The rename route's core: move one path, or refuse.
 
@@ -276,20 +306,7 @@ def rename_path(frm: str, to: str) -> Dict[str, Any]:
     try:
         os.rename(str(from_path), str(target))
     except OSError as exc:
-        if exc.errno == errno.EXDEV:
-            raise WorkspacePathError(
-                409,
-                f"Cannot move {from_rel} to {to_rel}: they are on different "
-                "filesystems, and a copy-then-delete would not be atomic",
-            ) from exc
-        if exc.errno in (errno.ENOENT, errno.ENOTDIR):
-            # The folder went away between the gate and here.
-            raise _parent_missing_error(to_rel.rpartition("/")[0]) from exc
-        if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
-            raise _exists_answer(to_rel, str(target)) from exc
-        raise WorkspacePathError(
-            500, f"Could not rename {from_rel} to {to_rel}: {exc}"
-        ) from exc
+        raise _rename_oserror(from_rel, to_rel, str(target), exc) from exc
 
     fsync_dir(str(to_parent))
     fsync_dir(str(from_path.parent))
@@ -309,6 +326,179 @@ def rename_path(frm: str, to: str) -> Dict[str, Any]:
         "size": stat.st_size,
         "mtime": stat.st_mtime,
     }
+
+
+# ---------------------------------------------------------------------------
+# Batch move: N files into one folder that is already there, or nothing at all.
+# ---------------------------------------------------------------------------
+
+
+def move_paths_batch(paths: List[str], to_parent: str) -> Dict[str, Any]:
+    """The move-batch route's core: N files to one folder, or a refusal.
+
+    This is **not a second rename** — it is :func:`rename_path`'s rules applied
+    N times with the checks finished before the first move starts. The all-or-
+    nothing the UI promises cannot be had by firing N rename requests from the
+    browser: the successes would be on disk when the fifth is refused. So the
+    transaction here is the *ordering* — validate every entry, then apply none
+    until all are valid.
+
+    Steps, in this order — the order is the test list:
+
+    * ``paths`` empty is 400; more than :data:`editorfs.constants.MAX_MOVE_BATCH`
+      entries is 400 naming the cap (read at call time, so a test patches the
+      constant by name);
+    * ``to_parent`` is normalised, never joined by the client — the target is
+      ``to_parent + "/" + basename(source)``, computed here, because a client
+      that joined them could hide a target the ancestor gate would never see. The
+      no-op case (the destination *is* the sources' own folder) is not refused
+      here the way the dialog refuses it: it falls out of the occupied check as
+      the 409 it is, since each target is the source itself;
+    * every **source**: gated through itself and its whole ancestor chain, then
+      it must exist (**404** for the first absent one), must be a **file** —
+      a folder is 400 naming the path, so the route cannot be talked into moving
+      a tree — and must not be a top-level **symlink** (400, the delete's and the
+      rename's argument verbatim);
+    * ``to_parent`` must already be a directory — **409** naming it, no implicit
+      ``mkdir``. Asked before the targets, because one folder describes the
+      whole batch: a destination that is a file gets *this* sentence rather than
+      the create's different one for a file parent;
+    * every **target**, gated through its whole ancestor chain (the both-ends
+      rule; an innocent file may be moving into a folder the policy hides);
+    * no target occupied (**409** ``{"reason": "exists", …}``), and no two
+      sources landing on one target name. That last check is unreachable from
+      the UI (a batch's files share one parent, so distinct names stay distinct);
+      it is the guard against a hand-built body that would otherwise let the
+      second ``os.rename`` silently replace the first;
+    * **then** the renames, in the given order.
+
+    Step 7 is not atomic across N paths — there is no filesystem transaction to
+    borrow — and that is owned out loud rather than papered over: the loop stops
+    at the first ``OSError`` and never continues past one, so a partial apply can
+    only ever leave a **prefix** of the list moved — and ``moved`` reports exactly
+    what landed rather than what was asked for. The window between the occupied
+    check and here is the same one a single :func:`rename_path` already accepts,
+    and ``EXDEV`` / ``ENOENT`` map to the same 409 sentences through
+    :func:`_rename_oserror`, naming the entry that failed.
+
+    There is deliberately **no backup**, as for a rename: the bytes did not
+    change, and the trash plus ``git status`` already describe the move.
+
+    The payload is ``{"moved": [{"from", "to", "mtime"}…], "to_parent"}`` — the
+    rename's own shape per entry, so the caller's reconciliation is the rename's
+    loop — and ``to_parent`` is the *normalised* folder, so what gets re-listed
+    is the one the server actually used.
+    """
+    cap = constants.MAX_MOVE_BATCH
+    if not paths:
+        raise WorkspacePathError(400, "A move needs at least one file")
+    if len(paths) > cap:
+        raise WorkspacePathError(
+            400,
+            f"A move names at most {cap} files at once, and this names "
+            f"{len(paths)}",
+        )
+
+    parent_rel = normalise_rel(to_parent)
+
+    # Step 3 — every source, gated and answered for, before any target is
+    # looked at. The first entry that fails decides the answer.
+    entries: List[Dict[str, Any]] = []
+    for raw in paths:
+        from_rel = normalise_rel(raw)
+        if from_rel == "":
+            raise WorkspacePathError(
+                400, "The working location itself cannot be moved"
+            )
+        from_path = resolve_write_target(from_rel)[-1][1]
+        if not from_path.exists():
+            raise missing_path_error(from_rel)
+        if from_path.is_dir():
+            raise WorkspacePathError(
+                400,
+                f"Path is a folder, not a file to move: {from_rel} "
+                f"(a batch moves files into one folder; moving a whole tree "
+                f"is what Rename does)",
+            )
+        # The **spelled** path, not the resolved one — the delete's argument:
+        # the gate hands back the realpath, which is a link's target and never a
+        # link itself, so symlink-ness has to be judged one level up.
+        spelled = Path(os.path.join(workspace_root(), from_rel))
+        if spelled.is_symlink():
+            raise WorkspacePathError(
+                400,
+                f"Path is a symbolic link, not a file to rename: {from_rel} "
+                f"(its target may be outside the working location, and renaming "
+                f"the link would move it without moving what it points at)",
+            )
+
+        # Step 4's input, joined **here** (D11): the client never sends a target,
+        # so the ancestor gate cannot be shown one folder and landed in another.
+        name = from_rel.rpartition("/")[2]
+        to_rel = f"{parent_rel}/{name}" if parent_rel else name
+        entries.append({"from": from_rel, "to": to_rel, "source": from_path})
+
+    # Step 5 (R3) — asked **before** each target, deliberately: one folder
+    # describes the whole batch, so a locked one is 422 naming the rule and a
+    # folder that is missing *or is a file* is the same 409 sentence naming it.
+    # ``resolve_parent_in_workspace`` would answer a file with its own 400, which
+    # is not what a destination field is shown — and there is no implicit
+    # ``mkdir`` anywhere in this function.
+    parent_path = resolve_write_target(parent_rel)[-1][1]
+    if not parent_path.is_dir():
+        raise _parent_missing_error(parent_rel)
+
+    # Step 4 — every target through its own ancestor chain. The leaf name is not
+    # on disk, so it is judged by its own verdict exactly as a create judges it:
+    # a name the policy hides or locks *at the destination* is refused there even
+    # though the same name was innocent at the source.
+    targets: Dict[str, Tuple[Path, str]] = {}
+    for entry in entries:
+        _, to_parent_path, to_name = resolve_parent_in_workspace(entry["to"])
+        targets[entry["to"]] = (to_parent_path, to_name)
+
+    # Nothing occupied, and no two entries aiming at one name. The second is a
+    # hand-built-body guard (see the docstring): three lines, no collision table.
+    seen: Dict[str, str] = {}
+    for entry in entries:
+        target = targets[entry["to"]][0] / targets[entry["to"]][1]
+        if entry["to"] in seen:
+            raise WorkspacePathError(
+                400,
+                f"Two moved files would land on the same name: "
+                f"{seen[entry['to']]} and {entry['from']} both to {entry['to']}",
+            )
+        seen[entry["to"]] = entry["from"]
+        if os.path.lexists(str(target)):
+            raise _exists_answer(entry["to"], str(target))
+
+    # Step 7 — only now the moves, in the given order, stopping at the first
+    # failure (there is no filesystem transaction to borrow, so the payload says
+    # what landed rather than pretending the whole list did).
+    moved: List[Dict[str, Any]] = []
+    for entry in entries:
+        from_rel = str(entry["from"])
+        to_rel = str(entry["to"])
+        from_path = entry["source"]
+        to_parent_path, to_name = targets[to_rel]
+        target = to_parent_path / to_name
+        try:
+            os.rename(str(from_path), str(target))
+        except OSError as exc:
+            raise _rename_oserror(from_rel, to_rel, str(target), exc) from exc
+        fsync_dir(str(to_parent_path))
+        fsync_dir(str(from_path.parent))
+        try:
+            # Not ``lstat``: a symlink source was refused above, so what is here
+            # now is the file that was moved.
+            stat = os.stat(target)
+        except OSError as exc:  # pragma: no cover - the move only just landed
+            raise WorkspacePathError(
+                500, f"Moved {from_rel} but could not stat it: {exc}"
+            ) from None
+        moved.append({"from": from_rel, "to": to_rel, "mtime": stat.st_mtime})
+
+    return {"moved": moved, "to_parent": parent_rel}
 
 
 # ---------------------------------------------------------------------------

@@ -82,6 +82,26 @@ const ITEMS = [
     scope: 'row',
     needs: 'mutable',
   },
+  // Move to… sits directly after Rename…, the same mutation family, and the two
+  // coexist on one file without being redundant: Rename… asks for the *full
+  // target path* in a field labelled as a name, Move to… asks for the destination
+  // **folder** alone and lists every path it is about to move — the modal is why
+  // the batch exists at all. There is deliberately no `needs` flag: `scope:
+  // 'file'` is exactly the set of rows this item can honour (a folder row can
+  // never join a batch, and the root is not a file row), while a flag would have
+  // to answer "is this writable", which this file's header says is never its
+  // business — the server stays the authority, as it already is for Rename….
+  // `moveCount` feeds the hint only, never presence: a plain right-click on one
+  // unmarked file is the N=1 case of this same item.
+  {
+    id: 'move-batch',
+    label: 'Move to…',
+    scope: 'file',
+    title: (flags) =>
+      flags.moveCount > 1
+        ? `Move these ${flags.moveCount} files into another folder`
+        : 'Move this file into another folder',
+  },
   {
     id: 'delete',
     label: 'Delete',
@@ -128,6 +148,8 @@ function inScope(scope, { dir, isRoot }) {
 //   hasBuffer          — a tab already holds this file
 //   mutable            — the row may be renamed/deleted (false for the root)
 //   trashRetentionDays — quoted in the delete item's hint
+//   moveCount          — how many rows this row's batch covers (the move item's
+//                        hint; a count of rows, never a claim about writability)
 export function treeMenuItems(flags) {
   const out = []
   for (const item of ITEMS) {

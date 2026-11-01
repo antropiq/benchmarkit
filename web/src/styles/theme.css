@@ -2629,7 +2629,8 @@ body {
 
 .editor-nav-error,
 .editor-nav-empty,
-.editor-nav-footer {
+.editor-nav-footer,
+.editor-nav-selected {
   margin: 0;
   padding: 0 var(--bi-space-2);
 }
@@ -2638,6 +2639,15 @@ body {
   border-top: 1px solid var(--bi-border);
   padding-top: var(--bi-space-1);
   color: var(--pico-muted-color);
+  font-size: 0.72rem;
+}
+
+/* The batch count, in the same footer caption area: it belongs to the marks, so
+   it is the one line there that is coloured rather than muted, and it sits
+   right under the policy note without a second border. */
+.editor-nav-selected {
+  padding-top: 0.15rem;
+  color: var(--bi-violet);
   font-size: 0.72rem;
 }
 
@@ -2704,6 +2714,26 @@ body {
 .tree-row--focused {
   outline: 2px solid var(--pico-primary);
   outline-offset: -2px;
+}
+
+/* A row of the batch — the third row tone, beside the two above. `--selected`
+   is a background tint in the primary hue and `--focused` is an outline, so a
+   third *background* would be unreadable in combination with either: the mark
+   gets a stripe on the leading edge as well, which survives both, so a row that
+   is marked *and* focused, or marked *and* the pane's file, still says all it
+   is. The colour is a theme token (`--bi-violet`), so it reads correctly in the
+   light and the dark theme — the hues differ, the three signals stay distinct. */
+.tree-row--marked {
+  background-color: color-mix(in srgb, var(--bi-violet) 16%, var(--bi-surface));
+  box-shadow: inset 0.25rem 0 0 var(--bi-violet);
+}
+
+/* Marked and the pane's file: the primary tint is the one the eye follows into
+   the pane, so it keeps the background and the mark keeps its stripe (this rule
+   only has to win the background, which source order alone would give to
+   `.tree-row--marked` above). */
+.tree-row--marked.tree-row--selected {
+  background-color: color-mix(in srgb, var(--pico-primary) 12%, var(--bi-surface));
 }
 
 .tree-chevron {
@@ -3338,6 +3368,45 @@ body {
 .editor-search-mark {
   background-color: var(--pico-mark-background-color);
   color: var(--pico-mark-color);
+}
+
+/* The batch move's modal. Same card family as the confirms, and the same width
+   as the delete one: what it shows is a list of paths and one field, and a
+   longer card would only stretch the paths into whitespace. Nothing here is
+   theme-specific — the colours all come from the Pico variables both themes
+   set. */
+.editor-move-dialog > article {
+  width: 520px;
+  max-width: 94vw;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+}
+
+.editor-move-dialog .caption {
+  margin: 0.25rem 0;
+}
+
+/* The subject list is capped so a 40-file batch cannot make the dialog taller
+   than the window: the field and the two buttons have to stay on screen, which
+   is why the cap is CSS and not the component's business. */
+.editor-move-list {
+  max-height: min(30vh, 16rem);
+  overflow: auto;
+  border: 1px solid var(--bi-border);
+  border-radius: var(--bi-radius-lg);
+  background-color: var(--bi-surface);
+  padding: var(--bi-space-1) var(--bi-space-2);
+  margin-bottom: var(--bi-space-1);
+}
+
+/* One `<input>`, labelled by the question it answers (D6: a *folder*, never a
+   full target path). */
+.editor-move-field {
+  margin-bottom: var(--bi-space-1);
+}
+
+.editor-move-error {
+  margin-bottom: var(--bi-space-1);
 }
 
 /* The pane's save affordances, in the header row *beside* the tab scroller: the

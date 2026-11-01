@@ -6,6 +6,7 @@ import { registerRefreshChord, useWorkspaceTree } from '../composables/useWorksp
 import { TRASH_RETENTION_DAYS, useEditorFiles } from '../composables/useEditorFiles'
 import { useEditorCreate } from '../composables/useEditorCreate'
 import { useEditorRename } from '../composables/useEditorRename'
+import { useEditorMove } from '../composables/useEditorMove'
 import { useGitStatus } from '../composables/useGitStatus'
 import SearchDialog from './SearchDialog.vue'
 import { useWorkspaceSearch } from '../composables/useWorkspaceSearch'
@@ -35,13 +36,13 @@ const {
   load,
   refresh,
   refreshBranch,
-  toggle,
   collapseAll,
   rootLabel,
   depthOf,
   entryFor,
   select,
   commandTarget,
+  batchFor,
   ROOT,
   handleKey,
 } = useWorkspaceTree()
@@ -119,6 +120,11 @@ const rootLevel = computed(() => depthOf(ROOT) + 1)
 const rootIcon = computed(() => fileIcon('', { dir: true, open: !!state.expanded[ROOT] }))
 // The root row's hint: any unstaged file anywhere in the browsed subtree.
 const rootMarked = computed(() => git.state.entries.length > 0)
+// How many rows are in the batch. A row style in a scrolling tree is invisible
+// the moment the batch is long, so the count is said in words where there is
+// always room for it. It never reads `0 selected`: the line is not rendered
+// without marks.
+const markCount = computed(() => state.marked.length)
 
 const tree = ref(null)
 
@@ -201,6 +207,10 @@ watch(() => state.focused, scrollFocusedIntoView)
 //     only invite the refusal. Delete only opens the confirmation
 //     (`useEditorFiles.requestDelete`); the trash move happens there, so this
 //     menu never destroys anything itself.
+//   * Move to… — a file row only, and with nothing behind it but that scope:
+//     a batch is files (R4), and whether the destination is allowed is the
+//     server's answer, not this menu's. The subject is `batchFor(row)` — the
+//     marks when they make a legal same-folder batch, otherwise that one row.
 //   * Close — only when a tab already holds this file; the same action as the
 //     chip's × (`requestCloseTab` asks Save-and-close / Discard / Cancel for a
 //     dirty buffer, so this item cannot throw work away either).
@@ -218,6 +228,9 @@ watch(() => state.focused, scrollFocusedIntoView)
 const files = useEditorFiles()
 const creator = useEditorCreate()
 const renamer = useEditorRename()
+// Move to… raises the batch modal (mounted in EditorArea, beside the confirms)
+// on the subject `batchFor` settles for the clicked row.
+const mover = useEditorMove()
 // Search raises the dialog (mounted at the end of this template) on the
 // navigator's own subject. The query, the scope and the results are the
 // composable's state, so this component only ever calls `openFor`.
@@ -246,6 +259,11 @@ function menuFlags(path, isDir) {
     diffable: !isDir && !isRoot && git.isDiffable(path),
     hasBuffer: !isDir && !isRoot && !!files.recordFor(path),
     trashRetentionDays: TRASH_RETENTION_DAYS,
+    // How many rows a Move on this row would cover — the batch as `batchFor`
+    // settles it, so it is 1 for an unmarked file and the mark count only when
+    // the marks form a legal same-parent batch including this row. A count of
+    // rows for the hint text, nothing more: it never gates the item.
+    moveCount: batchFor(path).paths.length,
   }
 }
 
@@ -312,6 +330,11 @@ const MENU_ACTIONS = {
   // that input is submitted — the same one-gesture-never-decides shape as the
   // delete item, one level milder.
   rename: (target) => renamer.startRename(target.path),
+  // Move to… hands over the batch `batchFor` settles for *this* row — resolved
+  // here, once, because by the time the item is clicked the marks may have moved,
+  // and `startMove` copies the list in at once. A plain right-click with no marks
+  // is the N=1 case of the same call.
+  'move-batch': (target) => mover.startMove(batchFor(target.path)),
   // Delete asks, it does not delete: `requestDelete` raises the confirmation with
   // the row, and the tree's re-list happens when the move lands. The row travels
   // (name + kind) because that is what the user looked at.
@@ -446,19 +469,25 @@ onBeforeUnmount(() => {
       @keydown="onKeydown"
       @contextmenu="openMenu"
     >
+      <!-- The root row is a folder like any other, so its click goes through
+           `select` — the same toggle a folder row's click makes, plus the
+           housekeeping a plain click owes the batch (the marks go with any plain
+           click, and this is a click like any other). The event travels for the
+           same reason WorkspaceTreeItem passes it: a gesture that never reaches
+           the composable is a gesture that does not happen. -->
       <div
         class="tree-row tree-row--root"
         :class="{ 'tree-row--focused': state.focused === ROOT }"
         role="treeitem"
         :aria-level="rootLevel"
-        :aria-selected="state.selected === null && state.focused === ROOT"
+        :aria-selected="!markCount && state.selected === null && state.focused === ROOT"
         :aria-expanded="!!state.expanded[ROOT]"
         :title="rootTitle"
         :tabindex="state.focused === ROOT ? 0 : -1"
         data-path=""
         data-dir="true"
         @focus="state.focused = ROOT"
-        @click="toggle(ROOT)"
+        @click="select(entryFor(ROOT), $event)"
       >
         <span class="tree-chevron" :class="{ open: !!state.expanded[ROOT] }" aria-hidden="true">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -503,6 +532,13 @@ onBeforeUnmount(() => {
 
     <p class="caption editor-nav-footer">
       Some files are hidden by the connector policy.
+    </p>
+    <!-- The batch, in words: a row style in a scrolling tree is invisible once
+         the batch is long, so the count goes where there is always room for it.
+         `v-if` on the count, so it never says `0 selected`; it disappears with
+         the marks. Plain text — this pane renders no HTML it did not build. -->
+    <p v-if="markCount" class="caption editor-nav-selected" role="status">
+      {{ markCount }} selected
     </p>
 
     <!-- The tree's context menu, teleported to <body> so the tree's scroll

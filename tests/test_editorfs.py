@@ -666,9 +666,9 @@ class TestSurfaceShape:
     endpoint the app actually answers.
 
     The read routes stay GET-only — that half of the surface has not moved.
-    Mutating routes are an *allowlist*: the save, the create, the rename/move
-    and the delete (a ``DELETE`` on ``/fs/file``, which trashes rather than
-    unlinks) — all browser-only, and a new one has to appear here on purpose.
+    Mutating routes are an *allowlist*: the save, the create, the rename/move, the
+    batch move, and the delete (a ``DELETE`` on ``/fs/file``, which trashes rather
+    than unlinks) — all browser-only, and a new one appears here on purpose.
     No hub, tool or connector-facing route may ever add another; the
     browser-only half of that promise is asserted in
     ``tests/test_editorfs_write.py``.
@@ -686,15 +686,16 @@ class TestSurfaceShape:
             "/api/fs/status": ["get"],
             "/api/fs/diff": ["get"],
             "/api/fs/rename": ["post"],
+            "/api/fs/move-batch": ["post"],
         }
 
     def test_editorfs_exposes_the_guarded_write_and_nothing_beyond_it(self):
         """The names the package exports, and the ones it must not grow.
 
-        ``write_file`` is the guarded save; the create/delete/rename halves live
-        in ``editorfs.mutate`` and are re-exported through the package because
-        the routes call them. What stays forbidden is anything *beyond* those
-        four — a second spelling of a write, or a helper that skips the gate.
+        ``write_file`` is the guarded save; the create/delete/rename/batch-move
+        halves live in ``editorfs.mutate`` and are re-exported through the package
+        because the routes call them. What stays forbidden is anything *beyond*
+        those — a second spelling of a write, or a helper that skips the gate.
 
         pol-06 widened the **gate** half deliberately: the three write gates and
         the verdict they consult are public, because a caller outside the package
@@ -703,7 +704,8 @@ class TestSurfaceShape:
         are asserted absent — a second spelling of "is this allowed" is how two
         surfaces start disagreeing.
         """
-        for name in ("write_file", "create_path", "trash_path", "rename_path"):
+        for name in ("write_file", "create_path", "trash_path", "rename_path",
+                     "move_paths_batch"):
             assert hasattr(editorfs, name)
         for name in ("save_file", "delete_file", "move_path", "write_text", "unlink"):
             assert not hasattr(editorfs, name)
