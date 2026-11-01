@@ -2350,6 +2350,7 @@ body {
   line-height: 1.45;
   color: var(--pico-muted-color);
   tab-size: 4;
+  padding: 0;
 }
 
 /* One display row of reasoning text. Its height is known before it is
