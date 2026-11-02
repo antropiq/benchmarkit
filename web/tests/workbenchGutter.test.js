@@ -276,6 +276,35 @@ describe('the state classes on the shell', () => {
     expect(marked).toHaveLength(1)
     expect(marked[0].classes()).toContain('chat-shell')
   })
+
+  // The Live View's other half of the same contract: the panel's scroller is
+  // the element that carries the mode, and it is the only one. `theme.css`
+  // turns its `overflow-y` off on `.chat-tool-scroll--live`, so a scroller
+  // without that class in live mode grows a vertical bar the moment the flow
+  // is taller than the box — the reader could then drag the pruned head back
+  // and end up off the bottom of the thinking. The real clipped geometry is the
+  // Playwright spec's half (`.chat-tool-scroll--live` resolving to
+  // `overflow-y: hidden`); what is pinned here is that the class the CSS keys
+  // on is on that scroller, and moves with the mode.
+  it('puts the live class on the panel scroller, and only in live mode', async () => {
+    const w = mount(WorkBenchView)
+    const scrollers = w.findAll('.chat-tool-scroll')
+    // The scan must be seeing the panel: an empty result would otherwise pass
+    // every case below for the wrong reason.
+    expect(scrollers, 'the panel renders its scroller').toHaveLength(1)
+
+    // Off is the default: the whole history is on screen and it scrolls.
+    expect(scrollers[0].classes()).toContain('chat-tool-scroll')
+    expect(scrollers[0].classes()).not.toContain('chat-tool-scroll--live')
+
+    await buttons(w)[2].trigger('click')
+    expect(chat.liveView).toBe(true)
+    expect(w.find('.chat-tool-scroll').classes()).toContain('chat-tool-scroll--live')
+
+    await buttons(w)[2].trigger('click')
+    expect(chat.liveView).toBe(false)
+    expect(w.find('.chat-tool-scroll').classes()).not.toContain('chat-tool-scroll--live')
+  })
 })
 
 describe('the dashed marks', () => {

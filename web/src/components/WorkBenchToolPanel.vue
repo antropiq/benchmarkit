@@ -4,7 +4,7 @@ import GaugeBar from './GaugeBar.vue'
 import { useChat } from '../composables/useChat'
 import { useAutoScroll } from '../composables/useAutoScroll'
 import { createLineCache, displayLines, MIN_BUDGET } from '../lib/reasoning-lines'
-import { selectWindow } from '../lib/reasoning-window'
+import { boxCapacity, selectWindow } from '../lib/reasoning-window'
 
 const { state, chatBusy } = useChat()
 
@@ -107,35 +107,31 @@ const pinnedRows = ref(0)
 const LIVE_MIN_ROWS = 8
 const LIVE_MAX_ROWS = 400
 
-// Rows of the box the timeline costs: its height over the pitch one unit of
-// it takes — a row's own height plus the gap the list puts after every block,
-// so a badge and a reasoning flow pay for the same unit. Both are read off the
+// Rows of the box the timeline costs, via `boxCapacity` (see lib/reasoning-window
+// for why the divisor is the row's height alone). Both numbers are read off the
 // elements, never assumed, because both belong to the theme.
 function rowsInBox() {
   const scroll = list.value
-  // The scroller gives the box's height, the list its padding, its gap and the
-  // pitch of one row: three values that belong to the theme, all read off the
-  // elements rather than assumed.
+  // The scroller gives the box's height, the list its padding and the row its
+  // height: values that belong to the theme, all read off the elements.
   const strip = scroll?.querySelector('.chat-tool-list')
   if (!strip) return 0
   const line = strip.querySelector('.chat-reasoning-line')
   if (!line) return 0 // no list laid out (a headless host): no box to fill
-  const row = line.getBoundingClientRect().height
-  if (row <= 0) return 0
   const style = getComputedStyle(strip)
-  const pitch = row + parseFloat(style.rowGap || 0)
-  if (!(pitch > 0)) return 0
   // The height belongs to the scroller (the list grows with its content, so its
-  // own height says nothing about the box), and the list's padding is the only
-  // thing that takes part of it away.
-  const inside = scroll.clientHeight
-    - parseFloat(style.paddingTop || 0)
-    - parseFloat(style.paddingBottom || 0)
-  if (!(inside > 0)) return 0
-  return Math.min(
-    LIVE_MAX_ROWS,
-    Math.max(LIVE_MIN_ROWS, Math.floor(inside / pitch)),
-  )
+  // own height says nothing about the box). Only the list's bottom padding is
+  // subtracted: the panel pins this box's scroll to its bottom, so the bottom
+  // padding is the one thing always inside the box, while its top padding sits
+  // above the top edge — charging for it too would leave a row's sliver of
+  // blank panel under the last line of the flow.
+  const inside = scroll.clientHeight - parseFloat(style.paddingBottom || 0)
+  const capacity = boxCapacity({
+    inside,
+    rowHeight: line.getBoundingClientRect().height,
+  })
+  if (!capacity) return 0
+  return Math.min(LIVE_MAX_ROWS, Math.max(LIVE_MIN_ROWS, capacity))
 }
 
 function measureWindow() {
@@ -316,6 +312,7 @@ function toolLabel(tool) {
     <div
       ref="list"
       class="chat-tool-scroll"
+      :class="{ 'chat-tool-scroll--live': liveEnabled }"
       @scroll.passive="onScroll"
     >
       <ul class="chat-tool-list">

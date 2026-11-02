@@ -31,6 +31,10 @@ const CONVERSATION = '.chat-output'
 
 const TOP_CONTROL = 0
 const LOWER_CONTROL = 1
+// The third mark of the strip: the Live View of the reasoning timeline, under
+// the two focalisations (spec §3.1 of `docs/spec-live-reasoning-view.md`). Its
+// name is not state-dependent, so it is the one control this spec may name.
+const LIVE_CONTROL = 2
 
 // `useSplitter`'s own key for the dock's dragged height (D3). A storage key is
 // not an accessible name: naming it here is how the spec can prove no state
@@ -124,14 +128,15 @@ test.describe('WorkBench focus layout: three states, one gutter', () => {
     // Neither state class: the columns keep their own rules.
     expect(await stateClasses(page)).toEqual([])
 
-    // Both controls are labelled, and their names come from the app — the spec
-    // only checks they exist, are unique and reach a visible element.
+    // Every control is labelled, and their names come from the app — the spec
+    // only checks they exist, are unique and reach a visible element. The strip
+    // is the two focalisations plus the Live View under them.
     const names = await page
       .locator(GUTTER)
       .getByRole('button')
       .evaluateAll((btns) => btns.map((b) => b.getAttribute('aria-label')))
-    expect(names).toHaveLength(2)
-    expect(new Set(names).size, 'the two controls are distinguishable').toBe(2)
+    expect(names).toHaveLength(3)
+    expect(new Set(names).size, 'the controls are distinguishable').toBe(3)
     for (const name of names) {
       await expect(page.getByLabel(name, { exact: true })).toBeVisible()
     }
@@ -326,6 +331,37 @@ test.describe('WorkBench focus layout: three states, one gutter', () => {
     expect(
       await page.evaluate((key) => window.localStorage.getItem(key), DOCK_SIZE_KEY),
     ).toBe(stored)
+  })
+
+  // Live View's geometry, the half jsdom cannot see (see `workbenchGutter.test.js`
+  // for the class): in live mode the timeline's scroller must not offer a
+  // vertical bar at all. The panel pins its scroll to its own bottom and prunes
+  // what leaves the box, so a bar would only be a drag target able to pull the
+  // pruned head back and leave the reader off the end of the flow. The computed
+  // value of the box is what the layout answers, so no stream is needed: the
+  // rule lives on the scroller, whatever is inside it.
+  test('the Live View clips the timeline instead of scrolling it', async ({
+    page,
+  }) => {
+    await openWorkBench(page)
+
+    const scroller = page.locator('.chat-tool-scroll')
+    await expect(scroller).toHaveCount(1)
+    const overflowY = () =>
+      scroller.evaluate((el) => getComputedStyle(el).overflowY)
+
+    // Off is the default: the whole history is on screen, so the box scrolls.
+    await expect.poll(overflowY).toBe('auto')
+
+    await pressControl(page, LIVE_CONTROL)
+    await expect(scroller).toHaveClass(/chat-tool-scroll--live/)
+    // The mode is on and no bar can appear: the box clips, so the reader cannot
+    // be taken off the bottom of the flow.
+    await expect.poll(overflowY).toBe('hidden')
+
+    await pressControl(page, LIVE_CONTROL)
+    await expect(scroller).not.toHaveClass(/chat-tool-scroll--live/)
+    await expect.poll(overflowY).toBe('auto')
   })
 
   // Both controls are real `<button type="button">`s (D9), which is what makes

@@ -21,6 +21,27 @@
 //
 // A capacity that the list cannot exceed — `Infinity`, which is how the panel
 // spells "the mode is off" — answers with the list itself, unpainted.
+//
+// Where that capacity comes from: the panel reads a box's height and the height
+// of one row off its own elements, and this turns them into the number of rows
+// the box may be filled with. The divisor is the row's own height, because the
+// rows of one flow are stacked with no gap between them — the list's gap sits
+// between BLOCKS, so it belongs to the units and their cost, never to the
+// height of a row. Dividing by `row + gap` instead made every row pay for a gap
+// it never gets and left the bottom of the box blank: a 340px box with 16px rows
+// and a 5px gap answered 15 rows, 244px of the 340 it was handed.
+//
+// What the answer does not charge for is a badge's extra height and the gaps the
+// block boundaries add. That is deliberate, and it is the only direction that
+// can be wrong safely: `useAutoScroll` pins the box's scroll to its bottom, so
+// what does not fit is clipped at the TOP — the end the mode discards anyway —
+// while a capacity that is too small shows as a strip of blank panel under the
+// last line of the flow being read.
+export function boxCapacity({ inside, rowHeight }) {
+  if (!(inside > 0) || !(rowHeight > 0)) return 0
+  return Math.floor(inside / rowHeight)
+}
+
 export function selectWindow(units, capacity) {
   if (!(capacity > 0)) return { units, dropped: 0 }
 

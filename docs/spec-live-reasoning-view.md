@@ -44,6 +44,7 @@ Lorsque le mode "Live View" est actif :
 - **Principe :** Le système ne conserve en mémoire (DOM) que les lignes visibles dans la fenêtre d'affichage (`viewport`).
 - **Nettoyage (Pruning) :** Dès qu'une nouvelle ligne arrive et pousse une ligne existante hors du champ visible (vers le haut), cette ligne est supprimée du DOM.
 - **Scroll Automatique :** Le panneau doit suivre le flux automatiquement (comportement `tail -f`). Le texte défilant reste toujours visible en bas du panneau.
+- **Aucun ascenseur vertical :** tant que le mode Live est actif, le panneau ne présente jamais de barre de défilement verticale, même quand le flux dépasse sa hauteur. La boîte est coupée (clip), pas défilable : une barre n'offrirait qu'un geste capable d'emmener le lecteur hors du flux.
 
 ### 3.4. Impact sur la Sauvegarde de Session
 
@@ -62,3 +63,4 @@ Lorsque le mode "Live View" est actif :
 2. Le bouton est grisé/inaccessible pendant qu'un run est en cours.
 3. L'activation du mode permet de maintenir une interface fluide même sur une machine lente avec un long flux.
 4. À la fin du run, le bouton est de nouveau utilisable.
+5. En mode Live, aucun ascenseur vertical n'apparaît dans le panneau de raisonnement.

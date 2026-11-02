@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { selectWindow } from '../src/lib/reasoning-window'
+import { boxCapacity, selectWindow } from '../src/lib/reasoning-window'
 
 // The Live View's memory rule, asserted where it is one decision (see the
 // module's own header). The unit of the budget is a DISPLAY ROW and units come
@@ -22,6 +22,43 @@ function badge(id) {
 function painted(result) {
   return [result.units.flatMap((unit) => unit.rows ?? []), result.dropped]
 }
+
+describe('boxCapacity', () => {
+  // The height of one reasoning row and the gap the list puts between BLOCKS,
+  // as the theme has them (`.chat-reasoning-line` is 0.7rem x 1.45, and
+  // `--bi-chat-tool-gap` is 0.35rem at the 16px root). Named here because the
+  // bug this pins was a divisor: the row's height is what a row costs, and the
+  // gap belongs to the blocks and their `cost`, never to the row's height.
+  const ROW = 16.24 // 0.7rem x line-height 1.45
+  const GAP = 5.6 // 0.35rem
+
+  it('divides the box by the row height, not by row plus gap', () => {
+    expect(boxCapacity({ inside: 340, rowHeight: ROW })).toBe(
+      Math.floor(340 / ROW),
+    )
+    // The old answer: charging every row for a gap it never gets, which left
+    // 96px — five rows — of blank panel under the last line of the flow.
+    expect(boxCapacity({ inside: 340, rowHeight: ROW + GAP })).toBe(15)
+    expect(boxCapacity({ inside: 340, rowHeight: ROW })).toBeGreaterThan(15)
+  })
+
+  it('fills a box whose height is an exact number of rows', () => {
+    expect(boxCapacity({ inside: 4 * ROW, rowHeight: ROW })).toBe(4)
+  })
+
+  it('leaves the remainder it cannot show, never an extra row', () => {
+    // One row of slack under the box's height must not become a row of
+    // content taller than the box.
+    expect(boxCapacity({ inside: 4 * ROW + 1, rowHeight: ROW })).toBe(4)
+  })
+
+  it('is 0 for a box or a row that has no height', () => {
+    expect(boxCapacity({ inside: 0, rowHeight: ROW })).toBe(0)
+    expect(boxCapacity({ inside: -12, rowHeight: ROW })).toBe(0)
+    expect(boxCapacity({ inside: 340, rowHeight: 0 })).toBe(0)
+    expect(boxCapacity({ inside: 340, rowHeight: NaN })).toBe(0)
+  })
+})
 
 describe('selectWindow', () => {
   it('paints everything when no window was measured (Infinity)', () => {

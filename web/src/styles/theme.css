@@ -1412,6 +1412,7 @@ body {
   line-height: 1;
   opacity: 0.85;
   transition: opacity 0.15s ease;
+  margin-right: 8px;
 }
 
 .chat-gutter-btn:is(:hover, :focus-visible) .chat-gutter-eye {
@@ -2283,6 +2284,19 @@ body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+/* Live View (see WorkBenchToolPanel.vue and lib/reasoning-window): the panel
+   paints only the rows its box can hold, and `useAutoScroll` pins that box's
+   scroll to its bottom every frame, so the timeline is always at its end —
+   there is nothing above the top to scroll back to. A vertical bar would then
+   only be a drag target able to pull the pruned head back into view and leave
+   the reader off the bottom of the flow, so the box clips instead.
+   `hidden` over `scroll`: `scroll` keeps a bar the content cannot exceed,
+   and clipping is the box's own decision, never a hint at a range. The
+   horizontal axis is untouched, so a long row still gets its own bar. */
+.chat-tool-scroll--live {
+  overflow-y: hidden;
 }
 
 /* Gauge footer strip: surface must match the gauge mask color. */
