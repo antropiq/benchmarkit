@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
@@ -30,7 +31,15 @@ import { useChat } from '../src/composables/useChat'
 // second `useChatLayout()` for it would be wrong: the composable is a factory,
 // not a singleton — only `localStorage` is shared — so a fresh call reports
 // its own initial state and would never see what the clicks did.
-const chat = useChat().state
+const { state: chat, chatBusy } = useChat()
+
+// `chatBusy` is the Live View's lock. The streaming half of it is `state.phase`,
+// which is reactive and therefore what the button's `:disabled` re-evaluates on,
+// so a case arms that one rather than a reply (an LLM call would make layout
+// flaky) or the batch guard (a plain closure nothing re-reads).
+function streamReply(on) {
+  chat.phase = on ? 'reasoning' : 'idle'
+}
 
 function hubs({ mcp = false, lsp = false }) {
   chat.mcp.loaded = mcp
@@ -50,11 +59,19 @@ function buttons(wrapper) {
 beforeEach(() => {
   window.localStorage.clear()
   hubs({ mcp: true, lsp: true })
+  // The Live View is singleton state, so a case that switched it leaves it
+  // switched for the next one — the default off is what every other case below
+  // reads the control's name against. The streaming flag is reset the same way,
+  // so a case that armed it cannot leave the strip locked.
+  chat.liveView = false
+  streamReply(false)
 })
 
 afterEach(() => {
   window.localStorage.clear()
   hubs({})
+  chat.liveView = false
+  streamReply(false)
 })
 
 describe('the focus gutter', () => {
@@ -75,10 +92,13 @@ describe('the focus gutter', () => {
     ])
   })
 
-  it('renders exactly two buttons, focus on top, in that order', () => {
+  // The strip is three controls now: the two focalisations and, under them, the
+  // Live View of the reasoning timeline — spec §3.1's "under the buttons that
+  // are in the second column", and the same 28px target as the two above.
+  it('renders exactly three buttons, focus on top, in that order', () => {
     const w = mount(WorkBenchView)
     const btns = buttons(w)
-    expect(btns).toHaveLength(2)
+    expect(btns).toHaveLength(3)
 
     for (const btn of btns) {
       // Real <button type="button">s: that is what makes them tab-reachable
@@ -86,10 +106,18 @@ describe('the focus gutter', () => {
       // asserted: jsdom does not implement sequential focus navigation.)
       expect(btn.attributes().type).toBe('button')
       expect(btn.attributes()['aria-label']).toBeTruthy()
+      // One size for all three, so a control under the other two cannot be
+      // smaller than them.
+      expect(btn.classes()).toEqual(['chat-gutter-btn'])
     }
 
     expect(btns[0].attributes()['aria-label']).toBe('Show the reasoning only')
     expect(btns[1].attributes()['aria-label']).toBe('Hide the tool column')
+    // The third control's name says what the click does, never what was taken
+    // out of the stream.
+    expect(btns[2].attributes()['aria-label']).toBe(
+      'Keep only the reasoning on screen'
+    )
   })
 
   it('drives the focus axis, and its aria-pressed follows', async () => {
@@ -139,7 +167,41 @@ describe('the focus gutter', () => {
     hubs({})
     const w = mount(WorkBenchView)
     expect(w.find('.chat-col--left.chat-col--single').exists()).toBe(true)
-    expect(buttons(w)).toHaveLength(2)
+    expect(buttons(w)).toHaveLength(3)
+  })
+
+  // The lock of §3.2: the control is inert while an inference owns the
+  // conversation, and live again when it does not. `chatBusy` is the composable's
+  // rule (a streaming reply or a batch), so this is the same verdict every other
+  // inert control answers to — here armed through useBatch's guard, because a
+  // case that streamed a reply would need an LLM and turn layout into flaky.
+  it('locks the Live View while an inference runs, and releases it', async () => {
+    streamReply(true)
+    const w = mount(WorkBenchView)
+    const liveBtn = () => buttons(w)[2]
+    // The disabled attribute is the lock; the click being answered is not, so
+    // the toggle is what the flag below reports. A tick first: the attribute is
+    // a reactive binding, so it re-renders on the microtask after the flag.
+    await nextTick()
+    expect('disabled' in liveBtn().attributes()).toBe(true)
+    expect(chatBusy(), 'the lock reads the composable rule').toBe(true)
+
+    await liveBtn().trigger('click')
+    // The click is answered and the flag never moves: the mode cannot be
+    // switched mid-flux.
+    expect(chat.liveView).toBe(false)
+
+    streamReply(false)
+    await nextTick()
+    expect('disabled' in liveBtn().attributes()).toBe(false)
+    expect(chatBusy()).toBe(false)
+
+    await liveBtn().trigger('click')
+    expect(chat.liveView).toBe(true)
+    expect(liveBtn().attributes()['aria-pressed']).toBe('true')
+    expect(liveBtn().attributes()['aria-label']).toBe(
+      'Show the whole reasoning history'
+    )
   })
 })
 
@@ -343,7 +405,10 @@ describe('a walk through the shell, control by control', () => {
         await buttons(w)[which].trigger('click')
         expect(stateClasses(w)).toEqual(SHELL_OF[expected])
         expect(gutterOf(w).exists()).toBe(true)
-        expect(buttons(w)).toHaveLength(2)
+        // Three controls survive every state of the narrow shell: the Live
+        // View's switch rides the same strip, so a column that left the flow
+        // cannot leave the switch behind either.
+        expect(buttons(w)).toHaveLength(3)
       }
       w.unmount()
     }

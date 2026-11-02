@@ -1400,6 +1400,32 @@ body {
   stroke-dasharray: none;
 }
 
+/* The Live View's third control: its mark is a glyph of the Nerd face rather
+   than drawn SVG, so the one rule it needs is the family that carries the two
+   code points (see WorkBenchFocusGutter.vue) and a size that fits the 28px
+   target's box like the 14px marks do. Color and opacity ride `.chat-gutter-btn`
+   above, so at rest it is muted and hover lights it — the same step the two
+   focalisation controls take, and no size animation here either. */
+.chat-gutter-eye {
+  font-family: 'JetBrains Mono Nerd', var(--pico-font-family-monospace);
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.85;
+  transition: opacity 0.15s ease;
+}
+
+.chat-gutter-btn:is(:hover, :focus-visible) .chat-gutter-eye {
+  opacity: 1;
+}
+
+/* Locked while a reply streams (§3.2, and the same reason the other controls of
+   this app answer to): the button is `:disabled`, and the dimming is what the
+   tooltip then says. */
+.chat-gutter-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* -- focalisation: the two states ------------------------------------------
 
    The whole geometry of the feature is these rules — `display: none` and a
@@ -2266,6 +2292,12 @@ body {
   border-top: 1px solid var(--bi-border);
   background-color: var(--bi-surface);
 }
+
+/* The Live View's control is not here: it is the third mark of the gutter
+   between the two chat columns (see WorkBenchFocusGutter.vue and `.chat-gutter-*`
+   above), so no state of the timeline — a pruned history, a folded dock, a
+   focalised screen — can take the switch out of reach, and the panel's only
+   footer is the iteration gauge. */
 
 /* -- Reusable gradient gauge (GaugeBar.vue) -------------------------------- */
 .gauge {

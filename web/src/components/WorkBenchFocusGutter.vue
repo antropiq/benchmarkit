@@ -14,8 +14,24 @@
 // glyph, so its pattern is an attribute of each shape here, and the CSS of
 // `.chat-gutter-mark` is what dims it at rest and takes it solid on hover.
 // No size animation anywhere — the target must not move under the cursor.
+//
+// The third control's glyph is a Nerd Font glyph, so the face that carries it
+// rides this chunk as it does in WorkspaceNavigator.vue: the @font-face is
+// unicode-range-gated to private-use code points, so the woff2 is only fetched
+// once a glyph of this strip actually asks for it, and nothing here changes how
+// the labels read.
 
 import { FOCUS_REASONING } from '../composables/useChatLayout'
+import { useChat } from '../composables/useChat'
+import '../fonts/nerd-fonts.css'
+
+// The eye of the Live View, as the two states of one control: U+F06E (fa-eye)
+// is the whole history on screen — the default, at rest — and U+F070 (fa-eye
+// with a slash, the closed eye) is the mode that keeps only what the panel can
+// hold. Code points the shipped Nerd faces carry, resolved by the "JetBrains
+// Mono Nerd" family below.
+const LIVE_EYE_OPEN = '\uf06e'
+const LIVE_EYE_CLOSED = '\uf070'
 
 defineProps({
   focus: { type: String, required: true },
@@ -23,6 +39,11 @@ defineProps({
 })
 
 const emit = defineEmits(['toggle-focus', 'toggle-left-hidden'])
+
+// The Live View's state is useChat's and so is its switch: this component only
+// draws the third control of the strip and reads the busy rule that locks it
+// (the same one every other inert control here answers to).
+const { chatBusy, toggleLiveView, state: chat } = useChat()
 </script>
 
 <template>
@@ -109,6 +130,45 @@ const emit = defineEmits(['toggle-focus', 'toggle-left-hidden'])
         />
         <path v-else d="m15 6-6 6 6 6" stroke-dasharray="3.4 2.2" />
       </svg>
+    </button>
+    <!-- The Live View of the reasoning timeline (spec §3.1: under the two
+         controls, same column, same 28px target — the third control of the
+         same strip, and no strip of its own, because a pruned history must
+         never take the switch away from the screen). It is inert, like the
+         spec's lock: `useChat.toggleLiveView` answers to the composable's own
+         busy rule and the button is disabled beside it, so a reply cannot
+         change the mode mid-stream and the DOM cannot be pruned under the
+         reader's eyes.
+
+         The glyph is the state, so it is the one thing that says anything:
+         an open eye at rest (the whole history is on screen, the default) and
+         the slashed — closed — eye while the mode keeps only what the panel
+         can hold. Nothing else is drawn about the mode: no count of what
+         scrolled off, because a number that moves with every painted frame
+         restyles the column's edge. -->
+    <button
+      type="button"
+      class="chat-gutter-btn"
+      :disabled="chatBusy()"
+      :aria-pressed="chat.liveView"
+      :aria-label="
+        chat.liveView
+          ? 'Show the whole reasoning history'
+          : 'Keep only the reasoning on screen'
+      "
+      :title="
+        chatBusy()
+          ? 'Locked while the model is replying'
+          : chat.liveView
+            ? 'Leave the live view: the whole reasoning history comes back on screen'
+            : 'Live view: keep only the reasoning on screen — the history above it is dropped, for speed'
+      "
+      @click="toggleLiveView()"
+    >
+      <span
+        class="chat-gutter-eye"
+        aria-hidden="true"
+      >{{ chat.liveView ? LIVE_EYE_CLOSED : LIVE_EYE_OPEN }}</span>
     </button>
   </div>
 </template>

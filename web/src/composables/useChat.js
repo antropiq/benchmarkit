@@ -25,6 +25,11 @@ const state = reactive({
   // Covers the whole request — waiting, thinking and every MCP/LSP tool
   // round — and is cleared when the reply ends, is stopped or errors out.
   session: { startedAt: 0 },
+  // The reasoning panel's Live View (toggled in WorkBenchFocusGutter.vue): off
+  // keeps the whole thinking history on screen, which is the default; on lets
+  // the panel paint only what its box can hold. Panel render state only — the
+  // flows stay in `block.text`, so a save or a copy never loses bytes.
+  liveView: false,
   // A pause request is armed but its `pause_ack` has not landed yet: the ⏸
   // button blinks and is disabled, and the composer stays shut (the ack is
   // what reopens it). Cleared by the ack, by finish(), and by reset().
@@ -217,6 +222,15 @@ export function registerChatBusyGuard(isBusy) {
 // True when a reply is streaming, or a batch owns the conversation.
 function chatBusy() {
   return state.phase !== 'idle' || !!busyGuard?.()
+}
+
+// The Live View's switch (§3.2), owned here rather than by whichever component
+// draws the control: the flag is conversation state and the lock is this
+// composable's own busy rule, so a mode can never be switched mid-reply from a
+// second place that reads a different streaming flag.
+function toggleLiveView() {
+  if (chatBusy()) return
+  state.liveView = !state.liveView
 }
 
 // How many turns this conversation already holds — the fact the agent-mode lock
@@ -1318,6 +1332,13 @@ export function useChat() {
   return {
     state,
     send,
+    // The same busy rule the guards in this composable use: a control that has
+    // to lock while a reply streams reads this rather than watching `phase`, so
+    // it cannot disagree with a send being refused.
+    chatBusy,
+    // The one switch of the Live View, next to the rule that locks it — a
+    // component that draws the control calls this and never moves the flag.
+    toggleLiveView,
     sendBatchTurn,
     stop,
     pause,
