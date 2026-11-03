@@ -58,6 +58,7 @@ from .discovery import (
     all_servers,
     load_lsp_servers,
     lsp_installed,
+    lsp_reach_is_refused,
     restricted_lsp_roots,
     set_lsp_enabled,
 )
@@ -160,6 +161,7 @@ __all__ = [
     "load_lsp_servers",
     "location_line",
     "lsp_installed",
+    "lsp_reach_is_refused",
     "parse_tsserver_request",
     "position",
     "register_features",

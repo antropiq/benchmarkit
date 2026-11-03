@@ -61,9 +61,17 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
     monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
     (tmp_path / "src" / "core").mkdir(parents=True)
-    (tmp_path / "src" / "config.py").write_text("x = 1\n", encoding="utf-8")
-    (tmp_path / "src" / "core" / "job.py").write_text("y = 2\n", encoding="utf-8")
-    (tmp_path / "README.md").write_text("# hi\n", encoding="utf-8")
+    # ``newline=""``: the bytes planted are the bytes the assertions name. The
+    # default text mode translates ``\n`` to the host's line ending on Windows,
+    # which would make a size assertion and a read-payload comparison disagree
+    # with the file the test thinks it wrote.
+    (tmp_path / "src" / "config.py").write_text(
+        "x = 1\n", encoding="utf-8", newline=""
+    )
+    (tmp_path / "src" / "core" / "job.py").write_text(
+        "y = 2\n", encoding="utf-8", newline=""
+    )
+    (tmp_path / "README.md").write_text("# hi\n", encoding="utf-8", newline="")
     (tmp_path / "empty-dir").mkdir()
     (tmp_path / "node_modules" / "left-pad").mkdir(parents=True)
     (tmp_path / ".venv").mkdir()
@@ -207,7 +215,22 @@ class TestRootListing:
 
 class TestPathLocks:
     @pytest.mark.parametrize(
-        "raw", ["../etc", "a/../../b", "/etc", "~/", "..", "src/../../etc"]
+        "raw",
+        [
+            "../etc",
+            "a/../../b",
+            "/etc",
+            "~/",
+            "..",
+            "src/../../etc",
+            # The three §6 test-4 shapes that slip past ``os.path.isabs`` on
+            # Windows (A-D2.1), plus the ``\``-spelled ones.
+            "//srv/share",
+            "C:x",
+            "C:\\x",
+            "\\\\srv\\share",
+            "\\Users",
+        ],
     )
     def test_escape_attempts_are_422(self, client, raw: str):
         assert tree(client, raw).status_code == 422
@@ -215,16 +238,103 @@ class TestPathLocks:
     def test_absolute_path_detail_names_the_rule(self, client):
         assert "relative to the workspace" in tree(client, "/etc").json()["detail"]
 
+    # Each shape gets its own sentence (A-D2.1: *"the refusal sentence must name
+    # what was wrong, not just where it landed"*). Asserting the wording is the
+    # half that proves the lock, not the containment compare, did the refusing:
+    # "outside the working location" would be an acceptable answer by accident.
+    @pytest.mark.parametrize(
+        ("raw", "named_shape"),
+        [
+            ("/etc/x", "absolute path"),
+            ("//srv/share", "UNC share root"),
+            ("C:x", "drive-relative"),
+            ("C:\\x", "it names a drive"),
+            # The residue win-02 named rather than left to chance: ``a:b`` is a
+            # legal POSIX filename, and no rule refuses ``C:x`` without refusing
+            # it — so it is refused by name, in the same words.
+            ("a:b", "drive-relative"),
+            # The same refusal on the canonical form of a traversal: the ``..``
+            # cancels and what is left is a drive spec (``a\..\C:x`` -> ``C:x``).
+            ("a\\..\\C:x", "it names a drive"),
+        ],
+    )
+    def test_a_qualified_shape_is_refused_naming_its_shape(
+        self, client, raw: str, named_shape: str
+    ):
+        detail: str = tree(client, raw).json()["detail"]
+        assert named_shape in detail
+        assert "relative to the workspace" in detail
+        assert "outside the working location" not in detail
+
     def test_nul_byte_is_refused_by_the_textual_lock(self):
         with pytest.raises(editorfs.WorkspacePathError) as caught:
             editorfs.normalise_rel("a\0b")
         assert caught.value.status_code == 422
+
+    # §6 behaviour test 1: the inbound lock is where a `\` stops existing, so
+    # every consumer downstream sees one path spelling on both platforms.
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (r"src\config.py", "src/config.py"),
+            (r"a\..\b", "b"),  # the `..` cancels, so it does not survive
+            (r"a\/\/b", "a/b"),
+            (r"a\\b", "a/b"),
+            (r"src\..\src", "src"),
+            (r".nojae\x", ".nojae/x"),
+        ],
+    )
+    def test_a_backslash_is_a_separator_not_a_character(
+        self, raw: str, expected: str
+    ):
+        assert editorfs.normalise_rel(raw) == expected
+
+    def test_a_leading_backslash_is_refused_not_translated(self, client):
+        # The last case of §6 test 1 is the *refusal*: `\Users` becomes `/Users`
+        # at the canonicaliser, and the lock refuses it before that matters.
+        with pytest.raises(editorfs.WorkspacePathError) as caught:
+            editorfs.normalise_rel("\\Users\\vgr")
+        assert caught.value.status_code == 422
+        assert "absolute path" in caught.value.detail
 
     def test_traversal_inside_the_workspace_stays_legal(self, client):
         payload = tree(client, "src/../src").json()
         assert payload["path"] == "src"
         assert "config.py" in names(payload)
 
+    def test_a_backslash_shaped_request_answers_a_slash_joined_path(
+        self, client, workspace: Path
+    ):
+        r"""The same file, the same answer, and no ``\`` in any payload field.
+
+        The lock is the only place a ``\`` exists, so a request spelled either way
+        reaches the same entry and the response the browser stores is ``/``-joined
+        — which is what keeps the frontend's ``split('/')`` correct untouched.
+        """
+        payload = tree(client, r"src\..\src").json()
+        assert payload["path"] == "src"
+        assert names(payload) == names(tree(client, "src").json())
+        body = read(client, r"src\config.py").json()
+        assert body["path"] == "src/config.py"
+        # The workspace-relative fields only. ``workspace`` is the working
+        # location itself — an absolute host path, spelled with ``\`` on
+        # Windows on purpose (``test_paths_are_workspace_relative`` pins that)
+        # and never split by the frontend.
+        assert "\\" not in payload["path"]
+        assert all("\\" not in entry["path"] for entry in payload["entries"])
+
+        created = client.post(
+            "/api/fs/create", json={"path": r"src\written-by-win03.py", "dir": False}
+        )
+        assert created.status_code == 200
+        assert created.json()["path"] == "src/written-by-win03.py"
+        assert (workspace / "src" / "written-by-win03.py").is_file()
+        assert not any("\\" in p.name for p in workspace.rglob("*"))
+
+    @pytest.mark.requires_symlink(
+        "a link whose target is outside the working location is listed but "
+        "never descended into, and walking through it is refused"
+    )
     def test_symlink_to_outside_is_listed_but_not_followed(
         self, workspace: Path, client
     ):
@@ -268,8 +378,12 @@ class TestPathLocks:
         edits by hand. This workspace is not the install directory, so level A is
         dormant and nothing hides it.
         """
-        (workspace / ".env").write_text("SECRET=1\n", encoding="utf-8")
-        (workspace / ".env.local").write_text("SECRET=2\n", encoding="utf-8")
+        (workspace / ".env").write_text(
+            "SECRET=1\n", encoding="utf-8", newline=""
+        )
+        (workspace / ".env.local").write_text(
+            "SECRET=2\n", encoding="utf-8", newline=""
+        )
         assert editorfs.builtin_policy.is_self_workspace() is False
 
         listed = names(tree(client).json())
@@ -295,6 +409,130 @@ class TestPathLocks:
             response = denied_client.get("/api/fs/tree")
         assert response.status_code == 422
         assert "deny-list" in response.json()["detail"]
+
+    @pytest.mark.case_sensitive_volume(
+        "the pair plants ``denied-root`` and names the *other* spelling in the "
+        "deny-list, whose ``realpath`` has to keep the text as written; on a "
+        "volume where the two spellings are one folder the exact half of the "
+        "pair is not the pair's other answer"
+    )
+    def test_the_deny_list_compare_folds_only_where_the_volume_folds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """win-06 §4: the same deny-list line, one spelling apart, and the fold decides.
+
+        On a volume where ``Denied-Root`` and ``denied-root`` are one folder, a
+        line naming either of them has to refuse the tree — otherwise a workspace
+        opened through the other spelling browses a location the app would refuse
+        by name (the silently-permissive half of roadmap §2.5). On an exact
+        volume they are two folders and the line speaks only one of them, so the
+        tree stays open. This runner can hold both spellings, which is what makes
+        the pair assertable here: the refusal below is a *folded* match, and the
+        accepted answer is the Linux verdict, unchanged.
+        """
+        from src.core.editorfs import fscase
+
+        denied = tmp_path / "denied-root"
+        (denied / "src").mkdir(parents=True)
+        list_file = tmp_path / "restricted.txt"
+        # The other spelling of that folder — a name that does not exist here and
+        # whose ``realpath`` is therefore kept as written.
+        list_file.write_text(f"{tmp_path / 'Denied-Root'}\n", encoding="utf-8")
+        monkeypatch.setattr("src.core.lsphub.constants.LSP_RESTRICTED_PATHS", list_file)
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(denied))
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        with TestClient(create_app()) as exact_client:
+            assert exact_client.get("/api/fs/tree").status_code == 200
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        with TestClient(create_app()) as folded_client:
+            response = folded_client.get("/api/fs/tree")
+        assert response.status_code == 422
+        assert "deny-list" in response.json()["detail"]
+
+
+class TestContainmentIsOneRule:
+    r"""``_is_within`` — the one answer five sites each used to hand-build (A-D2.2).
+
+    The pairs are pure text on purpose: both sides are what a ``realpath`` hands
+    the site, so the Windows spellings are exercised on the Linux runner
+    (roadmap §9 rule 2). With ``fold=False`` the helper must be exactly the old
+    ``startswith(parent + os.sep)`` test — which is what keeps every existing
+    Linux verdict where it was, including the trailing-separator trap: a name
+    that merely *begins* with the parent's last component is not inside it.
+    """
+
+    @pytest.mark.parametrize(
+        ("parent", "child", "fold", "expected"),
+        [
+            # The fold is the whole difference: one NTFS folder, two spellings.
+            (r"C:\WS", r"C:\WS\a", True, True),
+            (r"C:\WS", r"C:\ws\a", True, True),
+            (r"C:\WS", r"C:\ws\sub\file.py", True, True),
+            (r"C:\WS", r"C:\ws\a", False, False),
+            (r"C:\WS\a", r"C:\WS", False, False),
+            # Linux: two names, and no folding of anything.
+            ("/WS", "/ws/a", True, True),
+            ("/WS", "/ws/a", False, False),
+            ("/WS", "/WS/a", False, True),
+            # The trap the old prefix got right, and the helper must keep.
+            ("/a/b", "/a/bc", False, False),
+            ("/a/b", "/a/bc", True, False),
+            ("/a/b", "/a/b/c", False, True),
+            ("/a/b", "/a/b", False, True),
+            # A parent with no component of its own speaks no path at all.
+            # ``""`` is a caller bug and the strict answer is the safe one; the
+            # bare ``/`` is what the old ``+ os.sep`` prefix also matched
+            # nothing against, so the answer is unchanged — a ``/`` line in the
+            # deny-list is a *value* question for target B, not a rule here.
+            ("", "/a", True, False),
+            ("/", "/a", True, False),
+            ("/", "", True, False),
+            # Mixed spellings on one side are the same path to the splitter.
+            (r"C:\ws\sub", r"C:/WS/sub/x", True, True),
+            (r"C:\ws\sub", r"C:/WS/sub/x", False, False),
+        ],
+    )
+    def test_the_helper_answers_the_pairs(
+        self, parent: str, child: str, fold: bool, expected: bool
+    ):
+        assert editorfs.policy._is_within(parent, child, fold=fold) is expected
+
+    def test_the_helper_is_the_same_verdict_regardless_of_a_trailing_slash(
+        self, workspace: Path
+    ):
+        """A resolved root never carries a trailing separator, and neither may the rule."""
+        real = editorfs.workspace_root()
+        assert editorfs.policy._is_within(real, real + "/src", fold=False) is True
+        assert editorfs.policy._is_within(real + "/", real + "/src", fold=False) is True
+        assert real == os.path.realpath(str(workspace))
+
+    def test_a_path_below_the_workspace_is_contained_and_one_above_is_not(
+        self, workspace: Path
+    ):
+        """The gate's own pair, in the form ``_resolve`` hands it to the helper."""
+        root = editorfs.workspace_root()
+        inside = os.path.realpath(os.path.join(root, "src/config.py"))
+        assert editorfs.policy._is_within(root, inside, fold=False) is True
+        assert editorfs.policy._is_within(
+            root, os.path.realpath(os.path.join(root, "..")), fold=False) is False
+
+    def test_the_fold_is_a_required_keyword_and_never_a_default(self):
+        """The win-05 convention, pinned at this helper too.
+
+        A call site that forgot to ask the probe would otherwise keep working and
+        answer the exact comparison silently — the same drift the matcher's
+        keyword-only ``fold`` is there to prevent. Required and keyword-only
+        means the five call sites each name the answer they act on, so both
+        outcomes stay testable on this runner (roadmap §9 rule 2) and target B
+        can see every place a real value has to be threaded.
+        """
+        import inspect
+
+        parameter = inspect.signature(editorfs.policy._is_within).parameters["fold"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is inspect.Parameter.empty
 
 
 class TestReservedFolderIsAbsentEverywhere:
@@ -340,6 +578,73 @@ class TestReservedFolderIsAbsentEverywhere:
                 params={"path": f"{editorfs.constants.POLICY_DIRNAME}/x.md"},
             ).status_code == 404
 
+    def test_a_folded_filesystem_reserves_it_in_any_spelling(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """§6 behaviour test 3, whole chain (win-05).
+
+        The Windows spelling of a path into the reserved folder, on a filesystem
+        where ``.NOJAE`` and ``.nojae`` are one folder — the two widenings meet
+        at one gate: win-03's lock turns a backslash into ``/``, win-05's probe folds
+        the name. Without the fold, ``.NOJAE/x`` on NTFS answers *nothing matched*
+        and the reserved folder stops being reserved (roadmap §2.1) — the
+        silently-permissive half of this lot.
+
+        The asymmetry is the point too, so both halves are asserted: a *look*
+        stays indistinguishable from absence (404) and a *touch* names the rule
+        (422) — exactly the 404-vs-422 pair of pol-00 D8, unchanged by the fold.
+        """
+        from src.core.editorfs import fscase
+
+        # Both spellings exist here, because this runner's volume is
+        # case-sensitive and can hold them. On NTFS the first *is* the second —
+        # the point of the pair is that a read of the other spelling would
+        # otherwise answer 200 with the reserved folder's bytes, so the 404 below
+        # is a refusal and not mere absence.
+        for name in (".nojae", ".NOJAE"):
+            (workspace / name).mkdir(exist_ok=True)
+            (workspace / name / "x.md").write_text("x\n", encoding="utf-8")
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        with TestClient(create_app()) as folded_client:
+            for rel in (r".NOJAE\x.md", r".nojae\x.md", ".NOJAE/x.md"):
+                assert folded_client.get(
+                    "/api/fs/file", params={"path": rel}
+                ).status_code == 404, rel
+                assert folded_client.get(
+                    "/api/fs/tree", params={"path": rel}
+                ).status_code == 404, rel
+                response = folded_client.request(
+                    "DELETE", "/api/fs/file", params={"path": rel}
+                )
+                assert response.status_code == 422, rel
+                detail = response.json()["detail"]
+                assert editorfs.constants.POLICY_DIRNAME in detail, rel
+            # And the bytes are still where they were: a refusal, not an accident.
+            assert (workspace / ".nojae" / "x.md").is_file()
+
+    @pytest.mark.case_sensitive_volume(
+        "``.NOJAE`` is planted as a *second* folder next to the reserved one; "
+        "on a volume that folds case they are one folder, so this half of the "
+        "pair (the fold answering ``False``) describes a tree that cannot exist "
+        "here"
+    )
+    def test_without_the_fold_the_other_spelling_is_not_reserved(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The other answer of the same probe, on the same route (rule 2).
+
+        ``.NOJAE`` means the reserved folder only where the filesystem says it
+        does. Forcing the probe to ``False`` proves the fold — not a blanket
+        name-insensitivity — is what closed the hole above, and it is what a
+        case-sensitive volume like this runner's actually gets.
+        """
+        from src.core.editorfs import fscase
+
+        (workspace / ".NOJAE").mkdir()
+        (workspace / ".NOJAE" / "x.md").write_text("x\n", encoding="utf-8")
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        with TestClient(create_app()) as exact_client:
+            assert read(exact_client, ".NOJAE/x.md").status_code == 200
 
 class TestBenchmarksOwnWorkspaceAtTheRoutes:
     """Level A through the read surface: the app's own ``.env`` is not there.
@@ -452,7 +757,9 @@ class TestStatEndpoint:
 
     def test_a_read_only_path_answers_the_probe_normally(self, workspace: Path, client):
         """``ro`` is not a read rule: the probe reports the file, mtime and all."""
-        (workspace / ".venv" / "pyvenv.cfg").write_text("home = /x\n", encoding="utf-8")
+        (workspace / ".venv" / "pyvenv.cfg").write_text(
+            "home = /x\n", encoding="utf-8", newline=""
+        )
         item = client.get(
             "/api/fs/stat", params={"path": ".venv/pyvenv.cfg"}
         ).json()["paths"][0]
@@ -550,6 +857,10 @@ class TestReadEndpoint:
     def test_escape_attempts_are_422(self, client, raw: str):
         assert read(client, raw).status_code == 422
 
+    @pytest.mark.requires_symlink(
+        "a read of a link whose target is outside answers 422 rather than "
+        "those outside bytes"
+    )
     def test_symlink_to_outside_is_422(self, workspace: Path, client, tmp_path: Path):
         outside = tmp_path.parent / "hosts-target"
         outside.mkdir(exist_ok=True)

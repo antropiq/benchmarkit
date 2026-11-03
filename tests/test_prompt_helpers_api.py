@@ -419,6 +419,11 @@ class TestTheSwitchPayload:
         )
         assert old.is_file(), "the legacy copy is left in place"
 
+    @pytest.mark.posix_behaviour(
+        "the unwritable root this POST is switched to is made with "
+        "``mkdir(mode=0o500)``, a POSIX fact: the switch and the note it carries "
+        "are only observable once a root can be made unwritable"
+    )
     def test_a_failing_seed_is_a_note_not_a_refusal(
         self, client: TestClient, tmp_path: Path
     ):

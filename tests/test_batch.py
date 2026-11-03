@@ -8,6 +8,7 @@ hub endpoints), so nothing here reads the repository's own ``todos/``.
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -264,6 +265,44 @@ class TestListingPathGuards:
             response = listing(batch_client, "ed-", dir=bad)
             assert response.status_code == 422, bad
 
+    # win-04 §4 (A-D1's last row): the lot folder is normalised by the same
+    # ``path_norm.canonical_rel`` as every other path in the app, so a Windows
+    # user typing ``todos\drafts`` means the folder the Linux user names
+    # ``todos/drafts`` -- and the ``taskLocation`` strings handed to the model
+    # stay ``/``-joined either way.
+    def test_a_backslash_shaped_dir_names_the_same_folder(
+        self, batch_client, tmp_path
+    ):
+        make_lot(tmp_path, ["ed-01-a.md"], dir="todos/drafts")
+        body = listing(batch_client, "ed-", dir="todos\\drafts").json()
+        assert body["dir"] == "todos/drafts"
+        assert body["tasks"][0]["taskLocation"] == "todos/drafts/ed-01-a.md"
+        assert body["lot"] is None
+
+    def test_a_backslash_shaped_traversal_is_refused_like_a_slashed_one(
+        self, batch_client, tmp_path
+    ):
+        r"""The ``..`` lock reads the *normalised* text, so both spellings land.
+
+        ``os.path.normpath`` left a backslash alone on either platform, so
+        ``a\..\..\b`` was one odd *name* whose escape this check could not see
+        (it would have answered 404, "create the folder").
+        """
+        make_lot(tmp_path, ["ed-01-a.md"])
+        for bad in ("a\\..\\..\\b", "todos\\..\\..\\etc", "..\\"):
+            response = listing(batch_client, "ed-", dir=bad)
+            assert response.status_code == 422, bad
+            assert "must not contain '..'" in response.json()["detail"], bad
+
+    def test_a_traversal_that_cancels_inside_the_lot_stays_legal(
+        self, batch_client, tmp_path
+    ):
+        """What the normalise-before-check ordering buys: only a *surviving*
+        ``..`` is refused, the property ``editorfs.policy.normalise_rel`` holds."""
+        make_lot(tmp_path, ["ed-01-a.md"], dir="plans/next")
+        body = listing(batch_client, "ed-", dir="plans/../plans/next").json()
+        assert body["dir"] == "plans/next"
+
     def test_missing_dir_returns_404(self, batch_client, tmp_path):
         response = listing(batch_client, "ed-", dir="nope")
         assert response.status_code == 404
@@ -293,6 +332,10 @@ class TestListingPathGuards:
         assert body["dir"] == "plans/next"
         assert body["tasks"][0]["taskLocation"] == "plans/next/ed-01-a.md"
 
+    @pytest.mark.requires_symlink(
+        "a symlinked lot file must never be read: it is skipped and named in "
+        "`skipped`, and no byte from outside the workspace reaches the listing"
+    )
     def test_a_symlinked_task_file_is_skipped_not_read(
         self, batch_client, tmp_path
     ):
@@ -307,6 +350,10 @@ class TestListingPathGuards:
         assert "ed-02-link.md" in [item["name"] for item in body["skipped"]]
         assert "secret" not in json.dumps(body)
 
+    @pytest.mark.requires_symlink(
+        "a symlinked lot folder cannot escape the workspace: the listing "
+        "refuses it instead of walking the target"
+    )
     def test_a_symlinked_dir_cannot_escape_the_workspace(
         self, batch_client, tmp_path
     ):
@@ -317,6 +364,54 @@ class TestListingPathGuards:
         response = listing(batch_client, "ed-")
         assert response.status_code == 422
         assert "outside the working location" in response.json()["detail"]
+
+    @pytest.mark.requires_symlink(
+        "the lot folder's containment is the one folded rule: a target spelled "
+        "outside the workspace stays outside under either answer of the probe"
+    )
+    def test_a_lot_dir_outside_is_refused_under_both_answers_of_the_fold(
+        self, batch_client, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        r"""win-06 §4: this site asks the shared rule *with* the fold, and the
+        fold does not loosen it.
+
+        A folder whose resolved target is elsewhere cannot be folded into the
+        workspace: the components differ by more than case, and a case difference
+        is the only thing ``fold`` may bridge (A-D3). So the sentence and the 422
+        are the same on both answers of the probe — the pair the fold is *not*
+        allowed to change, pinned here because this is one of the five sites that
+        now consult the shared helper.
+        """
+        from src.core.editorfs import fscase
+
+        outside = tmp_path.parent / f"{tmp_path.name}-far"
+        outside.mkdir(exist_ok=True)
+        (outside / "ed-01-secret.md").write_text("# no\n", encoding="utf-8")
+        (tmp_path / "todos").symlink_to(outside, target_is_directory=True)
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        exact = listing(batch_client, "ed-")
+        assert exact.status_code == 422
+        assert "outside the working location" in exact.json()["detail"]
+        folded = listing(batch_client, "ed-")
+        assert folded.status_code == 422
+        assert "outside the working location" in folded.json()["detail"]
+
+    def test_a_lot_folder_is_contained_by_the_shared_rule_not_a_built_prefix(
+        self, batch_client, tmp_path
+    ):
+        """The site itself: an ordinary folder inside the workspace still lists.
+
+        A cheap pin on the migration rather than a new behaviour: the containment
+        check here is now the shared ``_is_within``, and a lot folder nested
+        several deep stays exactly as contained as the old
+        ``str(workspace) + os.sep`` prefix had it. The helper's own pairs — the
+        sibling trap included — are pinned in ``tests/test_editorfs.py``.
+        """
+        make_lot(tmp_path, ["ed-01-a.md"], dir="plans/next/week")
+        body = listing(batch_client, "ed-", dir="plans/next/week").json()
+        assert body["dir"] == "plans/next/week"
+        assert body["tasks"][0]["taskLocation"] == "plans/next/week/ed-01-a.md"
 
 
 def _chat_stream_stub(monkeypatch: pytest.MonkeyPatch, seen: Dict[str, Any]):
@@ -517,5 +612,15 @@ class TestRunRefusedWhileChatStreams:
         assert results["chat_still_running"] is True
         # The reply ended normally, and the slot is free again for a run.
         assert "event: done" in chat.text
+        # Polled, not asserted inline: the slot is freed by the pump task's own
+        # done callback, which lands a beat after the stream's terminal event —
+        # the SSE generator returns as soon as ``done`` arrives, while the pump
+        # is still waiting on ``asyncio.to_thread`` to join the worker thread.
+        # (The task leaves the set only then: the set is also what keeps the
+        # pending task alive, and a guard holding a few milliseconds longer is
+        # the safe direction for every route that asks it.)
+        deadline = time.monotonic() + 5
+        while routes._CHAT_TASKS and time.monotonic() < deadline:
+            time.sleep(0.02)
         assert not routes._CHAT_TASKS
         assert chat_client.post("/api/run").status_code == 202

@@ -37,11 +37,13 @@ from src.config import (
 from src.core.mcphub import load_externals, set_externals_enabled
 from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
 from src.core import editorfs
-from src.core.editorfs import policy_seed
+from src.core.editorfs import fscase, policy_seed
+from src.core.editorfs.policy import _is_within
 from src.core import agent_modes
 from src.core import prompt_helpers
 from src.core import termhub
 from src.core.termhub import policy as term_policy
+from src.core.termhub import drivers as term_drivers
 from src.core.bench import run_benchmark
 from src.core import batch as batch_core
 from src.core.chat import stream_chat
@@ -1343,9 +1345,16 @@ def build_router(state: RunState) -> APIRouter:
             raise HTTPException(
                 status_code=422, detail=f"Working location does not exist: {raw}"
             )
+        # The same deny-list question ``editorfs.policy._check_workspace_root``
+        # asks for the tree, so both entry points answer with one rule
+        # (A-D2.2, win-06) — folded by the probe of the root being *set*, since
+        # that is the volume the denied entry would sit on here. The fold answer
+        # is asked *after* the existence check above and is best-effort: a root
+        # the probe cannot write to answers ``False``, which is the strict side.
+        fold = fscase.case_folded(expanded)
         for denied in restricted_lsp_roots():
             entry = os.path.realpath(denied)
-            if expanded == entry or expanded.startswith(entry + os.sep):
+            if _is_within(entry, expanded, fold=fold):
                 raise HTTPException(
                     status_code=422,
                     detail=f"Working location is on the deny-list: {denied}",
@@ -1393,11 +1402,19 @@ def build_router(state: RunState) -> APIRouter:
         # the ``existing`` answer, which writes nothing and so never gets to the
         # invalidation inside the seeder.
         agent_modes.invalidate_agent_modes_cache()
+        # And the workspace's case-folding answer (win-05): it is cached per root
+        # exactly as the policy file's rules are, so the same switch that makes
+        # the tree re-root must make the verdict forget which filesystem it
+        # probed — otherwise a workspace opened after a switch would be judged
+        # with the previous volume's case semantics.
+        fscase.invalidate_case_cache()
         # The prompt-helpers file (mbl-02) is seeded at this same moment, by the
         # same rule, and it has **no cache to invalidate** — unlike the two
         # above, the file is read afresh every time the chat tab opens or the
         # location changes (nine small strings do not earn a cache and its
         # invalidation rules), so saying nothing here is the whole mechanism.
+        # It comes last of the three seeds for the reason the others share: a
+        # seeding hiccup is a note in the payload, never a hub failure.
         helpers_block = prompt_helpers.ensure_prompt_helpers_file(expanded)
         return (
             _path_location_payload()
@@ -1721,10 +1738,12 @@ def build_router(state: RunState) -> APIRouter:
 
         Guards, in order, each refusing *before* any process is spawned:
         the Origin check (the app has no CORS/CSRF layer, so this is the one
-        cheap defence against a random page reaching a shell), the platform
-        check (``pty`` is POSIX; the app is self-hosted on Linux), and the
-        concurrent-session cap. A real shell can change anything the app's user
-        can — which is why it is *never* an MCP or LSP tool, only this route,
+        cheap defence against a random page reaching a shell), the driver
+        check (a session needs an available pseudo-terminal driver — the
+        seam's capability answer in ``termhub.drivers``, not a platform
+        name), and the concurrent-session cap. A real shell can change
+        anything the app's user can — which is why it is *never* an MCP or
+        LSP tool, only this route,
         used by the SPA. The tools stay read-only; a shell is a human surface.
 
         ``cwd`` is always ``path_location()``; the server takes no path from the
@@ -1745,15 +1764,17 @@ def build_router(state: RunState) -> APIRouter:
             )
             return
 
-        if os.name != "posix":
+        if not term_drivers.driver_available():
             await websocket.accept()
             await websocket.send_json(
                 {
                     "type": "error",
-                    "message": "The terminal is POSIX-only; this app is self-hosted on Linux",
+                    "message": termhub.NO_DRIVER_MESSAGE,
                 }
             )
-            await websocket.close(termhub.CLOSE_CODE_UNSUPPORTED, "Terminal unsupported")
+            await websocket.close(
+                termhub.CLOSE_CODE_UNSUPPORTED, termhub.NO_DRIVER_MESSAGE
+            )
             return
 
         if hub.is_full():

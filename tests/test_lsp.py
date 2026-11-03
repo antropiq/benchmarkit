@@ -7,8 +7,10 @@ connectors.
 """
 
 import asyncio
+import inspect
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,7 +29,9 @@ from src.core.lsphub import (
     all_servers,
     TOOL_SPECS,
     find_project_config,
+    lsp_reach_is_refused,
     parse_tsserver_request,
+    restricted_lsp_roots,
     tsserver_project_info,
     tsserver_response_params,
     load_lsp_servers,
@@ -36,8 +40,12 @@ from src.core.lsphub import (
     tools_for_server,
 )
 
+from src.core import proctree, proctree_jobs
 from src.core import mcphub
 from src.core.mcphub import tools_to_openai_format
+from src.core.mcphub.validation import expand_env_list, expand_env_map
+
+from tests.conftest import skip_unless, proc_fs_probe
 
 FAKE_SERVER = str(Path(__file__).parent / "fake_langserver.py")
 # The loader requires an existing workspaceRoot; the repo itself always does.
@@ -60,6 +68,16 @@ def _entry(command: Any, **overrides: Any) -> Dict[str, Any]:
 def _servers_doc(**entries: Any) -> str:
     return json.dumps(entries, indent=2)
 
+
+# No reach-seam fixture here any more (lspfinal-04). One used to pin the seam
+# open on a platform that refused every declared server, so the lifecycle,
+# tool-call and tsserver-relay paths had a hub to exercise. The refusal is gone
+# — it answers only whether the hub's guardrail list speaks this filesystem — so
+# the real answers are the ones this suite was written against, on both
+# platforms, and a fixture that patched them would be asserting a state the app
+# can no longer be in. Where the refusal *is* the subject —
+# ``TestLocalReachRefusal``, the reach-note cases in ``TestLoadLspServers`` —
+# the test forces its own ``guardrails_speak_here`` to ``False``.
 
 # ---------------------------------------------------------------------------
 # Config discovery / validation
@@ -151,6 +169,34 @@ class TestLoadLspServers:
         assert all("'bad_" in error or "not_object" in error for error in errors)
         assert all(error.endswith("— skipped") for error in errors)
 
+    def test_every_declared_server_gets_the_reach_note(self, tmp_path, monkeypatch):
+        """win-07 / A-D4: a server is refused where its guardrails match nothing.
+
+        The seam is forced through ``lsphub.constants`` — the hub's single named
+        place for it — not by pretending to be another OS.
+        """
+        monkeypatch.setattr(
+            lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(
+                pyright=_entry([sys.executable, FAKE_SERVER]),
+                vue=_entry([sys.executable, FAKE_SERVER], extensions=[".vue"]),
+                off=_entry([sys.executable, FAKE_SERVER], enable=False),
+            ),
+            encoding="utf-8",
+        )
+        servers, errors = load_lsp_servers(path)
+        # All three are still loaded — a card naming the gap beats a vanished
+        # server — but only the two that ask to run are noted.
+        assert [server["id"] for server in servers] == ["off", "pyright", "vue"]
+        assert len(errors) == 2
+        for note in errors:
+            assert lsp_constants.LOCAL_REACH_REFUSAL in note
+            assert "lsp_servers.json: " in note
+        assert not any("'off'" in note for note in errors)
+
     def test_workspace_root_must_exist(self, tmp_path):
         path = tmp_path / "lsp_servers.json"
         path.write_text(
@@ -175,6 +221,328 @@ class TestLoadLspServers:
         servers, errors = load_lsp_servers(path)
         assert servers == []
         assert "deny-list" in errors[0]
+
+    @pytest.mark.case_sensitive_volume(
+        "the deny-list names the *other* spelling of a real folder, whose "
+        "``realpath`` has to keep the text as written; on a volume where the "
+        "two spellings are one folder the ``fold=False`` half is no longer the "
+        "pair's other answer"
+    )
+    def test_the_deny_list_compare_folds_when_the_workspace_volume_folds(
+        self, tmp_path, monkeypatch
+    ):
+        r"""win-06 §4: this site asks the shared ``_is_within`` with the fold.
+
+        The note above has to fire for *either* spelling of a denied folder on a
+        volume where they are one folder — a line naming ``Secret`` must refuse a
+        ``workspaceRoot`` of ``secret`` there, and must not here, where the two
+        names are two directories. This runner can hold both, so the pair is
+        assertable by forcing the probe, and the exact half is the Linux answer
+        unchanged.
+        """
+        from src.core.editorfs import fscase
+
+        secret = tmp_path / "secret"
+        secret.mkdir()
+        deny = tmp_path / "restricted-paths.txt"
+        # The other spelling: not a path that exists, so its realpath keeps the
+        # text — which is what a deny-list line written on a folded volume looks
+        # like from here.
+        deny.write_text(f"{tmp_path}/Secret\n", encoding="utf-8")
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(srv=_entry(["x"], workspaceRoot=str(secret))),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        servers, errors = load_lsp_servers(path)
+        assert [server["id"] for server in servers] == ["srv"]
+        assert errors == []
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        servers, errors = load_lsp_servers(path)
+        assert servers == []
+        assert "workspaceRoot is on the deny-list — skipped" in errors[0]
+
+    def test_the_list_is_expanded_at_read_time_so_one_file_serves_both_platforms(
+        self, tmp_path, monkeypatch
+    ):
+        """B-D1: the deny-list itself takes ``${NAME}`` / ``${NAME:-fallback}``.
+
+        The committed file carries both platforms' forms and no machine path, so
+        what a *deployment* writes is a variable name — and the effective list is
+        what that name states on this runner. Same helper the declaration values
+        go through, so the two halves cannot expand differently.
+        """
+        from src.core.lsphub.discovery import restricted_lsp_roots
+
+        denied = tmp_path / "profile-store"
+        denied.mkdir()
+        monkeypatch.setenv("LSP_TEST_PROFILE", str(tmp_path))
+        monkeypatch.delenv("LSP_TEST_ABSENT", raising=False)
+        deny = tmp_path / "restricted-paths.txt"
+        deny.write_text(
+            "# comment\n"
+            "${LSP_TEST_PROFILE}/profile-store\n"
+            "${LSP_TEST_ABSENT:-/opt/scratch-store}\n"
+            "/etc\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(srv=_entry(["x"], workspaceRoot=str(denied))),
+            encoding="utf-8",
+        )
+        assert restricted_lsp_roots() == [
+            f"{tmp_path}/profile-store",
+            "/opt/scratch-store",
+            "/etc",
+        ]
+        servers, errors = load_lsp_servers(path)
+        assert servers == []
+        assert "workspaceRoot is on the deny-list — skipped" in errors[0]
+
+    def test_a_guardrail_whose_reference_does_not_resolve_is_absent_not_guessed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        r"""An un-expanded ``${NAME}`` must not count as a prefix that speaks here.
+
+        A declaration keeps such a value verbatim and notes it, so a typo stays
+        visible in that entry's note. A *deny-list* line cannot be kept: the text
+        keeps a rooted shape, so it answers ``guardrails_speak_here`` True while
+        protecting nothing — the reach seam would be lifted on a bound that is not
+        in force, and the entries that did resolve would go unenforced. A line with
+        a reference that resolves to nothing is therefore dropped and named: a
+        leading reference leaves relative text, a mid-path one leaves text that
+        still looks rooted, and both are the same absence of a guardrail.
+        """
+        import logging
+
+        from src.core.lsphub.discovery import restricted_lsp_roots
+
+        monkeypatch.delenv("LSP_TEST_NO_STORE", raising=False)
+        deny = tmp_path / "restricted-paths.txt"
+        deny.write_text(
+            # A leading reference leaves *relative* text, and a mid-path one
+            # leaves text that still looks rooted — both must be dropped.
+            "${LSP_TEST_NO_STORE}/.ssh\n"
+            "/home/${LSP_TEST_NO_STORE}/.aws\n"
+            "${LSP_TEST_KNOWN}/.config/gcloud\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
+        monkeypatch.setenv("LSP_TEST_KNOWN", str(tmp_path / "known"))
+
+        with caplog.at_level(logging.WARNING):
+            entries = restricted_lsp_roots()
+        assert entries == [f"{tmp_path / 'known'}/.config/gcloud"]
+        assert not any("${" in entry for entry in entries)
+        assert "${LSP_TEST_NO_STORE}" in caplog.text
+        assert "not set in the environment" in caplog.text
+        assert "not in force" in caplog.text
+
+    def test_a_relative_line_is_absent_from_the_list_too(self, tmp_path, monkeypatch):
+        """A prefix that is not rooted protects nothing, so it is not a prefix."""
+        from src.core.lsphub.discovery import restricted_lsp_roots
+
+        deny = tmp_path / "restricted-paths.txt"
+        deny.write_text(
+            "~/.ssh\nrelative/store\n\n   \n# ${HOME}/.ssh\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
+        assert restricted_lsp_roots() == []
+
+    def test_the_committed_list_is_machine_neutral_and_names_both_platforms(self):
+        """The file every deployment reads spells no drive letter and no home.
+
+        ``/home/vgr/.ssh`` was the thing B-D1 called *machine*-shaped: correct
+        for one box, inert for every other. The forms that reach a Windows tree
+        arrive from the environment the OS states them in, exactly as
+        ``path_policy`` derives its connector prefixes (G-D8).
+        """
+        from mcp_connectors import path_policy
+
+        from src.core.lsphub.discovery import restricted_lsp_roots
+
+        text = lsp_constants.LSP_RESTRICTED_PATHS.read_text(encoding="utf-8")
+        lines = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        assert not any(re.search(r"[A-Za-z]:", line) for line in lines)
+        assert not any(line.startswith(("/home/", "/root/")) for line in lines)
+        # The POSIX half stays (it is load-bearing on the other platform), and
+        # the profile stores are stated on both spellings of a profile home.
+        assert "/etc" in lines
+        assert "${HOME}/.ssh" in lines and "${USERPROFILE}/.ssh" in lines
+        # What this runner's environment states is what the list answers with,
+        # and every line that survives is a real prefix: rooted by shape.
+        entries = restricted_lsp_roots()
+        assert entries
+        assert all(
+            path_policy.root_form(entry) in ("absolute", "drive", "unc")
+            for entry in entries
+        )
+        assert "/etc" in entries
+        if os.environ.get("SystemRoot"):
+            assert os.environ["SystemRoot"] in entries
+        if os.environ.get("USERPROFILE"):
+            assert f"{os.environ['USERPROFILE']}/.ssh" in entries
+
+    def test_the_guardrail_half_speaks_this_runners_working_location(self):
+        r"""B-D1's own proof: the hub's committed list answers True on its own.
+
+        Nothing is patched, because there is nothing left to un-patch: the seam
+        asks this one question. Both answers are asserted on the runner that runs
+        them — the list is True everywhere (on Windows by the environment-derived
+        entries B-D1 added, on Linux by the POSIX ones that always were), so the
+        reach refusal is ``False`` everywhere the committed file is in place.
+        """
+        from src.core.lsphub.discovery import lsp_reach_is_refused, restricted_lsp_roots
+
+        entries = restricted_lsp_roots()
+        assert entries
+        assert lsp_constants.guardrails_speak_here(entries or None) is True
+        assert lsp_reach_is_refused() is False
+
+    def test_a_denied_prefix_refuses_the_tree_and_what_is_inside_it(
+        self, tmp_path, monkeypatch
+    ):
+        r"""The prefix boundary, stated as components rather than as text.
+
+        The case this task exists for is a ``workspaceRoot`` the *old* list let
+        through — a Windows system tree or a credential store — and the shape of
+        that verdict is askable on either runner: the exact prefix, something
+        deep inside it, and the neighbour whose name merely starts with the same
+        letters (``C:\Windows.old`` against ``C:\Windows`` — a text-prefix test
+        called that a child of the OS tree, B-D1's named mistake).
+        """
+        monkeypatch.setenv("LSP_TEST_DENY_ROOT", str(tmp_path / "system"))
+        for name in ("system", "system/System32/config", "system-old"):
+            (tmp_path / name).mkdir(parents=True, exist_ok=True)
+        deny = tmp_path / "restricted-paths.txt"
+        deny.write_text("${LSP_TEST_DENY_ROOT}\n", encoding="utf-8")
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(
+                exact=_entry(
+                    [sys.executable, FAKE_SERVER],
+                    workspaceRoot=str(tmp_path / "system"),
+                ),
+                inside=_entry(
+                    [sys.executable, FAKE_SERVER],
+                    workspaceRoot=str(tmp_path / "system" / "System32" / "config"),
+                ),
+                neighbour=_entry(
+                    [sys.executable, FAKE_SERVER],
+                    workspaceRoot=str(tmp_path / "system-old"),
+                ),
+            ),
+            encoding="utf-8",
+        )
+        servers, errors = load_lsp_servers(path)
+        assert [server["id"] for server in servers] == ["neighbour"]
+        assert len(errors) == 2
+        assert all("workspaceRoot is on the deny-list — skipped" in n for n in errors)
+
+    def test_the_committed_list_refuses_a_declaration_pointed_at_a_system_tree(
+        self, tmp_path, monkeypatch
+    ):
+        r"""The literal acceptance, through the real loader and the committed file.
+
+        Here (Windows) that is ``C:/Windows``, the registry-hive directory inside
+        it, and this profile's ``.ssh`` — the three roots the POSIX-only list let
+        through, and the reason the reach seam was raised. Nothing is patched
+        except the profile home the list derives its own entries from, so the file
+        every deployment reads is what answers. A POSIX runner asks the question
+        of ``/etc`` and its own ``${HOME}`` store instead: the same two halves of
+        the list, the same verdict, no new skip.
+        """
+        profile = tmp_path / "profile"
+        (profile / ".ssh").mkdir(parents=True)
+        for name in ("USERPROFILE", "HOME"):
+            monkeypatch.setenv(name, str(profile))
+
+        system_root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT")
+        candidates = [
+            system_root,
+            os.path.join(system_root, "System32", "config") if system_root else None,
+            "/etc",
+            str(profile / ".ssh"),
+        ]
+        probes = [item for item in candidates if item and os.path.isdir(item)]
+        assert probes, "this runner states no system tree and no profile home"
+
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(
+                **{
+                    f"srv{index}": _entry(
+                        [sys.executable, FAKE_SERVER], workspaceRoot=probe
+                    )
+                    for index, probe in enumerate(probes)
+                }
+            ),
+            encoding="utf-8",
+        )
+        servers, errors = load_lsp_servers(path)
+        assert servers == []
+        assert len(errors) == len(probes)
+        assert all("workspaceRoot is on the deny-list — skipped" in n for n in errors)
+
+    def test_the_working_location_itself_is_not_on_the_committed_list(self):
+        """Consumer 3/4: the app's own location must survive the reworked list.
+
+        ``editorfs.policy._check_workspace_root`` refuses a workspace that sits on
+        this file, and ``POST /path-location`` asks the same question — so if the
+        Windows half of the list ever named the tree the app runs in, the Editor
+        would go dark and the settings route would refuse the only location that
+        exists. Asserted, not assumed.
+        """
+        from src.core.editorfs import fscase
+        from src.core.editorfs.policy import _check_workspace_root, _is_within
+        from src.core.editorfs.policy import workspace_root
+        from src.core.lsphub.discovery import restricted_lsp_roots
+
+        assert _check_workspace_root() == workspace_root()
+        fold = fscase.case_folded(workspace_root())
+        real = os.path.realpath(workspace_root())
+        assert not any(
+            _is_within(os.path.realpath(entry), real, fold=fold)
+            for entry in restricted_lsp_roots()
+        )
+
+    def test_a_working_location_on_the_list_is_refused_by_the_tree_gate(
+        self, tmp_path, monkeypatch
+    ):
+        """Consumer 3, other direction: a location the list names stays refused.
+
+        The reworked list must not have stopped binding anything — the gate that
+        refuses to *browse* such a location is where that would show.
+        """
+        from src.core.editorfs.policy import WorkspacePathError, _check_workspace_root
+        from src.core.lsphub.discovery import restricted_lsp_roots
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(workspace))
+        # The list names a tree, the workspace sits inside it. The variable is
+        # the realpath, because the gate compares realpaths on both sides.
+        monkeypatch.setenv("LSP_TEST_DENIED_TREE", os.path.realpath(tmp_path))
+        deny = tmp_path / "restricted-paths.txt"
+        deny.write_text("${LSP_TEST_DENIED_TREE}\n", encoding="utf-8")
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
+
+        assert restricted_lsp_roots() == [os.path.realpath(tmp_path)]
+        with pytest.raises(WorkspacePathError) as caught:
+            _check_workspace_root()
+        assert caught.value.status_code == 422
+        assert "deny-list" in caught.value.detail
 
     def test_env_references_are_expanded_everywhere(self, tmp_path, monkeypatch):
         """command, env, workspaceRoot and the option objects all expand.
@@ -250,6 +618,66 @@ class TestLoadLspServers:
         assert errors == []
         assert servers
         assert all("env" in server for server in servers)
+
+    def test_the_committed_example_loads_and_reports_only_its_placeholders(self):
+        """The template every deployment copies is loaded by the loader, not
+        only read by a human (lspfinal-05).
+
+        It cannot be a *clean* load: its ``workspaceRoot`` values are the
+        deliberate ``/absolute/path/to/…`` placeholders, which no runner has, so
+        those entries are skipped. Asserting a clean load would push a future
+        edit to turn a placeholder into a real machine path — worse than the
+        note. What is pinned instead: the file parses, the three server ids are
+        unchanged, the ``_…_note`` keys are still comments (never reported as
+        malformed servers), and no note is an unresolved ``${…}`` or the reach
+        refusal — either of those would make the file the app hands out one the
+        app refuses.
+        """
+        example = (
+            lsp_constants.LSP_CONNECTORS_DIR / "lsp_servers.example.json"
+        )
+        declared = json.loads(example.read_text(encoding="utf-8"))
+        ids = [key for key in declared if not key.startswith("_")]
+        assert ids == ["pyright", "typescript", "vue"]
+        note_keys = [key for key in declared if key.startswith("_")]
+        assert note_keys  # documented from inside the file, as comment keys
+
+        servers, errors = load_lsp_servers(example)
+        assert {server["id"] for server in servers} <= set(ids)
+        # A note names one declared server and never a comment key, and the only
+        # thing that can skip one of these entries is its placeholder root: an
+        # unresolved ``${…}`` or the reach refusal here would make the file the
+        # app hands out one the app refuses.
+        assert errors
+        for note in errors:
+            assert sum(f"'{server_id}'" in note for server_id in ids) == 1
+            assert not any(f"'{key}'" in note for key in note_keys)
+            assert "workspaceRoot" in note
+            assert "not set in the environment" not in note
+            assert "not started" not in note
+
+    def test_the_examples_values_stay_the_posix_form_on_any_runner(self, monkeypatch):
+        """The template cannot carry one ``PATH`` for both systems, and its note
+        says so (lspfinal-05) — this is that sentence made executable.
+
+        Asked of the same helper a real declaration goes through, with
+        ``VOLTA_BIN`` unset: ``${NAME:-fallback}`` substitutes that one variable
+        or its fallback, with no conditional and no platform test, so the
+        POSIX fallback and its ':' separators land on a Windows runner too. The
+        Windows spelling is therefore a note to copy, not a value — and a future
+        edit that made the values "adapt themselves" would be changing the
+        expansion contract, which is code, not a data file.
+        """
+        monkeypatch.delenv("VOLTA_BIN", raising=False)
+        example = (
+            lsp_constants.LSP_CONNECTORS_DIR / "lsp_servers.example.json"
+        )
+        entry = json.loads(example.read_text(encoding="utf-8"))["pyright"]
+        command, missing = expand_env_list(entry["command"])
+        env, more = expand_env_map(entry["env"])
+        assert missing == more == []  # resolves, or falls back — never left blank
+        assert command == ["/usr/local/bin/pyright-langserver", "--stdio"]
+        assert env == {"PATH": "/usr/local/bin:/usr/local/bin:/usr/bin:/bin"}
 
 
 class TestSetLspEnabled:
@@ -349,7 +777,7 @@ class TestToolSynthesis:
 
 
 def _fake_server_entry(tmp_path: Path, server_id: str = "fake", *flags: str,
-                       lazy: bool = False) -> Dict[str, Any]:
+                       lazy: bool = False, enable: bool = True) -> Dict[str, Any]:
     root = tmp_path / "workspace"
     root.mkdir(exist_ok=True)
     return {
@@ -360,7 +788,7 @@ def _fake_server_entry(tmp_path: Path, server_id: str = "fake", *flags: str,
         "workspaceRoot": str(root),
         "extensions": [".py"],
         "languageId": "python",
-        "enable": True,
+        "enable": enable,
         "lazy": lazy,
         "initializationOptions": {},
         "tools": ["diagnostics", "hover", "definition", "document_symbols"],
@@ -686,7 +1114,7 @@ class TestLspLifecycle:
             await asyncio.sleep(0.05)
         assert process.returncode is not None
 
-    @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX")
+    @pytest.mark.posix_behaviour("process groups are POSIX")
     @pytest.mark.anyio
     async def test_server_leads_its_own_process_group(self, hub, tmp_path):
         # The teardown signals a *group*, which only works because the spawn
@@ -697,8 +1125,8 @@ class TestLspLifecycle:
         pid = hub._sessions["fake"].process.pid
         assert os.getpgid(pid) == pid
 
-    @pytest.mark.skipif(not sys.platform.startswith("linux"),
-                        reason="uses /proc to tell a zombie from a live process")
+    @skip_unless(proc_fs_probe,
+                 "uses /proc to tell a zombie from a live process")
     @pytest.mark.anyio
     async def test_close_session_kills_the_whole_process_tree(self, hub, tmp_path,
                                                              monkeypatch):
@@ -731,6 +1159,988 @@ class TestLspLifecycle:
             f"grandchild {grandchild} survived the teardown — the hub killed "
             "the wrapper but not its descendants"
         )
+
+
+class TestJobContainmentAtSpawn:
+    """B-D5's hub half: the child is born inside a boundary the OS maintains,
+    and the teardown is the one shared escalation on **either** platform.
+
+    The process-group test above is what POSIX has always done. What this class
+    adds is that the hub stops branching on the platform, and stops killing only
+    the wrapper where there is no group to signal.
+    """
+
+    class RecordingJob(proctree_jobs.ProcessJob):
+        """The real job class, recording what the hub asked and what it answered.
+
+        A subclass rather than a stand-in, so the mechanism underneath is the one
+        the runner really has (or really does not) and only the *conversation* is
+        observed.
+        """
+
+        def __init__(self, name: Optional[str] = None) -> None:
+            super().__init__(name)
+            self.assignments: List[Any] = []
+            self.close_calls = 0
+
+        def assign(self, pid: Optional[int], *, leader: bool = False):
+            answer = super().assign(pid, leader=leader)
+            self.assignments.append((pid, leader, answer))
+            return answer
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    @pytest.mark.anyio
+    async def test_the_job_is_opened_before_the_spawn_and_leads_the_child(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """A job is a spawn-time boundary, so the handle must pre-date the child.
+
+        The hub does not spawn the child — pygls does — so the ordering is
+        asserted at both ends: the job exists before ``start_io`` is entered, and
+        the child that comes back from it is registered as that job's **leader**,
+        the pid the shared teardown is later handed.
+        """
+        from pygls.lsp.client import LanguageClient
+
+        order: List[str] = []
+
+        class OrderingJob(self.RecordingJob):
+            def __init__(self, name: Optional[str] = None) -> None:
+                super().__init__(name)
+                order.append("job")
+
+        real_start_io = LanguageClient.start_io
+        spawn_kwargs: Dict[str, Any] = {}
+
+        async def spy_start_io(client, *args, **kwargs):
+            order.append("spawn")
+            spawn_kwargs.update(kwargs)
+            return await real_start_io(client, *args, **kwargs)
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", OrderingJob)
+        monkeypatch.setattr(LanguageClient, "start_io", spy_start_io)
+
+        await _start(hub, _fake_server_entry(tmp_path))
+        session = hub._sessions["fake"]
+        assert order == ["job", "spawn"], (
+            f"the job was opened after the spawn ({order}): a process created "
+            "before its parent is contained is never migrated into the job"
+        )
+        # One call site, one shape: the flag that leads the POSIX group stays on
+        # both platforms (it is accepted and ignored on Windows, where the job
+        # above is what bounds the tree).
+        assert spawn_kwargs.get("start_new_session") is True
+        [(assigned_pid, is_leader, _answer)] = session.job.assignments
+        assert assigned_pid == session.process.pid and is_leader
+
+    @pytest.mark.anyio
+    async def test_where_there_are_no_jobs_the_spawn_site_still_asks_once(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """The Linux path, forced on either runner through the seam's own
+        patch-point (roadmap §9 rule 2): the job is inert, ``assign`` answers
+        ``None`` — the platform's answer, not a failure — nothing is reported,
+        and the group teardown is untouched.
+        """
+        monkeypatch.setattr(proctree_jobs, "JOBS_SUPPORTED", False)
+        probe = self.RecordingJob("inert")
+        assert probe.available is False
+        assert probe.assign(os.getpid(), leader=True) is None
+        probe.close()
+
+        jobs: List[Any] = []
+
+        class ObservingJob(self.RecordingJob):
+            def __init__(self, name: Optional[str] = None) -> None:
+                super().__init__(name)
+                jobs.append(self)
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", ObservingJob)
+        await _start(hub, _fake_server_entry(tmp_path))
+
+        assert hub.server_status("fake") == "running", hub._servers["fake"]["error"]
+        [job] = jobs
+        assert job.handle is None
+        assert [answer for _pid, _leader, answer in job.assignments] == [None]
+        assert "not contained in a job" not in hub.log_tail("fake")
+
+    @pytest.mark.anyio
+    async def test_a_child_that_cannot_be_contained_is_reported(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """A ``False`` from ``assign`` fails neither the spawn nor the silence.
+
+        ``ProcessJob.assign`` keeps the caller's process either way, so the
+        server still comes up; but the hub must not then claim a bounded tree,
+        which is what the server's own log line is for — the file the settings
+        panel shows. Ignoring it is the "spawn site that forgot the call" that
+        the teardown's own warning exists to find.
+        """
+        class RefusingJob(self.RecordingJob):
+            def assign(self, pid: Optional[int], *, leader: bool = False):
+                self.assignments.append((pid, leader, False))
+                return False
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", RefusingJob)
+        await _start(hub, _fake_server_entry(tmp_path))
+
+        assert hub.server_status("fake") == "running", hub._servers["fake"]["error"]
+        assert "not contained in a job" in hub.log_tail("fake")
+        assert proctree_jobs.job_for(hub._sessions["fake"].process.pid) is None
+
+    @pytest.mark.anyio
+    async def test_the_teardown_is_asked_of_the_shared_entry_point(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """No second escalation in the hub: it asks ``proctree`` and nothing else.
+
+        ``proctree`` chooses the mechanism by capability, so the hub has one call
+        site for both platforms — which is how the hubs and the terminal stay one
+        implementation. The handle is still released by the hub, because the
+        entry point only closes a job it *found*.
+        """
+        asked: List[Any] = []
+
+        async def fake_kill(pid, reap_leader, grace_seconds):
+            asked.append(pid)
+
+        monkeypatch.setattr(proctree, "kill_process_tree", fake_kill)
+        jobs: List[Any] = []
+
+        class ObservingJob(self.RecordingJob):
+            def __init__(self, name: Optional[str] = None) -> None:
+                super().__init__(name)
+                jobs.append(self)
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", ObservingJob)
+        await _start(hub, _fake_server_entry(tmp_path))
+        pid = hub._sessions["fake"].process.pid
+        await _run(hub, hub._close_session("fake"))
+
+        assert asked == [pid], "the hub escalated by some route of its own"
+        [job] = jobs
+        assert job.close_calls == 1, (
+            "the child was dropped without releasing its job handle — the "
+            "kill-on-close guarantee only fires on the last handle"
+        )
+
+    def test_the_teardown_has_no_platform_branch(self):
+        """The acceptance line, asserted rather than trusted.
+
+        ``_close_session`` used to read ``os.name == "posix"`` and, on the other
+        side of that branch, terminate the wrapper alone — the private copy of
+        the escalation that let tsserver outlive the hub. The choice of mechanism
+        lives inside ``proctree`` now.
+        """
+        source = inspect.getsource(LspManager._close_session)
+        assert "os.name" not in source
+        assert "proctree.kill_process_tree" in source
+        assert ".terminate()" not in source and ".kill()" not in source
+        # …and the escalation is reached only through that entry point: a hub
+        # driving the job primitives itself is how the hubs and the terminal
+        # drift (the terminal calls them directly because its driver seam needs
+        # that; a hub copying the shape is the failure).
+        hub_source = inspect.getsource(LspManager)
+        assert "kill_job_tree" not in hub_source
+        assert "terminate_and_drain" not in hub_source
+
+    @pytest.mark.anyio
+    async def test_replacing_a_child_closes_the_old_job(self, hub, tmp_path,
+                                                        monkeypatch):
+        """A restart replaces a child, so it must close the *old* job rather
+        than drop the reference."""
+        jobs: List[Any] = []
+
+        class ObservingJob(self.RecordingJob):
+            def __init__(self, name: Optional[str] = None) -> None:
+                super().__init__(name)
+                jobs.append(self)
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", ObservingJob)
+        await _start(hub, _fake_server_entry(tmp_path))
+        await _run(hub, hub._restart_one("fake"))
+        assert hub.server_status("fake") == "running"
+        assert len(jobs) == 2
+        # The old child's handle is gone whatever route closed it (the shared
+        # teardown closes a job it finds, the hub closes it again on the way
+        # out, and ``close`` is idempotent — what must not happen is zero).
+        assert jobs[0].close_calls >= 1 and jobs[0].handle is None, (
+            "the replaced child's job handle was dropped, not closed"
+        )
+        assert jobs[1].close_calls == 0
+        await _run(hub, hub._stop_one("fake"))
+        assert jobs[1].close_calls >= 1 and jobs[1].handle is None
+
+    @pytest.mark.anyio
+    async def test_a_hub_reload_closes_a_job_its_teardown_left_behind(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """``restart`` replaces every child, so it releases what it replaces.
+
+        A reload normally tears each session down first; when its bounded wait
+        runs out the session is still in the dict as that dict is cleared, and
+        that is the one place a handle could be dropped rather than closed. The
+        missed teardown is the *premise* here, and it is stated narrowly: the
+        graceful ``shutdown``/``exit`` still runs (so the child exits and is
+        reaped and no ghost is left for the next test), the process-tree step
+        that would have closed the job does not. What is under test is what the
+        reload does with the session that is still registered.
+        """
+        async def graceful_stop_only() -> None:
+            for session in list(hub._sessions.values()):
+                client = session.client
+                if client is None or client.stopped:
+                    continue
+                try:
+                    await asyncio.wait_for(
+                        client.shutdown_async(None),
+                        timeout=lsp_constants.STOP_GRACE_SECONDS,
+                    )
+                    client.exit(None)
+                    await client.stop()
+                except Exception:  # noqa: BLE001 — the premise, not the rule
+                    pass
+
+        jobs: List[Any] = []
+
+        class ObservingJob(self.RecordingJob):
+            def __init__(self, name: Optional[str] = None) -> None:
+                super().__init__(name)
+                jobs.append(self)
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", ObservingJob)
+        await _start(hub, _fake_server_entry(tmp_path))
+        session = hub._sessions["fake"]
+        monkeypatch.setattr(hub, "_stop_on_loop", graceful_stop_only)
+        await hub.restart([_fake_server_entry(tmp_path)])
+
+        assert jobs[0].close_calls >= 1 and jobs[0].handle is None, (
+            "the reload cleared the session and leaked its job handle"
+        )
+        # The premise left no ghost behind: the child took the graceful
+        # shutdown, so the one thing the reload had to do was the handle.
+        assert session.process.returncode is not None
+
+    @pytest.mark.anyio
+    async def test_a_spawn_that_never_happened_closes_its_job(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """Every path out of the spawn site releases the handle."""
+        from pygls.lsp.client import LanguageClient
+
+        jobs: List[Any] = []
+
+        class ObservingJob(self.RecordingJob):
+            def __init__(self, name: Optional[str] = None) -> None:
+                super().__init__(name)
+                jobs.append(self)
+
+        async def failing_start_io(client, *args, **kwargs):
+            raise OSError("no such program")
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", ObservingJob)
+        monkeypatch.setattr(LanguageClient, "start_io", failing_start_io)
+        await _start(hub, _fake_server_entry(tmp_path))
+
+        assert hub.server_status("fake") == "error"
+        assert "Could not spawn language server" in hub._servers["fake"]["error"]
+        assert jobs and jobs[0].close_calls == 1
+        assert not hub._sessions
+
+    @pytest.mark.anyio
+    async def test_a_crashed_child_has_its_job_closed(self, hub, tmp_path,
+                                                       monkeypatch):
+        """The crash path drops a session with no teardown, so it releases the
+        handle too — with kill-on-close, that release is what takes whatever the
+        dead server left running."""
+        jobs: List[Any] = []
+
+        class ObservingJob(self.RecordingJob):
+            def __init__(self, name: Optional[str] = None) -> None:
+                super().__init__(name)
+                jobs.append(self)
+
+        monkeypatch.setattr(proctree_jobs, "ProcessJob", ObservingJob)
+        entry = _fake_server_entry(tmp_path, "fake", "--crash-after", "1")
+        await _start(hub, entry)
+        (Path(entry["workspaceRoot"]) / "x.py").write_text("x = 1\n", encoding="utf-8")
+        hub.call_tool_sync(
+            "fake", "lsp_fake_hover", {"path": "x.py", "line": 0, "character": 0}
+        )
+        for _ in range(100):
+            if hub.server_status("fake") == "error":
+                break
+            await asyncio.sleep(0.05)
+        assert hub.server_status("fake") == "error"
+        assert jobs and jobs[0].close_calls == 1
+
+    @pytest.mark.windows_behaviour(
+        "the boundary under test is the Job Object acting on a real language-"
+        "server tree; on POSIX the boundary is the process group and its own "
+        "test is above"
+    )
+    @pytest.mark.anyio
+    async def test_the_whole_tree_is_inside_the_job_and_dies_with_it(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """Tree, not wrapper — measured against the OS, not a return code.
+
+        The fake's ``--child`` grandchild takes no notice of a polite shutdown,
+        so a teardown that reaches only the leader provably leaves it behind. Its
+        *membership* of the job is the claim this task makes — the hub does not
+        spawn the child, pygls does, and the assignment lands a turn after the
+        creation — and an empty member list is the Windows-side evidence a unit
+        test can produce (the Task-Manager check is a manual one).
+        """
+        monkeypatch.setattr(lsp_constants, "STOP_GRACE_SECONDS", 3.0)
+        pidfile = tmp_path / "grandchild.pid"
+        entry = _fake_server_entry(tmp_path, "fake", "--child", str(pidfile))
+        await _start(hub, entry)
+
+        job = hub._sessions["fake"].job
+        assert job is not None and job.available, (
+            "the hub opened no real job for its child — the wiring is missing"
+        )
+        leader = hub._sessions["fake"].process.pid
+        assert leader in job.leaders
+
+        grandchild: Optional[int] = None
+        for _ in range(100):
+            if pidfile.exists():
+                grandchild = int(pidfile.read_text(encoding="utf-8").strip())
+                break
+            await asyncio.sleep(0.05)
+        assert grandchild is not None, "the fake never reported its grandchild"
+        assert not proctree_jobs.process_is_gone(grandchild), (
+            f"grandchild {grandchild} never came up"
+        )
+
+        members = job.members()
+        assert members is not None and grandchild in members, (
+            f"the descendant the language server created is not itself a job "
+            f"member (members={members}): the boundary is the wrapper, not the "
+            "tree, so terminating it cannot reach one either"
+        )
+
+        # What the job answers *while* the teardown runs, so the last answer is
+        # evidence of a drained tree rather than of a handle already closed.
+        answers: List[Any] = []
+        real_member_pids = proctree_jobs.job_member_pids
+
+        def spy(handle):
+            answer = real_member_pids(handle)
+            answers.append(answer)
+            return answer
+
+        monkeypatch.setattr(proctree_jobs, "job_member_pids", spy)
+        await _run(hub, hub._close_session("fake"))
+
+        assert () in answers, (
+            f"the job never answered 'no members' during the teardown "
+            f"(answers={answers}) — part of the tree outlived it"
+        )
+        assert job.handle is None, "the job handle outlived its child"
+        assert proctree_jobs.job_for(leader) is None
+        assert proctree_jobs.process_is_gone(grandchild), (
+            f"grandchild {grandchild} survived the job teardown"
+        )
+
+class TestDeclaredCommandResolution:
+    """B-D6's hub half: the declared command is resolved before it is spawned,
+    and what a failed lookup leaves behind is a sentence naming the search.
+
+    The failure this exists for is the obvious declaration — ``pyright-
+    langserver``, the extensionless program a POSIX user would write — which on
+    Windows is a ``#!/bin/bash`` shim and not an executable image at all. Asked
+    of the OS directly it answers ``[WinError 193]``, a code with nothing to act
+    on; asked of ``shutil.which`` it resolves to the ``.cmd`` beside it. Neither
+    half of that is a platform branch: the search is one call with one answer on
+    either side, and what differs is what the answer looks like.
+    """
+
+    @staticmethod
+    def _shim(bin_dir: Path, server_id: str = "fake-server") -> Path:
+        """A folder holding both spellings of one command, Volta's shape.
+
+        The extensionless file is the script a POSIX shell runs (and the one a
+        Windows user's ``PATH`` carries); the ``.cmd`` beside it is what Windows
+        can actually start. Both launch the suite's fake language server, so a
+        resolution that picked the wrong one is visible as a session that never
+        handshakes. Nothing here depends on a toolchain being installed.
+        """
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        script = bin_dir / server_id
+        script.write_text(
+            "#!/bin/sh\n"
+            f"exec {json.dumps(sys.executable)} {json.dumps(FAKE_SERVER)}\n",
+            encoding="utf-8",
+        )
+        os.chmod(script, 0o755)  # the POSIX half; a no-op on NTFS
+        (bin_dir / f"{server_id}.cmd").write_text(
+            f"@echo off\r\n{json.dumps(sys.executable)} "
+            f"{json.dumps(FAKE_SERVER)}\r\n",
+            encoding="utf-8",
+        )
+        return script
+
+    def test_an_absolute_command_that_is_the_program_resolves_to_itself(
+        self, tmp_path
+    ):
+        """The unchanged answer, asked where both platforms give it.
+
+        ``sys.executable`` is an absolute, existing, executable program here and
+        on Linux, and the search hands it back verbatim — the hub never rewrites
+        a declaration that already names a program. (The POSIX shape of the
+        extensionless case below, where the declared file *is* the program, is
+        the lifecycle every other test in this file already runs.)
+        """
+        hub = LspManager([], logs_dir=tmp_path / "logs")
+        assert hub._resolve_command(sys.executable, dict(os.environ)) == sys.executable
+
+    def test_a_declared_folder_is_the_search_a_named_command_gets(self, tmp_path):
+        """A command that spells a path is looked up *there* and nowhere else.
+
+        ``shutil.which`` searches the spelled directory for a bare name's
+        ``PATHEXT`` forms, so the folders the refusal reports are that directory,
+        not the ``PATH`` the operator would otherwise go and edit.
+        """
+        hub = LspManager([], logs_dir=tmp_path / "logs")
+        script = self._shim(tmp_path / "bin")
+        # An env PATH this folder is not on, so a report of it is a bug caught.
+        env = {"PATH": str(script.parent), "PATHEXT": os.environ.get("PATHEXT", "")}
+        resolved = hub._resolve_command(str(script), env)
+        # On Windows that is the ``.cmd`` beside the script; on POSIX the script
+        # itself, which is what its executable bit makes it.
+        assert resolved is not None
+        assert Path(resolved).parent == script.parent
+        assert Path(resolved).name.lower() in ("fake-server", "fake-server.cmd")
+        assert hub._searched_paths(str(script), env) == str(script.parent)
+        # A bare name is the other half: then the searched folders are the PATH.
+        assert hub._searched_paths("fake-server", env) == str(script.parent)
+
+    @pytest.mark.anyio
+    async def test_a_command_that_resolves_to_nothing_is_refused_not_spawned(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """No child, and a sentence rather than the code a spawn would give.
+
+        ``_start_session`` is the only place a language-server process is
+        spawned, so patching it out answers "did the hub try" directly — the
+        same pattern the reach-refusal tests use, for the same reason: a hub
+        that reports a status while spawning anyway has reported nothing.
+        """
+        async def no_spawn(*args: Any, **kwargs: Any) -> None:
+            raise AssertionError("spawn attempted")
+
+        monkeypatch.setattr(hub, "_start_session", no_spawn)
+        entry = _fake_server_entry(tmp_path, "fake")
+        bin_dir = tmp_path / "empty-bin"
+        bin_dir.mkdir()
+        entry["command"] = ["no-such-langserver"]
+        # The declaration's own PATH, so the refusal has one folder to name and
+        # the assertion below cannot be satisfied by the app's environment.
+        entry["env"] = {"PATH": str(bin_dir)}
+        _declare(hub, entry)
+        await _run(hub, hub._start_one("fake"))
+
+        info = hub._servers["fake"]
+        assert info["status"] == "error"
+        assert lsp_constants.SPAWN_FAILURE_LEAD in info["error"]
+        assert "no-such-langserver" in info["error"]
+        assert str(bin_dir) in info["error"]
+        assert "fake" not in hub._sessions
+        assert hub._defs.get("fake") is None
+        # The card is not the only report: the settings panel shows the log too.
+        assert "refused" in hub.log_tail("fake")
+
+    @pytest.mark.anyio
+    async def test_the_search_is_the_childs_own_path_and_reports_it(
+        self, hub, tmp_path
+    ):
+        """The trap: resolve with the app's PATH, spawn with the child's, and
+        the second search fails on a declaration the first one accepted.
+
+        ``_environment`` replaces ``PATH`` wholesale with the entry's
+        ``env.PATH``, so the lookup and the spawn are one environment or they are
+        two verdicts. Both halves are asked here, from folders the app's own PATH
+        does not carry — otherwise the test passes because the app's PATH happens
+        to answer, for the wrong reason.
+        """
+        carry = tmp_path / "bin-carries-it"
+        absent = tmp_path / "bin-lacks-it"
+        self._shim(carry)
+        absent.mkdir()
+
+        entry = _fake_server_entry(tmp_path, "fake")
+        # A bare name: nothing about it spells a folder, so only a search of the
+        # child's PATH can find it.
+        entry["command"] = ["fake-server"]
+        entry["env"] = {"PATH": str(carry)}
+        await _start(hub, entry)
+        assert hub.server_status("fake") == "running", hub._servers["fake"]["error"]
+
+        other = _fake_server_entry(tmp_path, "fake2")
+        other["command"] = ["fake-server"]
+        other["env"] = {"PATH": str(absent)}
+        await _start(hub, other)
+        info = hub._servers["fake2"]
+        assert info["status"] == "error"
+        assert str(absent) in info["error"], (
+            f"the refusal named something other than the path that was actually "
+            f"searched: {info['error']}"
+        )
+        # And it did not quietly fall back to the app's own PATH, which carries
+        # the interpreter's folder — the one folder this declaration excludes.
+        assert str(Path(sys.executable).parent) not in info["error"]
+
+    def test_an_os_spawn_failure_is_a_sentence_naming_the_search(self, tmp_path):
+        """Both answers the OS gives at the spawn, reported by name.
+
+        The pair is built rather than caught: ``OSError(193, …)`` is exactly what
+        ``CreateProcess`` raises for a file that is a script instead of an
+        executable image, and a real such spawn is exercised by the Windows-only
+        test below. A translated sentence must not carry the bare code; an OS
+        answer that *is* the diagnosis must keep its own words beside the named
+        command and folders.
+        """
+        hub = LspManager([], logs_dir=tmp_path / "logs")
+        declared = r"C:\Users\vgr\AppData\Local\Volta\bin\pyright-langserver"
+        searched = r"C:\Users\vgr\AppData\Local\Volta\bin"
+
+        not_an_image = OSError(193, "%1 is not a valid Win32 application")
+        not_an_image.winerror = 193
+        sentence = hub._spawn_failure_sentence(
+            not_an_image, declared, declared, searched
+        )
+        assert sentence.startswith(lsp_constants.SPAWN_FAILURE_LEAD)
+        # Both are spelled the way an operator pastes them, not ``repr``-ed.
+        assert declared in sentence and searched in sentence
+        assert "not a valid Win32 application" not in sentence, (
+            "the OS code reached the operator untranslated"
+        )
+        assert "PATHEXT" in sentence, (
+            "the sentence names no fix: it must point at the shim it could run"
+        )
+
+        not_a_file = FileNotFoundError(2, "The system cannot find the file specified")
+        not_a_file.winerror = 2
+        sentence = hub._spawn_failure_sentence(
+            not_a_file, declared, declared, searched
+        )
+        assert sentence.startswith(lsp_constants.SPAWN_FAILURE_LEAD)
+        assert declared in sentence and searched in sentence
+        assert repr(declared) not in sentence
+        # Not a code this hub can improve on: the OS's words are kept.
+        assert "cannot find the file specified" in sentence
+
+    @pytest.mark.anyio
+    async def test_only_the_program_is_resolved_and_no_spawn_uses_a_shell(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """The rest of the declaration's argv reaches the child as declared.
+
+        An argument is not a program name, so it is never handed to the search.
+        And nothing about a command that will not resolve is solved by running it
+        through a shell: the resolved program is what is exec'd, and ``shell=True``
+        would turn a declared command into a command line — the rule every
+        spawned process in this app holds to.
+        """
+        from pygls.lsp.client import LanguageClient
+
+        execed: List[Any] = []
+        real_start_io = LanguageClient.start_io
+
+        async def spy_start_io(client, cmd, *args, **kwargs):
+            execed.append((cmd, args))
+            return await real_start_io(client, cmd, *args, **kwargs)
+
+        monkeypatch.setattr(LanguageClient, "start_io", spy_start_io)
+        entry = _fake_server_entry(tmp_path, "fake")
+        await _start(hub, entry)
+
+        assert hub.server_status("fake") == "running", hub._servers["fake"]["error"]
+        [(cmd, args)] = execed
+        # A command that already names a program is exec'd as it was declared.
+        assert cmd == sys.executable
+        assert args == (FAKE_SERVER,), "an argument was treated as a program name"
+
+        source = inspect.getsource(LspManager._start_session)
+        assert "shell=" not in source
+        # And the resolution is on the one gate every start attempt passes, not
+        # beside it: a second route into the session skips it.
+        assert "_resolve_spawn" in inspect.getsource(LspManager._start_one)
+
+    @pytest.mark.windows_behaviour(
+        "WinError 193 is what CreateProcess answers for a script that is not an "
+        "executable image; on POSIX the same file is an executable program and "
+        "there is no such refusal to translate"
+    )
+    @pytest.mark.anyio
+    async def test_a_script_that_is_not_an_image_is_reported_not_a_winerror(
+        self, hub, tmp_path
+    ):
+        """The verified failure, end to end: a ``.cmd``-less shim.
+
+        With no ``PATHEXT`` form beside it, the search can do nothing with the
+        file — it exists, so refusing it here would replace the OS's fact with a
+        guess. The spawn is where the fact lands, and it must land as a sentence.
+        """
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        script = bin_dir / "fake-server"
+        script.write_text(
+            "#!/bin/bash\nvolta run \"$(basename $0)\" \"$@\"\n", encoding="utf-8"
+        )
+        entry = _fake_server_entry(tmp_path, "fake")
+        entry["command"] = [str(script)]
+        await _start(hub, entry)
+
+        info = hub._servers["fake"]
+        assert info["status"] == "error"
+        assert str(script) in info["error"]
+        assert str(bin_dir) in info["error"]
+        # The operator's sentence, not the code: what CreateProcess said is
+        # gone, and the fix it cannot see is named in its place.
+        assert "Win32 application" not in info["error"]
+        assert "PATHEXT" in info["error"]
+        assert "fake" not in hub._sessions
+
+    @pytest.mark.windows_behaviour(
+        "the fact under test is ``PATHEXT`` — a Windows-only search rule; the "
+        "POSIX twin, an absolute existing command answering itself, is the "
+        "unmarked test above"
+    )
+    @pytest.mark.anyio
+    async def test_a_windows_path_with_no_extension_resolves_to_the_cmd(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """The declaration that used to fail, and what is exec'd instead.
+
+        Asserted at the spawn, not only at the predicate: the hub must exec the
+        ``.CMD`` (``which`` answers whatever case ``PATHEXT`` carries) and leave
+        the declaration itself unrewritten, so a reload re-searches rather than
+        inheriting a path this run found.
+        """
+        from pygls.lsp.client import LanguageClient
+
+        script = self._shim(tmp_path / "bin")
+        execed: List[str] = []
+        real_start_io = LanguageClient.start_io
+
+        async def spy_start_io(client, cmd, *args, **kwargs):
+            execed.append(cmd)
+            return await real_start_io(client, cmd, *args, **kwargs)
+
+        monkeypatch.setattr(LanguageClient, "start_io", spy_start_io)
+        entry = _fake_server_entry(tmp_path, "fake")
+        entry["command"] = [str(script)]
+        await _start(hub, entry)
+
+        assert hub.server_status("fake") == "running", hub._servers["fake"]["error"]
+        assert Path(execed[0]).name.lower() == "fake-server.cmd"
+        assert Path(execed[0]).parent == script.parent
+        assert hub._servers["fake"]["command"] == [str(script)]
+        # The rest of the declaration's argv stays as declared: an argument is
+        # not a program name, so it is never resolved.
+        assert len(execed) == 1
+
+
+class TestLocalReachRefusal:
+    """win-07 / A-D4 on the hub side: refused, named, and never spawned."""
+
+    def test_the_guardrails_speak_here_so_nothing_is_refused(self):
+        """The answer on **both** platforms: the lists speak, nothing is refused.
+
+        lspfinal-04 took the seam's platform half away, so this is no longer the
+        Linux-only answer it was: on this runner the hub's own committed list
+        speaks this working location and the refusal is ``False``. The declared
+        servers are therefore loaded, started and *spawned* here — the first
+        point in target B where the app does not refuse its own hub.
+        """
+        assert lsp_constants.guardrails_speak_here(restricted_lsp_roots()) is True
+        assert lsp_reach_is_refused() is False
+
+    def test_enabled_servers_get_no_reach_note_from_the_committed_list(
+        self, tmp_path
+    ):
+        """The acceptance sentence, asked with the committed guardrails in force.
+
+        Three enabled entries through the loader, with nothing patched but the
+        declaration file: the hub's real ``restricted-paths.txt`` is what answers,
+        so the reach note this hub used to give *every* enabled entry is gone on
+        either runner. (What the workspace's own file yields is the other test's
+        business — that file is per-machine and may be absent here.)
+        """
+        path = tmp_path / "lsp_servers.json"
+        path.write_text(
+            _servers_doc(
+                pyright=_entry([sys.executable, FAKE_SERVER]),
+                typescript=_entry(
+                    [sys.executable, FAKE_SERVER], extensions=[".ts"]
+                ),
+                vue=_entry([sys.executable, FAKE_SERVER], extensions=[".vue"]),
+            ),
+            encoding="utf-8",
+        )
+        servers, errors = load_lsp_servers(path)
+        assert [server["id"] for server in servers] == ["pyright", "typescript", "vue"]
+        assert not any(lsp_constants.LOCAL_REACH_REFUSAL in note for note in errors)
+
+    def test_both_hubs_refuse_in_the_same_words(self):
+        """The symmetry test: one sentence for one missing capability."""
+        from src.core.mcphub import constants as mcp_constants
+
+        assert lsp_constants.LOCAL_REACH_REFUSAL == mcp_constants.LOCAL_REACH_REFUSAL
+        assert "bounded" in lsp_constants.LOCAL_REACH_REFUSAL
+        # lspfinal-06: the sentence names the *cause* an operator can fix (a
+        # guardrail list with no entry in this filesystem's path form), not a
+        # roadmap target that has since closed.
+        assert "guardrail" in lsp_constants.LOCAL_REACH_REFUSAL
+        assert "target B" not in lsp_constants.LOCAL_REACH_REFUSAL
+
+    def test_a_posix_shaped_list_speaks_a_posix_shaped_location(self):
+        """The Linux half of §6's pair, asked as text so it runs everywhere.
+
+        ``/etc``-shaped guardrails are load-bearing on a ``/``-rooted tree and
+        inert on a drive-rooted one. The predicate answers that from the *shape*
+        of the entries against the shape of the path (roadmap §9 rule 2), so the
+        statement is pure text: correct on either runner, no skip on either.
+        """
+        from mcp_connectors import path_policy
+
+        assert path_policy.lists_are_meaningful(
+            "/home/dev/app", prefixes=("/etc", "/root")
+        ) is True
+        assert path_policy.lists_are_meaningful(
+            "C:/src/app", prefixes=("/etc", "/root")
+        ) is False
+
+    def test_a_windows_shaped_list_speaks_a_drive_shaped_location(self):
+        """The Windows half of the same pair — the other platform's inertness.
+
+        Its twin above, and the reason ``restricted-paths.txt`` carries both
+        forms rather than one (B-D1): a ``C:``-shaped entry protects nothing on a
+        ``/``-rooted tree, exactly as ``/etc`` protects nothing here.
+        """
+        from mcp_connectors import path_policy
+
+        assert path_policy.lists_are_meaningful(
+            "C:/src/app", prefixes=("C:/Users/dev/.ssh",)
+        ) is True
+        assert path_policy.lists_are_meaningful(
+            "/home/dev/app", prefixes=("C:/Users/dev/.ssh",)
+        ) is False
+
+    def test_its_guardrail_list_is_the_one_it_is_asked_about(self, tmp_path, monkeypatch):
+        """The LSP hub asks about *its* deny-list, not the connector prefixes.
+
+        A list of the *other* platform's shape matches nothing this working
+        location is spelled with, so this hub refuses — while the MCP hub, whose
+        connector lists the environment states in this platform's own form, does
+        not. Which shape is "the other one" is the same shape question the
+        predicate asks, never ``sys.platform``: this is the live version of the
+        two text pairs above, and it runs on either runner.
+        """
+        from mcp_connectors import path_policy
+
+        from src.config import path_location
+
+        own_form = path_policy.root_form(str(path_location()))
+        other_form_list = (
+            "/etc/credential-store" if own_form == "drive" else "C:/Users/other/.ssh"
+        )
+        deny = tmp_path / "restricted-paths.txt"
+        deny.write_text(f"{other_form_list}\n", encoding="utf-8")
+        monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", deny)
+
+        assert restricted_lsp_roots() == [other_form_list]
+        assert lsp_constants.guardrails_speak_here(restricted_lsp_roots()) is False
+        assert lsp_reach_is_refused() is True
+
+        from src.core import mcphub
+
+        assert mcphub.constants.guardrails_speak_here() is True
+        assert mcphub.discovery.mcp_reach_is_refused() is False
+
+    @pytest.mark.anyio
+    async def test_a_refused_server_is_error_and_is_never_spawned(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """The refusal happens before pygls is asked to start a child.
+
+        ``_start_session`` is the only place a language-server process is
+        spawned, so patching it out is the direct answer to "did the hub start
+        a server whose path rules match nothing" — and the reason a *spawn*
+        would be the bug: a running server with an inert deny-list is the
+        silently-permissive shape A exists to remove.
+        """
+        monkeypatch.setattr(
+            lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+
+        async def no_spawn(server_id: str, info: Dict[str, Any]) -> None:
+            raise AssertionError(f"spawn attempted for {server_id}")
+
+        monkeypatch.setattr(hub, "_start_session", no_spawn)
+        _declare(hub, _fake_server_entry(tmp_path))
+        await _run(hub, hub._start_one("fake"))
+
+        info = hub._servers["fake"]
+        assert info["status"] == "error"
+        assert info["error"] == lsp_constants.LOCAL_REACH_REFUSAL
+        assert "fake" not in hub._sessions
+        assert hub._defs.get("fake") is None
+
+    @pytest.mark.anyio
+    async def test_a_declared_refused_server_starts_as_error_without_being_started(
+        self, monkeypatch, tmp_path
+    ):
+        """A refusal is applied when the declaration is read, not at start time.
+
+        A ``stopped`` entry with ``enable: true`` is what a *lazy* server looks
+        like before its first call, and the catalogue publishes that state from
+        the declared tools — so a refused server has to be ``error`` the moment
+        ``lsp_servers.json`` is read, or its tools reach chat and its first call
+        spawns it.
+        """
+        monkeypatch.setattr(
+            lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+        manager = LspManager(
+            [
+                _fake_server_entry(tmp_path, "eager"),
+                _fake_server_entry(tmp_path, "dormant", enable=False),
+            ],
+            logs_dir=tmp_path / "logs",
+        )
+        status = {entry["id"]: entry for entry in manager.status()}
+        assert status["eager"]["status"] == "error"
+        assert status["eager"]["error"] == lsp_constants.LOCAL_REACH_REFUSAL
+        # A disabled entry is the user's own switch, not a missing capability.
+        assert status["dormant"]["status"] == "stopped"
+        assert status["dormant"]["error"] is None
+
+        # And neither is offered to chat, eager or lazy.
+        tools, mapping = manager.active_tool_defs(["eager", "dormant"])
+        assert tools == []
+        assert mapping == {}
+
+    @pytest.mark.anyio
+    async def test_a_refused_lazy_server_is_out_of_the_catalogue_and_the_call(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """Both halves of "never invisible" exclusions, verified not assumed.
+
+        A lazy server with no session is normally published from its declared
+        tools and revived by its first call. Refusing it at index time is what
+        takes it out of both: the catalogue skips ``error``, and the call
+        reaches the refusal instead of a spawn.
+        """
+        monkeypatch.setattr(
+            lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+        hub._servers = hub._index([_fake_server_entry(tmp_path, lazy=True)])
+
+        tools, mapping = hub.active_tool_defs(["fake"])
+        assert tools == []
+        assert mapping == {}
+
+        result = hub.call_tool_sync(
+            "fake", "lsp_fake_hover", {"path": "x.py", "line": 0, "character": 0}
+        )
+        assert result.startswith("Error:")
+        assert lsp_constants.LOCAL_REACH_REFUSAL in result
+        assert "fake" not in hub._sessions
+        assert hub.server_status("fake") == "error"
+
+    @pytest.mark.anyio
+    async def test_the_hot_toggle_cannot_spawn_a_refused_server(
+        self, hub, tmp_path, monkeypatch
+    ):
+        """``start_server`` from the settings panel answers the refusal itself."""
+        monkeypatch.setattr(
+            lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+        _declare(hub, _fake_server_entry(tmp_path))
+        hub.start_server("fake")
+        assert hub.server_status("fake") == "error"
+        assert hub._servers["fake"]["error"] == lsp_constants.LOCAL_REACH_REFUSAL
+        assert "fake" not in hub._starting
+
+    def test_a_booting_app_does_not_spawn_a_refused_server(self, tmp_path, monkeypatch):
+        """With the seam forced, ``BENCHMARKIT_DISABLE_LSP`` is not what keeps it quiet.
+
+        The lifespan loads ``lsp_servers.json`` only when that switch is unset, so
+        clearing it puts the test on the real boot path, and the declared command
+        *is* a program that leaves a marker file behind — the assertion is that
+        the marker never appears. A refusal that reported the right status while
+        spawning the child anyway — the silently-permissive shape A-D4 exists to
+        remove — fails here.
+        """
+        from src import config as config_module
+        from src.core import mcphub
+
+        marker = tmp_path / "spawned.flag"
+        monkeypatch.delenv("BENCHMARKIT_DISABLE_LSP", raising=False)
+        for key in config_module.SETTING_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
+        monkeypatch.setenv("LSP_ENABLED", "pyright")
+        monkeypatch.setattr(
+            lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+        servers_dir = tmp_path / "lsp_connectors"
+        servers_dir.mkdir()
+        (servers_dir / "restricted-paths.txt").write_text("/etc\n", encoding="utf-8")
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        monkeypatch.setattr(lsp_constants, "LSP_CONNECTORS_DIR", servers_dir)
+        monkeypatch.setattr(
+            lsp_constants, "LSP_SERVERS_PATH", servers_dir / "lsp_servers.json"
+        )
+        monkeypatch.setattr(
+            lsp_constants, "LSP_RESTRICTED_PATHS", servers_dir / "restricted-paths.txt"
+        )
+        (servers_dir / "lsp_servers.json").write_text(
+            _servers_doc(
+                pyright=_entry(
+                    [
+                        sys.executable,
+                        "-c",
+                        f"open({str(marker)!r}, 'w').close()",
+                    ],
+                    workspaceRoot=str(workspace),
+                )
+            ),
+            encoding="utf-8",
+        )
+        # Keep the MCP hub off the developer's own externals.json, since this app
+        # boots without the LSP switch and the MCP one is left as conftest set it.
+        monkeypatch.setattr(
+            mcphub.constants, "EXTERNALS_PATH", servers_dir / "externals.json"
+        )
+        monkeypatch.setattr(
+            routes,
+            "load_endpoints_config",
+            lambda: (
+                SimpleNamespace(
+                    serverUrl="http://x/v1", endpoint="m", model_list=lambda: ["m"],
+                    to_kwargs=lambda: {}, apiKey="", sysprompt=None,
+                ),
+                None,
+            ),
+        )
+        app = create_app()
+        with TestClient(app) as test_client:
+            body = test_client.get("/api/lsp").json()
+            assert lsp_constants.LOCAL_REACH_REFUSAL in body["serversError"]
+            entry = {item["id"]: item for item in app.state.lsp.status()}["pyright"]
+            assert entry["status"] == "error"
+            assert entry["error"] == lsp_constants.LOCAL_REACH_REFUSAL
+        assert not marker.exists(), "the refused language server was spawned anyway"
 
 
 def _process_alive(pid: int) -> bool:

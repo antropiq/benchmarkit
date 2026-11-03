@@ -731,6 +731,10 @@ class TestPathLocationEndpoint:
             + prompt_helpers.PROMPT_HELPERS_FILENAME
         )
 
+    @pytest.mark.requires_symlink(
+        "the working-location switch stores the realpath, so a location spelled "
+        "through a link and through `.` lands on one canonical directory"
+    )
     def test_post_canonicalises_symlinks_and_dots(self, hub_client, tmp_path):
         real = tmp_path / "real"
         real.mkdir()
@@ -758,6 +762,77 @@ class TestPathLocationEndpoint:
         assert os.environ.get("BENCHMARKIT_PATH_LOCATION") == before
         assert hub_client.app.state.mcp.restarts == []
         assert hub_client.app.state.lsp.restarts == []
+
+    def test_the_deny_list_expands_at_read_time_for_the_switch_too(
+        self, hub_client, tmp_path, monkeypatch
+    ):
+        r"""Consumer 4 of ``restricted-paths.txt`` honours ``${NAME}`` as well.
+
+        The route calls the same ``restricted_lsp_roots()`` the hub and the tree
+        call, so the one expansion at read time reaches all three: a line naming
+        this profile's credential store refuses a working location inside it, and
+        refuses nothing outside it.
+        """
+        from src.core import lsphub
+
+        monkeypatch.setenv("BENCHMARKIT_TEST_PROFILE", str(tmp_path / "home"))
+        store = tmp_path / "home" / ".ssh"
+        store.mkdir(parents=True)
+        list_file = tmp_path / "restricted-paths.txt"
+        list_file.write_text("${BENCHMARKIT_TEST_PROFILE}/.ssh\n", encoding="utf-8")
+        monkeypatch.setattr(lsphub.constants, "LSP_RESTRICTED_PATHS", list_file)
+
+        refused = hub_client.post("/api/path-location", json={"path": str(store)})
+        assert refused.status_code == 422
+        assert "deny-list" in refused.json()["detail"]
+        assert hub_client.app.state.mcp.restarts == []
+        assert hub_client.app.state.lsp.restarts == []
+
+        other = tmp_path / "project"
+        other.mkdir()
+        ok = hub_client.post("/api/path-location", json={"path": str(other)})
+        assert ok.status_code == 200
+
+    @pytest.mark.case_sensitive_volume(
+        "the deny-list names the *other* spelling of the target folder, which "
+        "has to stay a name that does not exist for its ``realpath`` to keep "
+        "the text; on a volume that folds case the two spellings are one "
+        "folder and the exact half of the pair is not the pair's other answer"
+    )
+    def test_the_deny_list_compare_folds_for_the_root_being_switched_to(
+        self, hub_client, tmp_path, monkeypatch
+    ):
+        r"""win-06 §4: the switch asks the same helper as the tree, with the fold.
+
+        A ``restricted-paths.txt`` line naming one spelling of a folder refuses
+        the other spelling of it on a volume where they are one folder — and
+        refuses nothing where they are two. The probe consulted is the one for
+        the root *being switched to* (``routes.py``), so both halves run against
+        this target folder; the exact half is the Linux answer, unchanged.
+        """
+        from src.core.editorfs import fscase
+        from src.core import lsphub
+
+        target = tmp_path / "project"
+        target.mkdir()
+        list_file = tmp_path / "restricted-paths.txt"
+        # The other spelling, a path that does not exist here, so its realpath
+        # keeps the text as written.
+        list_file.write_text(f"{tmp_path / 'Project'}\n", encoding="utf-8")
+        monkeypatch.setattr(lsphub.constants, "LSP_RESTRICTED_PATHS", list_file)
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        refused = hub_client.post("/api/path-location", json={"path": str(target)})
+        assert refused.status_code == 422
+        assert "deny-list" in refused.json()["detail"]
+        assert hub_client.app.state.mcp.restarts == []
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        accepted = hub_client.post("/api/path-location", json={"path": str(target)})
+        assert accepted.status_code == 200
+        assert os.environ["BENCHMARKIT_PATH_LOCATION"] == str(target.resolve())
+        assert len(hub_client.app.state.mcp.restarts) == 1
+
 
     def test_refused_during_a_run_leaves_env_untouched(self, hub_client, tmp_path):
         before = os.environ.get("BENCHMARKIT_PATH_LOCATION")

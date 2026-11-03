@@ -18,6 +18,8 @@ from mcp_connectors import console_mcp as c
 from mcp_connectors import policy_file as connector_policy
 from mcp_connectors import policy_shared as shared
 
+from tests.conftest import console_tool
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -232,6 +234,33 @@ def test_console_and_fedit_share_one_deny_list():
     assert f.DENY_FILE_SUFFIXES == path_policy.DENY_FILE_SUFFIXES
 
 
+def test_the_connectors_own_verdict_still_compares_exactly():
+    """win-07 gave ``component_hit`` a ``fold`` keyword; these connectors pass none.
+
+    The fold is what a case-insensitive *volume* needs, and the value has to
+    come from a probe of it -- that is target B's job (the app side already has
+    ``fscase``, the connectors will too). Until then a differently spelled
+    secret store stays unrefused here, which is the Linux answer unchanged and
+    the reason the parameter is explicit rather than a global.
+    """
+    from mcp_connectors import path_policy
+
+    folded = Path("/home/vgr/.SSH/config")
+    exact = Path("/home/vgr/.ssh/config")
+    assert path_policy.deny_reason(folded, for_write=False) is None
+    assert path_policy.deny_reason(exact, for_write=False) is not None
+    # ...while the same rule, asked folded, speaks the other spelling -- what B
+    # will thread through.
+    assert path_policy.component_hit(folded.parts, (".ssh",), fold=True) == ".ssh"
+    assert path_policy.component_hit(folded.parts, (".ssh",)) is None
+
+
+@pytest.mark.posix_behaviour(
+    "one entry of this list is `cat /etc/shadow`, a POSIX path: the three "
+    "~/.ssh, ~/.git-credentials and ~/.aws refusals are name-based, so on "
+    "another platform only those run and the /etc prefix is not what is "
+    "observed"
+)
 def test_credential_stores_are_refused_even_for_allow_listed_commands():
     home = Path.home()
     for command in (
@@ -267,6 +296,11 @@ def test_ordinary_reads_are_not_collateral_damage():
 
 # --- C-7: undecodable output costs the escapes, never the whole result ---
 
+@console_tool(
+    "printf",
+    "the decoder and the exit code it reports are platform-free rules; this "
+    "test can only show them through a real program writing a stray byte"
+)
 def test_a_stray_byte_no_longer_loses_stdout_and_the_exit_code():
     # `\xff` is not valid UTF-8; the strict decoder used to raise, and the bare
     # except swallowed everything, exit code included.
@@ -277,6 +311,11 @@ def test_a_stray_byte_no_longer_loses_stdout_and_the_exit_code():
     assert "Error executing command" not in out
 
 
+@console_tool(
+    "printf",
+    "the invariant is that a failing child still costs an exit-code line; the "
+    "`printf` and `ls` calls are only the way to make a child fail"
+)
 def test_a_failing_binary_still_reports_its_exit_code():
     out = c.execute_command(r"printf 'x\xff'; exit 3")
     # The chain is refused, so use a single command that fails on its own.
@@ -292,6 +331,11 @@ def test_decode_note_is_silent_for_clean_output():
 
 # --- C-8: a timeout keeps the output the command already produced ---
 
+@console_tool(
+    "python3",
+    "the invariant is that a timed-out run keeps what it already printed, which "
+    "needs a program that prints and then hangs"
+)
 def test_partial_output_survives_a_timeout():
     # The failure mode that matters: a build/test that prints a wall of
     # progress and then hangs must not come back empty. The hangs happen inside
@@ -302,6 +346,10 @@ def test_partial_output_survives_a_timeout():
     assert "timed out after 2 seconds" in out
 
 
+@console_tool(
+    "sleep",
+    "a timeout has to be provoked by something that actually runs long"
+)
 def test_a_timeout_is_reported_as_a_timeout_not_an_error_line():
     out = c.execute_command("sleep 20", timeout=1)
     assert "timed out" in out
@@ -335,12 +383,21 @@ def test_a_huge_single_line_is_capped_too():
     assert len(capped) < 1100
 
 
+@console_tool(
+    "seq",
+    "the runtime cap is only visible through a command that prints a long wall"
+)
 def test_a_long_command_result_is_truncated_at_runtime():
     out = c.execute_command("seq 1 4000")
     assert "line(s) omitted" in out
     assert len(out) < 4000 * 6
 
 
+@console_tool(
+    "python3",
+    "stdout and stderr are capped apart, which needs a program that writes both "
+    "in volume"
+)
 def test_stdout_and_stderr_are_capped_separately():
     script = "import sys; [print(i) for i in range(5000)]; [print(i, file=sys.stderr) for i in range(500)]"
     out = c.execute_command(f'python3 -u -c "{script}"')
@@ -514,6 +571,11 @@ def test_a_path_outside_the_root_is_left_to_the_deny_list(root: Path):
     assert ok, f"outside the root, this workspace's rules do not apply: {msg}"
 
 
+@console_tool(
+    "touch",
+    "the half that matters is the refusal, but the test also proves the allowed "
+    "form *ran*, which needs a real `touch`"
+)
 def test_a_relative_token_is_judged_where_the_command_runs(root: Path):
     """The tool's ``cwd`` argument moves where a relative path lands.
 

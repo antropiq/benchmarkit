@@ -8,9 +8,39 @@ another declaration file is one attribute patch, not an import dance.
 
 import importlib.util
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+# The path-*text* questions the shared connector policy answers (win-02): what
+# root a prefix is spelled with, on either platform, with no ``os.path`` branch.
+# Imported the connectors' own way, because ``mcp_connectors`` sits outside
+# ``src`` and is not always on ``sys.path`` (the same fallback
+# ``mcphub.process`` and ``editorfs.constants`` use).
+try:
+    from mcp_connectors import path_policy
+except ImportError:  # pragma: no cover - depends on how the app is started
+    import sys
+
+    _root = str(Path(__file__).resolve().parents[3])
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    from mcp_connectors import path_policy  # type: ignore[no-redef]
+
+# The one containment rule (A-D2.2, win-06). Direction of this import: the
+# editorfs surface reaches *this* module for ``restricted_lsp_roots`` — lazily,
+# inside the one function that asks — while this module needs only the pure
+# compare, which imports nothing from ``lsphub``. So no cycle: importing
+# ``editorfs.policy`` here pulls in ``src.config`` and the ``mcp_connectors``
+# policy modules, never ``lsphub``. ``fscase`` is where the fold answer comes
+# from, and it is the *workspace's* filesystem that is probed for every one of
+# these compares (see ``_is_within``'s docstring for that choice) — aliased,
+# because this module's own entries carry a ``workspaceRoot`` and the local
+# spelling of that name is a string, not the function.
+from src.core.editorfs import fscase
+from src.core.editorfs.policy import _is_within
+from src.core.editorfs.policy import workspace_root as active_workspace_root
 
 from src.core.mcphub.validation import (
     argv_from_command,
@@ -23,6 +53,8 @@ from src.core.mcphub.validation import (
 )
 
 from . import constants
+
+logger = logging.getLogger("benchmarkit.lsp")
 
 
 def lsp_installed() -> bool:
@@ -37,13 +69,121 @@ def lsp_installed() -> bool:
 
 
 def restricted_lsp_roots(path: Optional[Path] = None) -> List[str]:
-    """Workspace-root prefixes refused by the hub, from restricted-paths.txt."""
+    r"""Workspace-root prefixes refused by the hub, from ``restricted-paths.txt``.
+
+    One absolute prefix per line, ``#`` starts a comment, and a line may name an
+    environment variable as ``${NAME}`` (or ``${NAME:-fallback}``): it is expanded
+    here, at read time, through the same helper a declaration's values go
+    through, so one committed list stays machine-neutral and carries **both**
+    platforms' path forms (B-D1). Nothing in the file may spell a drive letter or
+    a home directory — ``${USERPROFILE}/.ssh`` and ``${SystemRoot}`` resolve to
+    whatever the running OS states, and a runner that states neither gains
+    nothing, which is what keeps the Linux verdicts unchanged.
+
+    A line whose reference does **not** resolve is dropped and reported, not kept
+    as written. For a declaration the rule is the opposite (an unresolved
+    ``${NAME}`` stays verbatim so the typo is visible in that entry's note), and
+    the difference is what makes an un-expanded line dangerous *here*: it is a
+    prefix, so it reads to ``guardrails_speak_here`` as an entry that speaks this
+    filesystem's root form while protecting nothing — the list would look
+    meaningful, the reach seam would be lifted on that reading, and every entry
+    that *did* resolve would go unenforced. A guardrail that cannot be honoured
+    is absent, not guessed: the same sentence ``path_policy._env_absolute``
+    already applies to the connector lists.
+    """
     root = path or constants.LSP_RESTRICTED_PATHS
     try:
         lines = root.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
-    return [line.strip() for line in lines if line.strip() and not line.startswith("#")]
+    entries: List[str] = []
+    for line in lines:
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        entry, missing = expand_env(text)
+        entry = entry.strip()
+        # ``missing`` first and on its own: a half-resolved line — ``/home/
+        # ${NOPE}/.ssh`` — still has a rooted shape, so testing only the shape
+        # would let the literal reference into the list as a working prefix.
+        honoured = not missing and _is_prefix(entry)
+        if not honoured:
+            if missing:
+                names = ", ".join(f"${{{name}}}" for name in dict.fromkeys(missing))
+                reason = f"{names} is not set in the environment"
+            else:
+                reason = f"{text!r} is not an absolute path"
+            _report_dropped(root, text, reason)
+        # Only a resolved, absolute line joins the effective list: see the
+        # docstring — a prefix that cannot be honoured must not even be counted
+        # as one, and one guardrail stated twice is noise in a deny-list.
+        if honoured and entry not in entries:
+            entries.append(entry)
+    return entries
+
+
+# A dropped guardrail is *reported*, and the report is one line per process, not
+# one per read: this list is re-read on every Editor path resolution and every
+# hub scan, and a file written for the other platform drops its other-platform
+# lines by design — three warnings per file read would bury the one line that
+# names a real typo. Keyed by file and line, so a different file (or a test's own
+# tmp copy) still gets its own sentence. Bounded so it cannot grow.
+_REPORTED_DROPS: Set[Tuple[str, str]] = set()
+_REPORTED_DROPS_MAX = 200
+
+
+def _report_dropped(root: Path, text: str, reason: str) -> None:
+    """Say once that a guardrail line is not in force (see ``_REPORTED_DROPS``)."""
+    key = (str(root), text)
+    if key in _REPORTED_DROPS:
+        return
+    if len(_REPORTED_DROPS) >= _REPORTED_DROPS_MAX:
+        _REPORTED_DROPS.clear()
+    _REPORTED_DROPS.add(key)
+    logger.warning(
+        "%s: %s — the guardrail %r is not in force", root.name, reason, text
+    )
+
+
+def _is_prefix(text: str) -> bool:
+    r"""Is ``text`` an absolute prefix at all — on **either** platform?
+
+    Asked of the shared text classifier, never of ``os.path.isabs``: that answers
+    ``False`` for ``/etc`` on Windows, and a line is either a real POSIX guardrail
+    or a dead one depending on the runner it was read on. What makes a prefix
+    speak a path is its *root* (``path_policy.root_form``), the same basis
+    ``lists_are_meaningful`` and the hub's own reach seam compare — so the file's
+    POSIX half stays in force on a Windows runner, and only text with no root at
+    all (``~/.ssh``, a relative path, a leading reference that resolved to
+    nothing) is dropped for being unrooted.
+    """
+    return path_policy.root_form(text) in ("absolute", "drive", "unc")
+
+
+def lsp_reach_is_refused() -> bool:
+    """Must a declared language server be refused here? (win-07 / A-D4.)
+
+    The LSP hub's call of the shared predicate (``mcphub.process``, which the
+    MCP hub calls too), so a refusal cannot be argued differently in the two
+    hubs; what differs per hub is *which* guardrails are asked about. For a
+    language server that is :func:`restricted_lsp_roots` — the deny-list that
+    would confine its ``workspaceRoot`` — and, when that file carries no
+    entries, the connector prefix lists, so an absent list is not mistaken for
+    a bound that has stopped matching.
+
+    That is the whole question (lspfinal-04): what refuses here is an **inert
+    list**, never an operating system. A rule that stops matching produces no
+    error — the verdict falls back to allowing — so a language server whose
+    ``workspaceRoot`` no prefix can name is one whose reach the app has bounded
+    in words only, and that is refused. Everything else about the bound is a
+    capability this hub holds on either platform: the spawn puts the child in a
+    Job Object where there are no process groups, the teardown is the one shared
+    entry point (B-D5, ``proctree`` / ``proctree_jobs``), and the list gains its
+    Windows forms from the running environment at read time (B-D1). A
+    deployment is therefore fixed by *writing values*, not by the code knowing
+    which OS it is on.
+    """
+    return not constants.guardrails_speak_here(restricted_lsp_roots() or None)
 
 
 def load_lsp_servers(
@@ -77,6 +217,11 @@ def load_lsp_servers(
     if not isinstance(data, dict):
         return [], [f"{root.name} must contain an object of servers keyed by id"]
     denied = [os.path.realpath(entry) for entry in restricted_lsp_roots()]
+    # One reach answer per scan, not per server: the capability is a property of
+    # the deployment, so every note in one load has to agree with every other.
+    # This hub is asked about its own deny-list, the rules that would confine a
+    # server's reach (``lsp_reach_is_refused``).
+    refused_reach = lsp_reach_is_refused()
     for server_id in sorted(data):
         prefix = f"{root.name}: '{server_id}'"
         if server_id in reserved:
@@ -152,9 +297,13 @@ def load_lsp_servers(
         if not os.path.isdir(real_root):
             errors.append(f"{prefix}: workspaceRoot does not exist — skipped")
             continue
+        # The fold is the active workspace's answer, not this entry's: one
+        # answer per running configuration, and no probe of a folder the hub is
+        # about to refuse (``_is_within``'s docstring records that choice). Asked
+        # only when the list has entries, so an empty deny-list costs no probe.
+        fold = fscase.case_folded(active_workspace_root()) if denied else False
         if any(
-            real_root == denied_entry or real_root.startswith(denied_entry + os.sep)
-            for denied_entry in denied
+            _is_within(denied_entry, real_root, fold=fold) for denied_entry in denied
         ):
             errors.append(f"{prefix}: workspaceRoot is on the deny-list — skipped")
             continue
@@ -179,6 +328,20 @@ def load_lsp_servers(
                 f"{prefix}: idleShutdownSeconds must be an integer (0 disables) — skipped"
             )
             continue
+        if refused_reach and bool(entry.get("enable", False)):
+            # Every declared server here is a stdio child process, and the lists
+            # above are what confines its path reach — so when no entry in them
+            # can name this filesystem's paths (win-07 / A-D4), there is no bound
+            # to claim. The tree half of that bound is a capability on either
+            # platform (the spawn's Job Object, the shared ``proctree`` teardown),
+            # so it is no longer part of this question. The entry is still
+            # loaded, because a card naming the gap beats a vanished server, and
+            # the hub marks it ``error`` with these same words rather than
+            # spawning it. Asked only of an entry that wants to run: a disabled
+            # server is not a missing capability, it is a switch the user made.
+            errors.append(
+                f"{prefix}: {constants.LOCAL_REACH_REFUSAL} — not started"
+            )
         label = entry.get("label")
         language_id = entry.get("languageId")
         servers.append(

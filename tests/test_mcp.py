@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -363,8 +364,357 @@ class TestMcpManager:
 
 
 # ---------------------------------------------------------------------------
-# .env helpers
+# win-07 / A-D4: a hub refuses what its guardrails cannot bound
 # ---------------------------------------------------------------------------
+
+
+def _unbounded_guardrails(monkeypatch, hub_module) -> None:
+    """Force one hub's reach seam to ``False``.
+
+    Patched on the hub's own ``constants`` module — the single named seam both
+    hubs read through — never by pretending to be another OS. It is the whole
+    predicate: the guardrails of a deployment that wrote the other platform's
+    values are what answer "no" there, and the refusal is one state with one
+    consequence downstream.
+    """
+    monkeypatch.setattr(
+        hub_module.constants, "guardrails_speak_here", lambda prefixes=None: False
+    )
+
+
+def _declaration(kind: str, connector_id: str, *, enable: bool = True):
+    """One connector dict as ``load_externals`` would hand it to the hub."""
+    return {
+        "id": connector_id,
+        "label": connector_id,
+        "description": "",
+        "endpoint": "https://example.com/mcp" if kind == "remote" else "",
+        "command": None if kind == "remote" else ["python", "mcp_connectors/x_mcp.py"],
+        "kind": kind,
+        "enable": enable,
+        "headers": {},
+        "env": {},
+    }
+
+
+class TestLocalReachRefusal:
+    """win-07 / A-D4 on the hub side: refused, named, and never spawned."""
+
+    def test_the_seam_is_bounded_here_so_nothing_is_refused(self):
+        """This runner bounds a local connector: guardrails speak, no refusal.
+
+        After target B1 this is the answer on **both** platforms for the MCP
+        hub — the connector lists speak both path forms. There is no second
+        half to ask any more: the LSP hub's platform fact went with lspfinal-04.
+        """
+        assert mcphub.constants.guardrails_speak_here() is True
+        assert mcphub.discovery.mcp_reach_is_refused() is False
+
+    def test_the_mcp_refusal_asks_only_the_guardrail_half(self):
+        """The one predicate, stated as a forcing pair rather than assumed.
+
+        Nothing is patched: the guardrails speak here, so nothing is refused.
+        Forcing that answer to ``False`` — the state a deployment with an inert
+        list is really in — refuses. This is the whole of the seam now.
+        """
+        monkeypatch = pytest.MonkeyPatch()
+        assert mcphub.discovery.mcp_reach_is_refused() is False
+        monkeypatch.setattr(
+            mcphub.constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+        assert mcphub.discovery.mcp_reach_is_refused() is True
+        monkeypatch.undo()
+
+    def test_the_lsp_hub_asks_the_same_single_half(self):
+        """The symmetry restored (AGENTS.md: the two hubs mirror each other).
+
+        lspfinal-04 took the LSP hub's platform half away, so its predicate is
+        now the shape this hub's already had: forcing *its* guardrail list to
+        speak nothing refuses, forcing nothing does not. A deployment fixes
+        itself by writing values into ``restricted-paths.txt``, not by the code
+        knowing which OS it runs on.
+        """
+        from src.core.lsphub import constants as lsp_constants
+        from src.core.lsphub.discovery import lsp_reach_is_refused
+
+        monkeypatch = pytest.MonkeyPatch()
+        assert lsp_reach_is_refused() is False
+        monkeypatch.setattr(
+            lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
+        )
+        assert lsp_reach_is_refused() is True
+        monkeypatch.undo()
+
+    def test_the_lsp_guardrail_half_speaks_this_runners_path_form(self):
+        """B-D1 + lspfinal-04: an inert deny-list is the only thing that refuses.
+
+        Asked of the unpinned hub (nothing is patched here, unlike the two
+        seam-forcing tests above), the LSP hub's own list answers the shape
+        question True on either runner: on Windows because the entries B-D1
+        added speak a drive-rooted working location, on Linux because the POSIX
+        ones always did. Nothing is left that could refuse, so the refusal is
+        ``False`` here on both platforms.
+        """
+        from src.core.lsphub import constants as lsp_constants
+        from src.core.lsphub.discovery import lsp_reach_is_refused, restricted_lsp_roots
+
+        entries = restricted_lsp_roots()
+        assert entries
+        assert lsp_constants.guardrails_speak_here(entries) is True
+        assert lsp_reach_is_refused() is False
+
+    def test_both_hubs_refuse_in_the_same_words(self):
+        """The symmetry test: one sentence for one missing capability.
+
+        The two hubs mirror each other, and a connector card explaining the same
+        gap differently from a language-server card is the first thing a reader
+        would distrust.
+        """
+        from src.core.lsphub import constants as lsp_constants
+
+        assert mcphub.constants.LOCAL_REACH_REFUSAL == lsp_constants.LOCAL_REACH_REFUSAL
+        # And the sentence names the gap and the capability, not a symptom.
+        assert "bounded" in mcphub.constants.LOCAL_REACH_REFUSAL
+        # lspfinal-06: it names the cause an operator can fix — a guardrail list
+        # with no entry in this filesystem's path form — and no longer points at
+        # target B, which is finished.
+        assert "guardrail" in mcphub.constants.LOCAL_REACH_REFUSAL
+        assert "target B" not in mcphub.constants.LOCAL_REACH_REFUSAL
+
+    def test_a_local_entry_gets_the_note_and_a_remote_one_does_not(
+        self, tmp_path, monkeypatch
+    ):
+        _unbounded_guardrails(monkeypatch, mcphub)
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {
+                "remote_live": {
+                    "type": "remote",
+                    "enable": True,
+                    "url": "https://example.com/mcp",
+                },
+                "local_live": {
+                    "type": "local",
+                    "enable": True,
+                    "command": ["python", "mcp_connectors/console_mcp.py"],
+                },
+                "local_off": {
+                    "type": "local",
+                    "enable": False,
+                    "command": ["python", "mcp_connectors/fedit_mcp.py"],
+                },
+            },
+        )
+        connectors, errors = load_externals(path)
+        # The entries stay loaded — a card naming the gap beats a vanished
+        # connector — and only the one that *asks to run* is noted.
+        assert [connector["id"] for connector in connectors] == [
+            "local_live",
+            "local_off",
+            "remote_live",
+        ]
+        assert len(errors) == 1
+        assert "'local_live'" in errors[0]
+        assert mcphub.constants.LOCAL_REACH_REFUSAL in errors[0]
+
+    def test_an_unresolved_env_reference_and_the_note_are_both_reported(
+        self, tmp_path, monkeypatch
+    ):
+        """The new note joins the existing ones, it never replaces them."""
+        _unbounded_guardrails(monkeypatch, mcphub)
+        monkeypatch.delenv("NOT_SET_ANYWHERE_MARKER", raising=False)
+        path = _write_externals(
+            tmp_path / "externals.json",
+            {
+                "local_live": {
+                    "type": "local",
+                    "enable": True,
+                    "command": ["python", "${NOT_SET_ANYWHERE_MARKER}/x_mcp.py"],
+                },
+            },
+        )
+        connectors, errors = load_externals(path)
+        assert connectors[0]["command"] == ["python", "${NOT_SET_ANYWHERE_MARKER}/x_mcp.py"]
+        assert len(errors) == 2
+        assert any("is not set in the environment" in note for note in errors)
+        assert any(mcphub.constants.LOCAL_REACH_REFUSAL in note for note in errors)
+
+    def test_the_endpoint_reports_the_note_and_names_no_secret(
+        self, mcp_client, tmp_path, monkeypatch
+    ):
+        client, _ = mcp_client
+        _unbounded_guardrails(monkeypatch, mcphub)
+        _write_externals(
+            tmp_path / "mcp_connectors" / "externals.json",
+            {
+                "console": {
+                    "type": "local",
+                    "enable": True,
+                    "command": [
+                        "python",
+                        "mcp_connectors/console_mcp.py",
+                        "--token",
+                        "a-secret-in-the-argv",
+                    ],
+                    "env": {"API_KEY": "a-secret-in-the-env"},
+                }
+            },
+        )
+        body = client.get("/api/mcp").json()
+        note = body["externalsError"]
+        assert mcphub.constants.LOCAL_REACH_REFUSAL in note
+        # The refusal names the gap, never the command line it refused to run
+        # (``env`` never leaves the server at all, and a note that quoted the
+        # argv would carry whatever the declaration put in it).
+        assert "a-secret-in-the-argv" not in note
+        assert "console_mcp" not in note
+        for secret in ("a-secret-in-the-env", "API_KEY"):
+            assert secret not in json.dumps(body)
+
+    def test_a_refused_local_entry_is_error_and_a_remote_one_still_runs(
+        self, monkeypatch
+    ):
+        """``start_all`` reaches the remote entry and never touches the local one.
+
+        The stand-in for ``_start_connector`` is where a stdio child would be
+        spawned (or an HTTP session opened), so ``spawned`` is the direct answer
+        to "did the hub start a process it should have refused" — and the
+        remote entry ending up ``running`` is what pins that the refusal costs
+        a connector with no local path reach nothing.
+        """
+        import asyncio
+
+        _unbounded_guardrails(monkeypatch, mcphub)
+        spawned: List[str] = []
+
+        async def pretend_connect(connector_id: str, info: Dict[str, Any]) -> None:
+            spawned.append(connector_id)
+            info["status"] = "running"
+            info["error"] = None
+
+        manager = McpManager(
+            [_declaration("local", "local_live"), _declaration("remote", "remote_live")]
+        )
+        monkeypatch.setattr(manager, "_start_connector", pretend_connect)
+
+        async def scenario():
+            await manager.start_all()
+            statuses = {entry["id"]: entry for entry in manager.status()}
+            await manager.stop_all()
+            return statuses
+
+        status = asyncio.run(scenario())
+        assert spawned == ["remote_live"]
+        assert status["local_live"]["status"] == "error"
+        assert status["local_live"]["error"] == mcphub.constants.LOCAL_REACH_REFUSAL
+        assert status["remote_live"]["status"] == "running"
+        assert status["remote_live"]["error"] is None
+
+    def test_a_refused_entry_is_error_as_soon_as_it_is_declared(
+        self, monkeypatch
+    ):
+        """No start needs to be attempted for the card to say so.
+
+        The entry is named at index time — boot and every hub reload — so the
+        panel and the tool catalogue see the same answer the validation note
+        gives, and a refused connector never sits in ``stopped``, the state whose
+        tools are still offered to chat.
+        """
+        _unbounded_guardrails(monkeypatch, mcphub)
+        manager = McpManager(
+            [_declaration("local", "local_live"), _declaration("remote", "remote_live")]
+        )
+        status = {entry["id"]: entry for entry in manager.status()}
+        assert status["local_live"]["status"] == "error"
+        assert status["local_live"]["error"] == mcphub.constants.LOCAL_REACH_REFUSAL
+        # A remote entry keeps its ordinary starting state, and a disabled local
+        # one is the user's own switch rather than a missing capability.
+        assert status["remote_live"]["status"] == "stopped"
+        disabled = McpManager([_declaration("local", "local_off", enable=False)])
+        assert disabled.status()[0]["status"] == "stopped"
+        assert disabled.status()[0]["error"] is None
+
+    def test_the_hot_toggle_does_not_spawn_a_refused_entry(self, monkeypatch):
+        """``start_connector`` from the settings panel cannot bypass the refusal.
+
+        The dispatch is what would reach ``_start_connector`` and therefore the
+        subprocess, so the assertion is on the *dispatch list* being empty as
+        well as on the status: a refusal that only arrived after the child was
+        spawned would still show ``error`` and pass a status-only check.
+        """
+        import asyncio
+
+        _unbounded_guardrails(monkeypatch, mcphub)
+        manager = McpManager([_declaration("local", "local_live")])
+        # A live hub thread, so the synchronous toggle is not a no-op for
+        # having no loop; nothing is ever connected on it.
+        asyncio.run(manager.start_all())
+        dispatched: List[str] = []
+
+        async def record_restart(connector_id: str) -> None:
+            dispatched.append(connector_id)
+
+        monkeypatch.setattr(manager, "_restart_one", record_restart)
+        manager.start_connector("local_live")
+        assert manager.connector_status("local_live") == "error"
+        assert (
+            manager._connectors["local_live"]["error"]
+            == mcphub.constants.LOCAL_REACH_REFUSAL
+        )
+        asyncio.run(manager.stop_all())
+        assert dispatched == []
+
+    def test_its_tools_are_not_offered_to_chat(self, monkeypatch):
+        """``active_tool_defs`` publishes only running connectors — unchanged rule."""
+        _unbounded_guardrails(monkeypatch, mcphub)
+        manager = McpManager([_declaration("local", "local_live")])
+        manager._tools["local_live"] = [
+            SimpleNamespace(name="execute_command", description="", input_schema=None)
+        ]
+        tools, mapping = manager.active_tool_defs(["local_live"])
+        assert tools == []
+        assert mapping == {}
+
+    def test_a_booting_app_does_not_spawn_the_local_connector(
+        self, tmp_path, monkeypatch, mcp_client
+    ):
+        """With the seam forced, the hub's own test switch is not what keeps it quiet.
+
+        The lifespan normally loads ``externals.json`` only when
+        ``BENCHMARKIT_DISABLE_MCP`` is unset, so clearing it here puts the test on
+        the real boot path: the connector's command *is* a program that leaves a
+        marker file behind, and the assertion is that the marker never appears.
+        A refusal that only avoided the ``error`` status while still spawning the
+        child — the exact bug A-D4 exists to prevent — fails here.
+        """
+        marker = tmp_path / "spawned.flag"
+        _, original = mcp_client
+        del original  # the fixture's app already booted with the switch set
+        monkeypatch.delenv("BENCHMARKIT_DISABLE_MCP", raising=False)
+        _unbounded_guardrails(monkeypatch, mcphub)
+        _write_externals(
+            tmp_path / "mcp_connectors" / "externals.json",
+            {
+                "console": {
+                    "type": "local",
+                    "enable": True,
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        f"open({str(marker)!r}, 'w').close()",
+                    ],
+                }
+            },
+        )
+        app = create_app()
+        with TestClient(app) as test_client:
+            body = test_client.get("/api/mcp").json()
+            assert mcphub.constants.LOCAL_REACH_REFUSAL in body["externalsError"]
+            hub = app.state.mcp
+            entry = {item["id"]: item for item in hub.status()}["console"]
+            assert entry["status"] == "error"
+            assert entry["error"] == mcphub.constants.LOCAL_REACH_REFUSAL
+        assert not marker.exists(), "the refused connector was spawned anyway"
 
 
 class TestMcpEnvHelpers:
@@ -384,19 +734,28 @@ class TestConnectorEnvironment:
     def test_relative_temp_vars_never_reach_the_connector(self, tmp_path):
         # A relative TEMP=1 in the environment must not be taken by the
         # Node playwright driver as its temp directory (ENOENT mkdtemp '1/…').
+        # The values are relative on *every* platform (gb-01b): what the rule
+        # says is "a relative temp value is dropped", and the pinned TMPDIR is
+        # absolute in the platform's own spelling.
         env = connector_environment(
-            tmp_path, {"TEMP": "1", "TMP": "rel", "TMPDIR": "/var/tmp"}
+            tmp_path, {"TEMP": "1", "TMP": "rel", "TMPDIR": "reltmp"}
         )
         assert "TEMP" not in env
         assert "TMP" not in env
-        assert env["TMPDIR"].startswith("/")
+        assert Path(env["TMPDIR"]).is_absolute()
 
     def test_absolute_temp_vars_are_kept_and_pythonpath_prepended(self, tmp_path):
+        # Absolute in the runner's own spelling — a POSIX-looking "/fast/tmp"
+        # is not an absolute Windows path and would be dropped, which is the
+        # honest verdict, not the invariant (gb-01b).
+        absolute = str(tmp_path / "fast-tmp")
         env = connector_environment(
-            tmp_path, {"TEMP": "/fast/tmp", "PYTHONPATH": "/other"}
+            tmp_path, {"TEMP": absolute, "PYTHONPATH": "other"}
         )
-        assert env["TEMP"] == "/fast/tmp"
-        assert env["PYTHONPATH"].startswith(f"{tmp_path}:/other")
+        assert env["TEMP"] == absolute
+        entries = env["PYTHONPATH"].split(os.pathsep)
+        assert entries[0] == str(tmp_path)
+        assert "other" in entries[1:]
 
     def test_defaults_to_python_tempdir(self, tmp_path):
         import tempfile

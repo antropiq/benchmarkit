@@ -290,6 +290,16 @@ def _ensure_prompt_helpers(root: str) -> Dict[str, Any]:
                 "failed", path, "a folder stands where the prompt-helpers file belongs"
             )
         return _state_dict("existing", path)
+    except PermissionError:
+        # Which error a **folder** at that path answers with is the platform's
+        # choice: ``EEXIST`` on POSIX, ``EACCES`` on Windows — the exclusive open
+        # cannot create over a directory there. Same condition, same sentence, so
+        # the seeder says what stands there rather than quoting an errno.
+        if not _is_regular_file(path):
+            return _state_dict(
+                "failed", path, "a folder stands where the prompt-helpers file belongs"
+            )
+        return _state_dict("failed", path, "the prompt-helpers path cannot be written")
     except OSError as exc:
         return _state_dict("failed", path, exc.strerror or str(exc))
 

@@ -74,7 +74,10 @@ def write_policy(root: Path, text: str) -> Path:
     folder = root / constants.POLICY_DIRNAME
     folder.mkdir(exist_ok=True)
     path = folder / constants.POLICY_FILENAME
-    path.write_text(text, encoding="utf-8")
+    # ``newline=""``: the file's bytes are the caller's text. Text mode would
+    # rewrite every ``\n`` to the host's line ending on Windows, and the cache
+    # tests below compare ``st_size`` against ``len`` of that same text.
+    path.write_text(text, encoding="utf-8", newline="")
     return path
 
 
@@ -446,6 +449,10 @@ class TestUnreachablePattern:
         assert policy_file.workspace_findings() == ()
         assert len(policy_file.workspace_rules()) == 3
 
+    @pytest.mark.requires_symlink(
+        "the unreachable-pattern check judges *names*: a dangling link in a "
+        "rule's literal prefix is not the author's typo"
+    )
     def test_a_broken_symlink_in_the_prefix_is_not_the_authors_typo(self, workspace: Path):
         link = workspace / "dangling"
         link.symlink_to(workspace / "not-there")
@@ -458,6 +465,10 @@ class TestUnreachablePattern:
         assert policy_file.policy_blocking_error() is None
         assert mode("web/src/main.js") == shared.READ_WRITE
 
+    @pytest.mark.requires_symlink(
+        "the leniency above is about the link, not a refusal to check: a near "
+        "miss of a real name is still reported as a typo"
+    )
     def test_a_name_close_to_the_dangling_link_is_still_a_typo(self, workspace: Path):
         """The leniency above is about the link, not a refusal to check."""
         (workspace / "dangling").symlink_to(workspace / "not-there")
@@ -479,6 +490,11 @@ class TestUnreadableFile:
         assert constants.POLICY_FILENAME in errors[0].message
         assert policy_file.policy_blocking_error() is not None
 
+    @pytest.mark.posix_behaviour(
+        "the finding under test is the EACCES of a chmod(0o000) file: without "
+        "POSIX mode bits there is no unreadable file to report (the folder-"
+        "where-the-file-belongs case above is platform-free and still runs)"
+    )
     def test_a_file_the_process_cannot_open_names_the_os_error(self, workspace: Path):
         """``EACCES`` is a finding the user can act on, not a silent "no rules"."""
         if os.geteuid() == 0:
@@ -579,7 +595,13 @@ class TestCache:
         """Same length, different rules — a size-only cache would miss it."""
         path = write_policy(workspace, policy_json([{"path": "notes.md", "mode": "ro"}]))
         assert mode("notes.md") == shared.READ_ONLY
-        path.write_text(policy_json([{"path": "notes.md", "mode": "rw"}]), encoding="utf-8")
+        # The re-write is the same length only in bytes the file really holds, so
+        # this one goes through the same ``newline=""`` as ``write_policy``.
+        path.write_text(
+            policy_json([{"path": "notes.md", "mode": "rw"}]),
+            encoding="utf-8",
+            newline="",
+        )
         assert path.stat().st_size == len(policy_json([{"path": "notes.md", "mode": "ro"}]))
         future = path.stat().st_atime_ns + 1_000_000_000
         os.utime(path, ns=(future, future))

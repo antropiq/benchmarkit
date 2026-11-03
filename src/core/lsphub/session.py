@@ -1,8 +1,15 @@
 """The per-server session state one language server owns while it is up.
 
 Split out of the manager because these three are pure state machines with no
-FastAPI, no subprocess and no asyncio loop of their own — they are the parts
-of the hub that can be reasoned about (and tested) on their own.
+FastAPI and no asyncio loop of their own — they are the parts of the hub that
+can be reasoned about (and tested) on their own.
+
+One thing here is not a state machine: a :class:`ServerSession` *holds* the
+process-tree boundary of the child it belongs to (``proctree_jobs.ProcessJob``,
+B-D5). It spawns nothing, signals nothing and waits for nothing — the manager
+does all of that — but the boundary belongs to the child, so the object that
+owns the child for as long as it lives owns the handle too, and releasing it
+is what a replaced child must never leave behind.
 """
 
 import asyncio
@@ -124,13 +131,24 @@ class DocumentStore:
 
 
 class ServerSession:
-    """One live language server: process, pygls client, document store, inbox."""
+    """One live language server: process, pygls client, tree boundary, stores."""
 
-    def __init__(self, info: Dict[str, Any], client: Any, process: Any, log_path: Path) -> None:
+    def __init__(
+        self,
+        info: Dict[str, Any],
+        client: Any,
+        process: Any,
+        log_path: Path,
+        job: Optional[Any] = None,
+    ) -> None:
         self.info = info
         self.client = client
         self.process = process
         self.log_path = log_path
+        #: The job containing this child's whole process tree on the platform
+        #: that has no process groups; inert where the group is the boundary.
+        #: Opened by the manager before the spawn, released with the child.
+        self.job: Optional[Any] = job
         self.capabilities: Any = None
         self.documents = DocumentStore()
         self.inbox = DiagnosticsInbox()

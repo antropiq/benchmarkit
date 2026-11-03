@@ -20,6 +20,12 @@ everywhere.
 
 There is no shell: the command is parsed into arguments and exec'd directly, so
 what was validated is exactly what runs (no pipes, chains or substitution).
+Shells (bash, cmd, powershell, ...) are refused by name everywhere -- on
+Windows the tools come from Git for Windows' POSIX toolset, never an
+interpreter. The command sets and the program search path are one startup-
+selected block (gb-03): found Git toolset -> the gbash sets resolved through
+Git's trees, absent on Windows -> the connector refuses to start naming the
+gap, POSIX -> today's behaviour unchanged.
 
 Credential stores (``~/.ssh``, ``~/.aws``, ``.git``, ``.env``, private keys and
 friends) are refused as command arguments whatever the command is, using the
@@ -55,8 +61,10 @@ Usage:
 """
 
 import argparse
+import ntpath
 import os
 import re
+import shutil
 import subprocess
 import shlex
 import sys
@@ -65,9 +73,12 @@ from typing import Optional, Tuple
 from mcp.server.mcpserver import MCPServer
 
 try:  # imported as part of the package (tests, `python -m mcp_connectors...`)
-    from . import path_policy, policy_file, policy_shared
+    from . import fscase, gitbash, path_norm, path_policy, policy_file, policy_shared
 except ImportError:  # run as a plain script path, as externals.json does
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import fscase  # type: ignore[no-redef]
+    import gitbash  # type: ignore[no-redef]
+    import path_norm  # type: ignore[no-redef]
     import path_policy  # type: ignore[no-redef]
     import policy_file  # type: ignore[no-redef]
     import policy_shared  # type: ignore[no-redef]
@@ -76,6 +87,61 @@ except ImportError:  # run as a plain script path, as externals.json does
 # When None (e.g. module imported without main()), the full policy applies to
 # every command (legacy behaviour).
 ROOT_DIR: Optional[Path] = None
+
+# The case answer for the volume this connector walks (gb-01/gb-02, win-05's
+# probe from ``mcp_connectors.fscase``). The deny-lists take ``fold`` as an
+# explicit argument everywhere (roadmap §9 rule 2), and this module reads it
+# only through that argument — so the Linux default (``False``, an exact
+# filesystem) is what the existing policy tests exercise. Under a drive-rooted
+# root the answer comes from the probe of that root (:func:`path_model_fold`);
+# this attribute is the fallback for an unrooted or POSIX-rooted server and the
+# seam tests force either direction through (gb-02's design decision).
+CASE_FOLDED: bool = False
+
+
+# --- the Windows path model (gb-02, G-D5/G-D6) -------------------------------
+#
+# The path-model half — the backslash rule, the mount-form translation, the
+# drive-relative refusal, the fold — is selected by the *shape of the root*,
+# not by an OS name: ``root_form(ROOT_DIR) == "drive"`` is a probe of the root
+# (roadmap §9 rule 2), so a Windows test root gets the Windows path model with
+# no test edits, a Linux root keeps today's exact verdicts, and tests force
+# either direction by patching ``ROOT_DIR`` or passing the explicit flag. The
+# *toolset* half (Git discovery, resolver, command sets) is a separate,
+# startup-selected mode (gb-03): this section changes no command verdict.
+
+def root_is_drive_form() -> bool:
+    """True when ``ROOT_DIR`` is a drive-spec path — the path-model mode's shape probe."""
+    return ROOT_DIR is not None and path_policy.root_form(str(ROOT_DIR)) == "drive"
+
+
+def path_model_backslash(literal_backslash: Optional[bool] = None) -> bool:
+    """Whether argv keeps backslashes verbatim: derived from the root's shape unless forced."""
+    if literal_backslash is not None:
+        return literal_backslash
+    return root_is_drive_form()
+
+
+def path_model_fold() -> bool:
+    """The case answer for the paths this verdict walks (win-05's probe, per root)."""
+    if not root_is_drive_form():
+        return CASE_FOLDED
+    return fscase.case_folded(str(ROOT_DIR))
+
+
+def verdict_path_text(token: str) -> str:
+    r"""The token a *policy question* asks about, with the mount form translated (G-D6).
+
+    Git's tools accept the MSYS mount form (``/c/dev/x`` is ``C:\dev\x``), and
+    argv must reach them unchanged — so the translation happens here, for the
+    verdict only, and only under a drive-rooted root: under a POSIX root
+    ``/c/x`` stays an ordinary absolute path and today's verdicts stay exact.
+    """
+    if root_is_drive_form():
+        mount = path_policy.mount_form_to_drive(token)
+        if mount is not None:
+            return mount
+    return token
 
 # Create MCP server instance
 # streamable_http_path="/mcp" is the default, which matches your requirement
@@ -127,12 +193,34 @@ BLOCKED_COMMANDS = {
 
 # Privilege / power / disk / service commands are NOT path-scoped file work:
 # they stay blocked even when a command would otherwise run inside the root.
+# Target B1 (G-D3/G-D7) adds the shells and the Windows power/admin names to
+# the same list: a shell is never path work (Git Bash supplies the *tools*, not
+# an interpreter), and System32's bash.exe -- the WSL launcher -- is why
+# refusing them by name is not theoretical.
 ALWAYS_BLOCKED_COMMANDS = {
     "mkfs", "dd", "fdisk", "parted", "mount", "umount",
     "shutdown", "reboot", "poweroff", "halt",
     "sudo", "su", "doas", "runuser",
     "pacman", "systemctl", "crontab",
+    # shells and script hosts, blocked on both platforms (G-D3)
+    "bash", "sh", "cmd", "powershell", "pwsh", "cscript", "wscript",
+    # Windows power / disk / service / registry control (G-D7)
+    "del", "erase", "rd", "format", "takeown", "icacls", "cacls",
+    "net", "sc", "reg", "schtasks", "runas", "cipher", "diskpart",
+    "mountvol", "subst", "fsutil", "bcdedit", "vssadmin", "wmic",
+    "msiexec", "regsvr32",
 }
+
+# Refused with the design named, not a generic "blocked for security reasons"
+# (G-D3's sentence): the model should learn *why* a shell never works here.
+SHELL_COMMANDS: frozenset[str] = frozenset({
+    "bash", "sh", "cmd", "powershell", "pwsh", "cscript", "wscript",
+})
+
+NO_SHELL_SENTENCE: str = (
+    "is a shell, and this connector runs none: Git for Windows supplies the "
+    "tools, not an interpreter -- issue one plain command per call"
+)
 
 # Shell builtins are not programs to exec, and there is no shell here: a token
 # like `cd` would pass the path bypass, then die as "Command not found" -- a
@@ -191,6 +279,199 @@ ALLOWED_COMMANDS = {
     # --- editors (kept from your original list) ---
     "vim", "nano",
 }
+
+
+# ---------------------------------------------------------------------------
+# The gbash toolset mode (gb-03, G-D3–G-D7) -- the one startup-selected block.
+#
+# The mode is a startup capability probe, not a platform branch inside the
+# policy: main() asks whether Git for Windows' toolset is there; found -> the
+# gbash semantics, absent on Windows -> the connector refuses to start naming
+# the gap, POSIX -> today's behaviour, unchanged. Only the command sets and
+# the resolver are mode-selected here (the backslash rule and the mount-form
+# translation follow the root's shape -- gb-02); the grammar, the per-statement
+# policy and the output honesty above stay one copy both modes share, so a
+# policy rule changes once and both modes inherit it (G-D2's invariant).
+#
+# The Windows half is one named seam: TOOLSET, GIT_SEARCH_PATHS and the
+# discovery candidates are module attributes, and tests force either direction
+# by patching them (roadmap §9 rule 2) -- never by pretending to be Windows.
+# ---------------------------------------------------------------------------
+
+# The names the probe found in no tree on this machine (target B1 §1): they
+# leave the gbash allow list because nothing resolves them (B-D4's principle --
+# the list is what the connector can actually run, not a guess).
+GBASH_ABSENT_COMMANDS: frozenset[str] = frozenset({
+    "man", "bc", "zip", "top", "vmstat", "free", "uptime", "lscpu",
+    "lsb_release", "w", "tracepath", "ss", "ip", "dig", "jq", "sqlite3",
+    "rg", "ag", "fd", "make", "lsof", "tree", "wget",
+})
+
+# The System32 / ambient-PATH half (G-D7): real Windows tools the POSIX list
+# never named. ``certutil -hashfile`` fills the md5sum/sha256sum role if Git's
+# coreutils are ever absent; ``fc`` is a real file-compare tool here, so it
+# leaves the builtin list on this connector.
+GBASH_AMBIENT_COMMANDS: frozenset[str] = frozenset({
+    "python", "python3", "node", "npm", "pip", "git", "curl", "ping",
+    "nslookup", "ipconfig", "where", "certutil", "systeminfo", "tasklist",
+    "findstr", "tracert", "netstat", "more", "fc",
+})
+
+GBASH_ALLOWED_COMMANDS: frozenset[str] = (
+    (frozenset(ALLOWED_COMMANDS) - GBASH_ABSENT_COMMANDS) | GBASH_AMBIENT_COMMANDS
+)
+
+# cmd's own words: no `.exe` stands behind them under shell=False (`type`
+# among them), so they are refused with the builtin hint rather than coming
+# back as "Command not found". `fc` leaves the set -- fc.exe is a real tool.
+GBASH_BUILTIN_COMMANDS: frozenset[str] = (
+    (SHELL_BUILTIN_COMMANDS - {"fc"})
+    | frozenset({
+        "cls", "copy", "move", "ren", "md", "ver", "vol", "start",
+        "call", "if", "for", "goto", "type",
+    })
+)
+
+# Git install roots searched when `where git` finds nothing (G-D4), and the
+# connector-local override -- deliberately not a managed .env key, the same
+# reasoning as BENCHMARKIT_PATH_LOCATION: a settings save must not erase it.
+# Module attributes so tests patch them (the hermetic-tests convention): these
+# are the shared probe's own defaults (csl-01 -- one probe for the connector and
+# for the terminal alike), rebound to this module's names because its tests and
+# its refusal sentence speak them.
+GIT_INSTALL_CANDIDATES: list[str] = list(gitbash.GIT_INSTALL_CANDIDATES)
+GIT_ENV_OVERRIDE: str = gitbash.GIT_ENV_OVERRIDE
+
+# The command search path once a Git root is known (G-D4): Git's trees first,
+# so `find`/`sort`/`tar` mean GNU, then the ambient PATH for python/npm/curl.
+GIT_SEARCH_PATHS: list[str] = []
+
+
+class Toolset:
+    """One mode's selected half: the command sets and whether a resolver runs.
+
+    The named block G-D1 asks for. The grammar and the path policy are not
+    here -- they are the shared core above, and both modes read them.
+    """
+
+    def __init__(
+        self, name: str, allowed: frozenset[str], builtins: frozenset[str],
+        resolves: bool,
+    ) -> None:
+        self.name = name
+        self.allowed = allowed
+        self.builtins = builtins
+        self.resolves = resolves
+
+
+POSIX_TOOLSET = Toolset("posix", frozenset(ALLOWED_COMMANDS), SHELL_BUILTIN_COMMANDS, False)
+GBASH_TOOLSET = Toolset("gbash", GBASH_ALLOWED_COMMANDS, GBASH_BUILTIN_COMMANDS, True)
+
+# Startup-selected; the POSIX default keeps every existing test exercising
+# today's behaviour verbatim (the Linux gate stays literal).
+TOOLSET: Toolset = POSIX_TOOLSET
+
+
+def discover_git_install() -> Optional[str]:
+    """The Git for Windows install root, or None (G-D4's four questions).
+
+    1. `shutil.which("git")` walked up from `...\\cmd\\git.exe` to the install
+       dir; 2. the fixed candidates; 3. the connector-local env override;
+       4. None -- which main() turns into the refusal. A found root is always
+       verified by `usr\\bin\\ls.exe`, so a stray `git.exe` elsewhere on PATH
+       cannot select the mode.
+
+    The asking is csl-01's shared probe (`mcp_connectors.gitbash` -- the same
+    one the terminal will use to pick its shell); this function hands it this
+    module's patchable candidates and override name, so a test that patches
+    them still answers here and the verdict order is unchanged.
+    """
+    return gitbash.discover_git_install(
+        GIT_INSTALL_CANDIDATES, GIT_ENV_OVERRIDE, os.environ
+    )
+
+
+def git_search_paths(git_root: str) -> list[str]:
+    """The command search path for a Git root, in resolution order (G-D4).
+
+    Git's trees first, then whichever C-runtime tool tree the install actually
+    carries (`ucrt64` on this machine's install, `mingw64` on others): the probe
+    answers from what is there rather than naming a directory that may be
+    missing. The ambient PATH is appended by :func:`resolve_command`.
+    """
+    return gitbash.git_search_paths(git_root)
+
+
+def resolve_command(name: str) -> Optional[str]:
+    r"""The program ``name`` resolves to, or None -- never a shell lookup.
+
+    ``shutil.which`` honours ``PATHEXT`` (B-D6: ``more.com`` and ``.cmd``
+    shims resolve) and searches ``GIT_SEARCH_PATHS`` before the ambient PATH,
+    so a name Git's trees carry never falls through to ``System32``. A name
+    that already spells a path (``C:\tools\x.exe``, ``./x``) is asked directly.
+    The answer is what the verdict promises *and* what execute_command runs --
+    the ``FileNotFoundError`` folded into the oracle (G-D4).
+    """
+    if os.sep in name or (os.altsep and os.altsep in name) or "/" in name:
+        candidate = Path(name)
+        if candidate.is_file():
+            return str(candidate)
+        with_ext = shutil.which(name)
+        return with_ext
+    for directory in GIT_SEARCH_PATHS:
+        found = shutil.which(name, path=directory)
+        if found:
+            return found
+    return shutil.which(name)
+
+
+def no_toolset_refusal() -> str:
+    """The sentence naming the gap when discovery finds nothing (win-07's shape)."""
+    searched = ", ".join(GIT_INSTALL_CANDIDATES)
+    return (
+        f"no Git for Windows toolset found: `git` was not on PATH, none of "
+        f"the install candidates ({searched}) carries usr\\bin\\ls.exe, and "
+        f"${GIT_ENV_OVERRIDE} names none. This connector runs its commands "
+        "over Git's POSIX toolset and starts no shell; install Git for "
+        f"Windows, or point {GIT_ENV_OVERRIDE} at its install root."
+    )
+
+
+def select_toolset() -> Optional[str]:
+    """Install the startup mode; return the refusal sentence when Windows has no toolset.
+
+    A POSIX system keeps today's behaviour unchanged -- it is not probed,
+    because a Linux box's own ``git`` must not select the gbash sets. On
+    Windows the probe decides: found -> the gbash mode (and the fold answer
+    for the root, G-D8); absent -> the connector refuses to start naming the
+    gap, which is what keeps "each connector's reach is bounded by a deny-list"
+    true until the guardrails say so (gb-01 landed that half).
+    """
+    global TOOLSET, GIT_SEARCH_PATHS
+    if os.name != "nt":
+        TOOLSET = POSIX_TOOLSET
+        return None
+    git_root = discover_git_install()
+    if git_root is None:
+        return no_toolset_refusal()
+    GIT_SEARCH_PATHS = git_search_paths(git_root)
+    TOOLSET = GBASH_TOOLSET
+    return None
+
+
+def toolset_split() -> tuple[list[str], list[str]]:
+    """(resolved, unresolved) of the active allow list -- the startup self-check.
+
+    The list is "selected by which platform's binaries the connector can
+    actually resolve" (B-D4's principle); this is the honest log of that claim,
+    printed once at startup rather than a hand-verified guess.
+    """
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for command in sorted(TOOLSET.allowed):
+        (resolved if resolve_command(command) else unresolved).append(command)
+    return resolved, unresolved
+
 
 
 # ---------------------------------------------------------------------------
@@ -321,13 +602,23 @@ def shell_tokens(command: str) -> list[str]:
         raise ShellSyntaxError(str(exc)) from exc
 
 
-def unquote(token: str) -> str:
+def unquote(token: str, literal_backslash: bool = False) -> str:
     """Strip the quoting a token carries, so ``argv`` holds the word to exec.
 
     A single open quote is closed as a double quote rather than treated as
     unbalanced, so an odd number of quotes degrades the way a shell would
     degrade rather than losing the whole argument.
+
+    ``literal_backslash=True`` (G-D5, gb-02) keeps every ``\\`` in the word:
+    ``shlex.split`` eats backslashes -- ``cat C:\\Users\\vgr\\a.txt`` used to
+    reach argv as ``C:Usersvgra.txt``, which read as an in-root name and
+    bypassed the out-of-root policy. The quote-stripping here is verbatim, so
+    quoting still groups spaces (`cat "C:\\Users\\vgr\\a file.txt"`) while the
+    backslashes survive for the tool that accepts them. The default ``False``
+    keeps the Linux verdicts exact (roadmap §9 rule 2).
     """
+    if literal_backslash:
+        return unquote_literal(token)
     if len(token) > 1 and token.startswith("'") and not token.endswith("'"):
         token = '"' + token[1:]
     try:
@@ -335,6 +626,25 @@ def unquote(token: str) -> str:
     except ValueError:
         return token.strip("\"'")
     return words[0] if words else ""
+
+
+def unquote_literal(token: str) -> str:
+    """Strip quoting verbatim: quotes go, every other character -- a ``\\``
+    included -- stays exactly where the caller wrote it."""
+    chars: list[str] = []
+    quote = ""
+    for char in token:
+        if quote:
+            if char == quote:
+                quote = ""
+            else:
+                chars.append(char)
+            continue
+        if char in "\"'":
+            quote = char
+            continue
+        chars.append(char)
+    return "".join(chars)
 
 
 # The stderr-merge spellings (``2>&1``, ``1>&2``, ``>&2``). Merging is not an
@@ -371,13 +681,21 @@ def is_redirection_token(token: str) -> bool:
     return bool(stripped) and all(char in "<>|&" for char in stripped)
 
 
-def parse_shell_statements(command: str) -> list[ShellStatement]:
+def parse_shell_statements(
+    command: str, literal_backslash: bool = False
+) -> list[ShellStatement]:
     """Split ``command`` into statements: argv, redirections, shell features.
 
     Quoting decides what counts: `grep "<div" file` is one argv with no
     redirection and `curl "…?a=1&b=2"` has no operator, while `ls web; id` and
     `ls web` + newline + `id` are both **two** statements -- every one of which
     then goes through the policy on its own (C-3, C-5).
+
+    ``literal_backslash`` reaches :func:`unquote` (G-D5): with it, a ``\\`` is a
+    character of argv, not an escape shlex eats. The grammar itself -- the
+    operators, the redirections, the refusal sentences -- is identical either
+    way: the same parse is what :func:`validate_command` judges and what
+    :func:`execute_command` runs, in both directions.
 
     Raises:
         ShellSyntaxError: the command cannot be tokenised, or holds no
@@ -426,7 +744,7 @@ def parse_shell_statements(command: str) -> list[ShellStatement]:
         current.shell_features.extend(
             char for char in unquoted_part(token) if char in UNSUPPORTED_SHELL_CHARS
         )
-        current.argv.append(unquote(token))
+        current.argv.append(unquote(token, literal_backslash))
         index += 1
     close_statement()
     if not statements:
@@ -443,8 +761,12 @@ def resolve_as_path(token: str, base: Optional[Path] = None) -> Path:
     check that anchored them at the root would judge ``x.txt`` as a file that is
     not being written at all (pol-08's write gate would then wave a create inside
     a read-only folder past).
+
+    The token first passes :func:`verdict_path_text`: a mount-form argument
+    (``/c/dev/x``) is judged as the drive path it names (G-D6), while argv
+    reaches the tool unchanged.
     """
-    expanded = os.path.expanduser(token)
+    expanded = os.path.expanduser(verdict_path_text(token))
     path = Path(expanded)
     if not path.is_absolute():
         path = (base or ROOT_DIR or Path.cwd()) / path
@@ -462,9 +784,11 @@ def absolute_as_written(token: str, base: Optional[Path] = None) -> Path:
     kept as given; the symlink-resolved target is checked separately.
 
     ``base`` is the directory the command will actually run in (the tool's
-    ``cwd`` argument), for the same reason as :func:`resolve_as_path`'s.
+    ``cwd`` argument), for the same reason as :func:`resolve_as_path`'s. The
+    mount-form translation applies here too -- the as-written half of a verdict
+    asks the same Windows questions as the resolved half.
     """
-    path = Path(os.path.expanduser(token))
+    path = Path(os.path.expanduser(verdict_path_text(token)))
     if not path.is_absolute():
         path = (base or ROOT_DIR or Path.cwd()) / path
     return path
@@ -514,7 +838,9 @@ def looks_like_path(token: str) -> bool:
 
 def _trusted_prefix_hit(path: Path) -> Optional[str]:
     """The scratch prefix (``/tmp`` …) ``path`` stays inside, or None."""
-    return path_policy.prefix_hit(path.as_posix(), path_policy.ALLOW_PREFIXES)
+    return path_policy.prefix_hit(
+        path.as_posix(), path_policy.ALLOW_PREFIXES, fold=path_model_fold()
+    )
 
 
 def _workspace_rel(real: Path) -> Optional[str]:
@@ -641,10 +967,16 @@ def protected_path_error(
 
     * a path that really is inside the root: the operator chose that tree, and
       the root bypass is documented for both connectors;
-    * a path inside a scratch prefix (``/tmp``, ``/var/tmp``).
+    * a path inside a scratch prefix (``/tmp``, ``/var/tmp``, ``%TEMP%``) --
+      but *after* the component/name half is asked (B-D2's ordering, gb-01):
+      a secret named inside the scratch tree (``%TEMP%\\.ssh\\id_rsa``,
+      ``/tmp/known_hosts``) is refused, because the allowance covers
+      throwaway work, not a store parked in a temp folder. It can still
+      rescue a path the location half alone would refuse.
 
     A token is judged both as written and as its symlink-resolved target, so
-    ``~/.ssh/../../etc`` cannot read as an ordinary home path.
+    ``~/.ssh/../../etc`` cannot read as an ordinary home path -- and a name
+    planted in temp whose target *is* a store is refused by the same pair.
 
     ``base`` is the directory the command will run in -- the tool's ``cwd``
     argument -- because that is where a relative token lands: judging ``x``
@@ -658,19 +990,37 @@ def protected_path_error(
     if inside_root and (real == as_written or _within_root_or_none(real)):
         return None
 
+    def refusal_from(ask) -> Optional[str]:
+        for label, candidate in (("the path", as_written), ("its real target", real)):
+            reason = ask(candidate)
+            if reason:
+                detail = "" if candidate == as_written else f" ({label} {real})"
+                return (
+                    f"{as_written}{detail} is off-limits: it is {reason}. "
+                    "Credential stores and secret files are refused by every "
+                    "connector in this project, whatever the command is."
+                )
+        return None
+
+    # Identity first: what the path *is* outranks where it sits (B-D2).
+    refusal = refusal_from(
+        lambda candidate: path_policy.name_component_deny_reason(
+            candidate, for_write=False, fold=path_model_fold()
+        )
+    )
+    if refusal:
+        return refusal
+
     if _trusted_prefix_hit(as_written) and _trusted_prefix_hit(real):
         return None
 
-    for label, candidate in (("the path", as_written), ("its real target", real)):
-        reason = path_policy.deny_reason(candidate, for_write=False)
-        if reason:
-            detail = "" if candidate == as_written else f" ({label} {real})"
-            return (
-                f"{as_written}{detail} is off-limits: it is {reason}. "
-                "Credential stores and secret files are refused by every "
-                "connector in this project, whatever the command is."
-            )
-    return None
+    # Location second: the protected prefixes, with the scratch allowance
+    # already weighed against them.
+    return refusal_from(
+        lambda candidate: path_policy.prefix_deny_reason(
+            candidate, for_write=False, fold=path_model_fold()
+        )
+    )
 
 
 def _within_root_or_none(path: Path) -> bool:
@@ -767,6 +1117,47 @@ def describe_statement(statement: ShellStatement) -> str:
     return shlex.join(statement.argv)
 
 
+def drive_relative_spec(token: str) -> bool:
+    r"""True for a drive-relative token (`C:x`, `C:`) — the hole win-02 names.
+
+    ``path_norm.is_qualified`` calls a one-letter drive spec a hole because
+    ``ntpath.join(root, "C:x")`` lands on *another drive's* current directory:
+    the containment lock would stop it only by luck, and the in-root bypass
+    could wave it through as a relative name. The connector refuses the shape
+    by name instead (G-D6). Only the drive spec with nothing but a name after
+    the colon qualifies: a qualified drive path (``C:\dir\x``, ``C:/dir``), a
+    UNC share and a POSIX-shaped token are other roots with their own
+    verdicts, and a name like ``foo:bar`` is no drive spec at all. The test is
+    text -- ``Path.is_absolute`` would answer differently per platform.
+    """
+    expanded = os.path.expanduser(verdict_path_text(token))
+    if path_policy.root_form(expanded) != "drive" or not path_norm.is_qualified(expanded):
+        return False
+    _drive, rest = ntpath.splitdrive(expanded)
+    return rest[:1] not in ("/", "\\")
+
+
+def _resolver_refusal(base_command: str) -> Optional[str]:
+    """The unresolved-command refusal (G-D4), or None when it resolves.
+
+    Folded into the verdict at the two points a statement can pass the name
+    checks -- the in-root bypass and the end of the list -- so the oracle never
+    promises a command ``execute_command`` cannot run, and a name the lists
+    already refuse keeps *its* sentence. Only the gbash toolset resolves; the
+    POSIX mode keeps today's behaviour, where an absent command surfaces at
+    exec as it always did.
+    """
+    if not TOOLSET.resolves:
+        return None
+    if resolve_command(base_command) is not None:
+        return None
+    searched = ", ".join(GIT_SEARCH_PATHS + ["PATH"])
+    return (
+        f"Command '{base_command}' was not found in the searched toolset "
+        f"({searched}); it names no program this connector can run"
+    )
+
+
 def statement_policy_error(
     statement: ShellStatement, work_dir: Optional[Path] = None
 ) -> Optional[str]:
@@ -787,15 +1178,34 @@ def statement_policy_error(
     base = work_dir if work_dir is not None else ROOT_DIR
 
     # Privilege / power / disk / service commands are blocked everywhere.
+    # The shells answer with the design, not a generic block sentence (G-D3):
+    # `cmd /c` and `bash -c` are the same refusal, on both platforms.
     if base_command in ALWAYS_BLOCKED_COMMANDS:
+        if base_command in SHELL_COMMANDS:
+            return f"Command '{base_command}' {NO_SHELL_SENTENCE}"
         return f"Command '{base_command}' is blocked for security reasons"
 
     # Builtins would otherwise reach exec() and come back as "Command not
     # found", which reads like a policy accident rather than what it is.
-    if base_command in SHELL_BUILTIN_COMMANDS:
+    if base_command in TOOLSET.builtins:
         return f"Command '{base_command}' {BUILTIN_HINT}"
 
     path_tokens = path_argument_tokens(statement.argv)
+
+    # A drive-relative token (`C:x`) names a location on *another drive's*
+    # current directory -- the hole win-02's `path_norm.is_qualified` names,
+    # and one the in-root bypass would wave through as a relative name. Under a
+    # drive-rooted root it is refused by shape, before any other question
+    # (G-D6); under a POSIX root today's verdict stands (an ordinary filename).
+    if root_is_drive_form():
+        for token in path_tokens:
+            if drive_relative_spec(token):
+                return (
+                    f"Path {token!r} is a drive-relative spec: it names a "
+                    "location relative to a drive's current directory, which "
+                    "this connector cannot anchor. Spell it absolute "
+                    r"(C:\dir\name) or leave it workspace-relative."
+                )
 
     # Credential stores are off-limits whatever the rest of the policy decided
     # (C-6): the lists below answer "may this command run", never "is this
@@ -835,13 +1245,13 @@ def statement_policy_error(
     if ROOT_DIR is not None and path_tokens and all(
         is_within_root(t, base) for t in path_tokens
     ):
-        return None
+        return _resolver_refusal(base_command)
 
     if base_command in BLOCKED_COMMANDS:
         return f"Command '{base_command}' is blocked for security reasons"
-    if base_command not in ALLOWED_COMMANDS:
+    if base_command not in TOOLSET.allowed:
         return f"Command '{base_command}' is not in the allowed commands list"
-    return None
+    return _resolver_refusal(base_command)
 
 
 def shell_feature_error(statements: list[ShellStatement]) -> Optional[str]:
@@ -912,7 +1322,9 @@ def resolve_work_dir(
 
 
 def validate_command(
-    command: str, work_dir: Optional[Path] = None
+    command: str,
+    work_dir: Optional[Path] = None,
+    literal_backslash: Optional[bool] = None,
 ) -> tuple[bool, str]:
     """
     Validate if a command is safe to execute.
@@ -942,8 +1354,9 @@ def validate_command(
     if not command or not command.strip():
         return False, "Command cannot be empty"
 
+    literal = path_model_backslash(literal_backslash)
     try:
-        statements = parse_shell_statements(command)
+        statements = parse_shell_statements(command, literal)
     except ShellSyntaxError as exc:
         return False, f"Invalid command format: {exc}"
 
@@ -964,10 +1377,11 @@ def validate_command(
             continue
         base_command = statement.argv[0]
         if base_command in ALWAYS_BLOCKED_COMMANDS:
-            return False, (
-                f"Command '{base_command}' is blocked for security reasons"
-                + statement_position(index, total)
-            )
+            if base_command in SHELL_COMMANDS:
+                refusal = f"Command '{base_command}' {NO_SHELL_SENTENCE}"
+            else:
+                refusal = f"Command '{base_command}' is blocked for security reasons"
+            return False, refusal + statement_position(index, total)
 
     # Then the structure the connector cannot honour.
     structure_error = shell_feature_error(statements)
@@ -1042,10 +1456,23 @@ def execute_command(
     # Validation above already refused every multi-statement command, so there
     # is exactly one statement here.
     try:
-        statements = parse_shell_statements(command)
+        statements = parse_shell_statements(command, path_model_backslash())
     except ShellSyntaxError as exc:
         return f"Error: Invalid command format: {exc}"
     argv = statements[0].argv
+
+    # The gbash toolset execs the program the resolver found (G-D4): the search
+    # order that decided the verdict is the search order that finds the binary,
+    # so `find`/`sort`/`tar` are Git's GNU tools here too, never System32's
+    # look-alikes. The POSIX mode hands argv over unchanged, exactly as today.
+    if TOOLSET.resolves:
+        program = resolve_command(argv[0])
+        if program is None:
+            return (
+                f"Error: Command '{argv[0]}' was not found in the searched "
+                f"toolset ({', '.join(GIT_SEARCH_PATHS + ['PATH'])})"
+            )
+        argv = [program] + argv[1:]
 
 
     # The pipes are read in binary and decoded by hand (C-7): the default
@@ -1121,10 +1548,18 @@ def list_allowed_commands() -> str:
     Returns:
         Formatted list of allowed commands
     """
-    sorted_commands = sorted(ALLOWED_COMMANDS)
+    sorted_commands = sorted(TOOLSET.allowed)
     # Say what the list actually decides (C-2): inside the root no list is
     # consulted at all, so an agent hunting here for the "allowed spelling" of
     # a refused in-root command is wasting its turns.
+    toolset_note = (
+        f"  Toolset mode: {TOOLSET.name} -- the command sets are selected at "
+        "startup by what the connector can actually resolve\n"
+        "  (Git's POSIX toolset on Windows; the POSIX list unchanged "
+        "elsewhere). Shells are refused everywhere.\n"
+        if TOOLSET.resolves else
+        "  Toolset mode: posix -- the POSIX command list, unchanged.\n"
+    )
     policy_note = (
         f"  Inside the root the rules are the workspace's own policy file\n"
         f"  ({policy_file.workspace_policy_path(str(ROOT_DIR)) if ROOT_DIR else '(no root)'}):\n"
@@ -1221,19 +1656,44 @@ def main():
         parser.error(f"--root-dir '{args.root_dir}' is not an existing directory")
     ROOT_DIR = root.resolve()
 
+    # stdio mode carries JSON-RPC on stdout: keep the banner off it.
+    banner = sys.stderr if args.transport == "stdio" else sys.stdout
+
+    # The startup capability probe (G-D1/G-D4): found -> the gbash semantics;
+    # absent on Windows -> refuse to start naming the gap (win-07's honesty
+    # shape: stderr, non-zero exit, the hub reports the failed connection);
+    # POSIX -> today's behaviour, unchanged.
+    refusal = select_toolset()
+    if refusal is not None:
+        print(f"Console MCP Server refused to start: {refusal}", file=sys.stderr)
+        sys.exit(1)
+    if TOOLSET.name == "gbash":
+        global CASE_FOLDED
+        CASE_FOLDED = fscase.case_folded(str(ROOT_DIR))
+
     if args.debug:
         server.settings.log_level = "DEBUG"
 
-    # stdio mode carries JSON-RPC on stdout: keep the banner off it.
-    banner = sys.stderr if args.transport == "stdio" else sys.stdout
     print(f"🚀 Console MCP Server starting...", file=banner)
     if args.transport == "stdio":
         print(f"   Transport: stdio", file=banner)
     else:
         print(f"   Endpoint: http://{args.host}:{args.port}/mcp", file=banner)
     print(f"   Root directory: {ROOT_DIR}", file=banner)
-    print(f"   Allowed commands: {len(ALLOWED_COMMANDS)}", file=banner)
+    print(f"   Toolset: {TOOLSET.name}", file=banner)
+    if TOOLSET.resolves and GIT_SEARCH_PATHS:
+        print(f"   Git toolset: {GIT_SEARCH_PATHS[0]}", file=banner)
+    print(f"   Allowed commands: {len(TOOLSET.allowed)}", file=banner)
     print(f"   Blocked commands: {len(BLOCKED_COMMANDS)}", file=banner)
+    if TOOLSET.resolves:
+        # The honest log of what the list claims (B-D4's principle): which
+        # names actually resolve, and from where.
+        resolved, unresolved = toolset_split()
+        print(
+            f"   Resolved: {len(resolved)} allowed commands resolve; "
+            f"unresolved: {', '.join(unresolved) if unresolved else 'none'}",
+            file=banner,
+        )
     print(f"\n   Press Ctrl+C to stop\n", file=banner)
 
     # Run the server with the selected transport

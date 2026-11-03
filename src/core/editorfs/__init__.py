@@ -23,6 +23,10 @@ Core-only (no FastAPI, no browser concerns), a sibling of ``mcphub/`` and
 * :mod:`editorfs.policy_seed` the *other* direction on that same file: it writes
   a default one when a folder becomes the working location (boot, and the
   settings switch), never over an existing one, and reports a failure as a note
+* :mod:`editorfs.fscase` the one disk question the verdict asks: whether this
+  workspace's filesystem keeps ``Dist`` and ``dist`` apart. Cached per root and
+  forgotten by the same switch that re-roots the tree; the matcher itself stays
+  pure text and is handed the answer as an explicit ``fold``
 * :mod:`editorfs.tree` one directory level -> entry dicts (``GET /api/fs/tree``)
 * :mod:`editorfs.files` ``read_file`` (``GET /api/fs/file``), ``stat_paths``
   (the freshness probe) and ``write_file`` (the save route) — the guarded write:

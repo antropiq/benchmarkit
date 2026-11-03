@@ -115,7 +115,15 @@ def repo_info() -> Optional[Dict[str, str]]:
     lines = proc.stdout.decode("utf-8", "replace").splitlines()
     if len(lines) < 3 or lines[2].strip() != "true":
         return None  # inside a .git dir, or a bare repo: no worktree to mark
-    return {"root": lines[0].strip(), "prefix": lines[1].strip().strip("/")}
+    # ``realpath``, not git's own spelling: every absolute path this app reports
+    # is resolved (``policy.workspace_root``, the path-location payload), and git
+    # hands back the text of the environment it ran in — on Windows the drive
+    # letter can come back in either case. The compare against the workspace is
+    # case-folded by ``policy._is_within``; what reaches a payload is canonical.
+    return {
+        "root": os.path.realpath(lines[0].strip()),
+        "prefix": lines[1].strip().strip("/"),
+    }
 
 
 def _to_workspace_rel(path: str, prefix: str) -> Optional[str]:

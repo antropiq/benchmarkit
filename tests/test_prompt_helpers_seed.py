@@ -113,6 +113,11 @@ class TestTheSeedLands:
         )
         assert seeded_path(workspace).read_bytes() == before
 
+    @pytest.mark.posix_behaviour(
+        "the readable-file half is the 0o644 the seeder asks for: mode bits and "
+        "the uid that may ignore them are POSIX facts (the folder-is-one-level "
+        "half above is platform-free and still runs)"
+    )
     def test_the_file_is_0644_and_the_folder_is_one_level(self, workspace: Path):
         prompt_helpers.ensure_prompt_helpers_file(str(workspace))
         assert (workspace / prompt_helpers.POLICY_DIRNAME).is_dir()
@@ -442,6 +447,10 @@ class TestTheLift:
 
 
 class TestAFailureIsANote:
+    @pytest.mark.posix_behaviour(
+        "an unwritable root is made with ``mkdir(mode=0o500)``: without POSIX "
+        "mode bits there is no root the seeder refuses to write into"
+    )
     def test_an_unwritable_root_answers_failed_and_raises_nothing(self, tmp_path: Path):
         """``chmod 0o500`` — a read-only mount or a foreign-owned root."""
         if os.geteuid() == 0:

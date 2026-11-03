@@ -4,11 +4,45 @@
 # these (or inside one) is rejected with a validation note instead of
 # loading — a language server indexing a secret tree would put its contents
 # in the model's context window.
+#
+# THE FORMAT (target B, B-D1): one list, both platforms' path forms. A line may
+# reference an environment variable as ${NAME} (or ${NAME:-fallback}), expanded
+# at read time by lsphub.discovery.restricted_lsp_roots through the same helper
+# a declaration's values go through. So no line here spells a drive letter and
+# no line spells a home directory: the value arrives from the environment the
+# running OS states it in, exactly as mcp_connectors/path_policy derives its
+# Windows prefixes (G-D8), and a runner that does not state a name gains
+# nothing from that line.
+#
+# A line whose reference does not resolve is *dropped* and logged, not kept as
+# written — the opposite of the rule for a declaration, where an unset ${NAME}
+# stays visible so the typo is reported. Here an un-expanded line would be a
+# prefix that speaks this filesystem's path form while protecting nothing: the
+# list would read as a bound that has been honoured. A guardrail that cannot be
+# honoured is absent, not guessed.
+#
+# What is not covered, stated rather than assumed: ${ProgramFiles(x86)} cannot
+# be written here, because a reference name is [A-Za-z_][A-Za-z0-9_]* and that
+# variable's name has parentheses. The 32-bit program tree is therefore not on
+# this list; the 64-bit one (${ProgramFiles}, ${ProgramW6432}) is.
 
+# The system trees, POSIX form. Correct and load-bearing on that platform; a
+# Windows path is never inside one, and says so by shape.
 /etc
 /root
 /proc
 /sys
-/home/vgr/.ssh
-/home/vgr/.aws
-/home/vgr/.config/gcloud
+
+# The same trees, Windows form, named by the variables that state them.
+${SystemRoot}
+${ProgramFiles}
+${ProgramW6432}
+${ProgramData}
+
+# The credential stores, one line per platform's spelling of the profile home.
+${HOME}/.ssh
+${HOME}/.aws
+${HOME}/.config/gcloud
+${USERPROFILE}/.ssh
+${USERPROFILE}/.aws
+${USERPROFILE}/.config/gcloud

@@ -26,6 +26,11 @@ lsp = [
     "pygls>=2.0",       # LSP client: JSON-RPC framing + stdio session handling
     "lsprotocol>=2024.0",  # typed LSP messages (pulled in by pygls anyway)
 ]
+windows = [
+    # The Editor terminal's Windows driver (ConPTY, target C). The marker keeps
+    # a Linux resolve from picking it up at all; the suite passes without it.
+    "pywinpty>=2.0; sys_platform == 'win32'",
+]
 test = [
     "httpx",
     "pytest",

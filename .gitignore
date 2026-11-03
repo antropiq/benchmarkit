@@ -6,6 +6,7 @@ results.json
 .vscode
 .python-version
 .env
+.vite
 # e2e endpoint file: same reason as `.env` — it names a machine-local server and
 # may hold its key. The committed template is `.env.test.example`.
 .env.test

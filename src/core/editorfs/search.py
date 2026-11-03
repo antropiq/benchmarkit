@@ -72,7 +72,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 from . import constants, gitstatus, tree
 from .policy import WorkspacePathError, resolve_in_workspace
 from .policy_modes import mode_for
-from .constants import policy_shared as shared
+from .constants import path_norm, policy_shared as shared
 
 
 @dataclass
@@ -103,14 +103,19 @@ def _ignored_hit(rel: str, names: Set[str]) -> bool:
     makes one rule of both shapes, and it is what lets a *scope* that sits inside
     an ignored folder come back empty even though git only names the folder above
     it.
+
+    The cuts come from :func:`mcp_connectors.path_norm.path_parts` — the one
+    component-splitter the strict write gate, the matcher and the create's parent
+    also use (win-04), so no second notion of "component" exists to drift. The
+    ``names`` set is already ``/``-joined on every platform: ``gitstatus`` turns
+    git's own form into workspace-relative text, and that side is untouched.
     """
     if not names:
         return False
-    cut = len(rel)
-    while cut > 0:
-        if rel[:cut] in names:
+    components = path_norm.path_parts(rel)
+    for depth in range(len(components), 0, -1):
+        if "/".join(components[:depth]) in names:
             return True
-        cut = rel.rfind("/", 0, cut)
     return False
 
 

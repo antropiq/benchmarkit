@@ -1,9 +1,17 @@
 # Target B — connectors, language servers and process trees on Windows
 
-**Status**: planned, not started. **Depends on**: all of target A
+**Status**: **implemented for the language-server half** by the lspfinal lot
+(`todos/done/lspfinal-01…06`, 2026-11-03) — B-D1's LSP list, B-D5's hub-side job
+containment, B-D6's `PATHEXT` resolution, the lifted reach seam, the Windows
+declarations and the §6 Windows sweep. B-D3/B-D4 were **superseded by B1** (see
+that file), whose own half is implemented. Two things stay open on purpose, all
+on the **connector** side, and §4's rows say which: the MCP hub's own job
+assignment (a connector's grandchild can still outlive the app on Windows) and
+`console_mcp`'s `shutil.which` rule. **Depends on**: all of target A
 (`windows-support-target-A-no-crash.md`) — non-negotiable, see §1.
-**Blocks**: C (its `proctree` half). **Read first**: roadmap §3 and §5.
-**Code referenced**: `ef21ea3` + A's changes.
+**Blocks**: C (its `proctree` half — landed by the csl lot).
+**Read first**: roadmap §3 and §5.
+**Code referenced**: `ef21ea3` + the A, B1 and csl changes.
 
 ## 1. What B is for
 
@@ -140,6 +148,12 @@ what makes the checker useful.
 
 ### B-D4 — A command set that exists, and a resolver that says why when it does not
 
+**Amended by Target B1 (operator decision 2026-11-01)**: the console half of
+this decision lands as a startup toolset mode inside `console_mcp.py` (Git's
+binaries on Windows), not as an in-place edit of the POSIX lists — see
+`windows-support-target-B1-console-gbash.md` §2 G-D1. The two disjoint sets
+survive; they are selected at startup by what the connector can resolve.
+
 `ALLOWED_COMMANDS` (`console_mcp.py:153-179`) is a POSIX vocabulary: `ls`, `grep`,
 `sed`, `awk`, `find`, `basename`, `dirname`, `readlink`, `ln`, `md5sum`, `sha1sum`,
 `vmstat`, `lscpu`, `lsb_release`, `ss`, `dig`, `tracepath`, `env`. Most have no
@@ -198,6 +212,14 @@ proctree.py        the contract + the POSIX implementation (as today)
 proctree_jobs.py   (new) the Windows implementation, same two entry points,
                    selected once at import
 ```
+
+**Landed** as `src/core/proctree_jobs.py` (csl-02, in the target C lot) — the
+`ctypes` option, not `pywinpty` — and the **hub half is landed too** (lspfinal-02):
+each language-server child is assigned to its own `ProcessJob` at the spawn, on
+both platforms, and its teardown is the one shared entry point with no
+`os.name` branch. The terminal was that module's first second caller; the **MCP
+hub's** job assignment is the half still open, so a connector's own grandchildren
+remain unbounded on Windows (see §4).
 
 `kill_session_tree` has no Windows analogue and must not be faked: for a hub child,
 the job boundary *is* the session boundary, so the Windows implementation maps
@@ -268,16 +290,20 @@ than invisible.
 
 ## 4. Shape and files of the pieces
 
+Landed where the row says **done**, with the task that landed it. A row that
+says **open** is a known gap, not an oversight — §1 of this file and the
+lspfinal big picture both name it.
+
 | piece | change | what it holds |
 |---|---|---|
-| `mcp_connectors/path_policy.py` | edit | Windows prefixes; component-wise prefix matching; `lists_are_meaningful` becomes a real check instead of a warning |
-| `lsp_connectors/restricted-paths.txt` | edit | both forms via `${HOME}`/`${USERPROFILE}` plus the Windows system prefixes; drops the `/home/vgr/*` lines |
-| `mcp_connectors/console_mcp.py` | edit | the argument splitter (B-D3), the Windows command set (B-D4), `shutil.which` resolution before `Popen` |
-| `src/core/proctree_jobs.py` | **new** | the job-object implementation of the same two entry points |
-| `src/core/proctree.py` | edit | selects the implementation at import; contract docstring rewritten to state the *guarantee*, not `killpg` |
-| `src/core/lsphub/manager.py` | edit | drops the `os.name == "posix"` branch at `:654` in favour of the shared call; job assignment at spawn |
-| `src/core/mcphub/manager.py` | edit | job assignment for a `local` child; `:313-315`'s comment replaced by the real teardown |
-| `src/core/lsphub/discovery.py` | edit | `restricted_lsp_roots` compares component-wise; A-D4's refusal lifted |
+| `mcp_connectors/path_policy.py` | done (B1, G-D8) | Windows prefixes from the environment; component-wise prefix matching; `lists_are_meaningful` a real check instead of a warning |
+| `lsp_connectors/restricted-paths.txt` | done (lspfinal-01) | both forms via `${HOME}`/`${USERPROFILE}` plus the Windows system prefixes, expanded at read time; the `/home/<user>/*` lines are gone |
+| `mcp_connectors/console_mcp.py` | partly — splitter done as B1 (G-D2/G-D3) and the command set as B1's gbash toolset (G-D1); **open**: its own `shutil.which` resolution before `Popen` |
+| `src/core/proctree_jobs.py` | done (csl-02) | the job-object implementation of the same two entry points |
+| `src/core/proctree.py` | done (csl-02) | selects the implementation at import; contract docstring states the *guarantee*, not `killpg` |
+| `src/core/lsphub/manager.py` | done (lspfinal-02/03) | one `ProcessJob` per child assigned at the spawn; the teardown is the shared call with no `os.name` branch; the declared command resolves through `shutil.which` before anything is spawned |
+| `src/core/mcphub/manager.py` | **open** | job assignment for a `local` child, and the teardown comment beside it — the connector half of B-D5 |
+| `src/core/lsphub/discovery.py` | done (lspfinal-01/04) | `restricted_lsp_roots` compares component-wise and expands `${…}`; the reach seam asks the guardrail half only |
 | `src/config.py`, `.env.example` | only if needed | if a new prefix needs a managed key, check it against the `SETTING_KEYS`/`_render_env`/template rule *and* A-D6's reserved-name rule before adding one |
 
 ## 5. Out of scope for B

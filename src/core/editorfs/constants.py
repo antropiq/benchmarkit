@@ -18,14 +18,22 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 # list: that is what ``.nojae/read-write-policy.json`` and ``builtin_policy`` are.
 # ``policy_glob`` (pol-02) is the matcher both policy levels are evaluated with,
 # and level A (pol-03) is written in that pattern language, so it is mirrored
-# here beside the vocabulary for the same reason: patchability.
+# here beside the vocabulary for the same reason: patchability. ``path_norm``
+# (win-02) answers what a path *text* is — the canonical ``/``-joined form and
+# whether that text is qualified at all — and it is the one place that knows the
+# difference, so the Editor's inbound lock and the two stdio connectors cannot
+# disagree about what a path *is*. It is mirrored here for that same reason.
 try:
-    from mcp_connectors import policy_glob, policy_shared
+    from mcp_connectors import path_norm, policy_glob, policy_shared
 except ImportError:  # pragma: no cover - depends on how the app is started
     root = str(PROJECT_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
-    from mcp_connectors import policy_glob, policy_shared  # type: ignore[no-redef]
+    from mcp_connectors import (  # type: ignore[no-redef]
+        path_norm,
+        policy_glob,
+        policy_shared,
+    )
 
 # Entries one directory listing may return. A huge checkout stays responsive
 # because the tree is one level per request, and the cap bounds even that one

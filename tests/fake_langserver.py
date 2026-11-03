@@ -15,7 +15,9 @@ tsserver relay is tested.
 
 ``--child <pidfile>`` spawns a grandchild that *ignores SIGTERM*, the way
 tsserver outlives the wrapper that spawned it: the hub's teardown has to
-reach it through the process group and escalate to SIGKILL.
+reach it — through the process group and on to SIGKILL on POSIX, through the
+Job Object it was born inside on Windows — and a teardown that stops at the
+wrapper provably leaves it running.
 
 ``--slow-init <seconds>`` delays the ``initialize`` answer. The hub records the
 session before it awaits that answer, so this is how a test holds a start
