@@ -247,13 +247,16 @@ class TestPrefixHitComponentWise:
     def test_deny_reason_threads_the_fold_to_the_prefix_half(self, monkeypatch):
         """The fold reaches the prefix half, and the entry is quoted as stored.
 
-        The write list is patched with the Windows form a Windows box holds
-        there (B-D1); on this runner no environment states a Windows tree, so
-        the list in force is POSIX-only and silent about a drive path.
+        The write list in force is the POSIX defaults plus one Windows entry,
+        stated here instead of grown from the environment: on a Windows box
+        ``SystemRoot`` already names that tree in its own spelling, and the
+        first match would then be quoted rather than the entry under test.
         """
         windows_entry = "C:/Windows"
         monkeypatch.setattr(
-            path_policy, "DENY_PREFIXES", path_policy.DENY_PREFIXES + (windows_entry,)
+            path_policy,
+            "DENY_PREFIXES",
+            path_policy.DENY_POSIX_PREFIXES + (windows_entry,),
         )
         # The system root is write-denied but readable, folded or not.
         for read_fold in (True, False):

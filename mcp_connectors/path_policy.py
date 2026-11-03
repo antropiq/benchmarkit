@@ -148,12 +148,20 @@ ALLOW_PREFIXES: tuple[str, ...] = _dedupe(
 )
 
 # System prefixes that must never be written to.
+# The POSIX defaults are named apart from the environment-grown Windows half
+# (B-D1/G-D8) so a caller can ask for one without the other — a test that
+# patches its own Windows entry must not have this runner's ``SystemRoot``
+# answer first, and production honours both.
+_DENY_PREFIXES_DEFAULT = (
+    "/etc,/usr,/bin,/sbin,/lib,/lib64,/boot,/sys,/proc,/dev,/run"
+)
+
+DENY_POSIX_PREFIXES: tuple[str, ...] = _dedupe(
+    env_list("BENCHMARKIT_DENY_PREFIXES", "FEDIT_DENY_PREFIXES", _DENY_PREFIXES_DEFAULT)
+)
+
 DENY_PREFIXES: tuple[str, ...] = _dedupe(
-    env_list(
-        "BENCHMARKIT_DENY_PREFIXES", "FEDIT_DENY_PREFIXES",
-        "/etc,/usr,/bin,/sbin,/lib,/lib64,/boot,/sys,/proc,/dev,/run",
-    )
-    + system_deny_prefix_candidates()
+    list(DENY_POSIX_PREFIXES) + system_deny_prefix_candidates()
 )
 
 # System prefixes that are readable but never writable -- ordinary files here
