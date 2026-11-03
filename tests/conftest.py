@@ -417,6 +417,32 @@ def _no_legacy_tool_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MCP_ENABLED", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _pane_shell_is_the_apps_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the terminal pane's shell to the app's own default for every test.
+
+    On POSIX the pane runs ``$SHELL`` when it names an executable program
+    (:mod:`src.core.termhub.shells`), so the suite would otherwise drive each
+    test shell in whatever the developer has as a login shell — and a configured
+    interactive shell loads that developer's own startup files. A zsh with a
+    prompt theme was measured to swallow a keystroke of whatever it types first
+    (here, the redraw ate the ``s`` of ``sleep`` in the command a tree test
+    types), so a session assertion can fail on one machine and pass on another.
+    Same class as the cap leak above: the environment, not the code, decides the
+    outcome.
+
+    Clearing the key asks the selection seam its documented POSIX question,
+    whose answer is the fallback shell — no test computes a path. It is *not* a
+    skip condition: every platform's own answer still runs (Windows names Git
+    Bash and ignores this key entirely), and a runner that offers no fallback
+    keeps skipping with the seam's own sentence through ``shell_probe``.
+    """
+    monkeypatch.delenv(termhub_shells.constants.SHELL_KEY, raising=False)
+    # The probe caches its verdict for the session, and the markers consult it;
+    # a verdict taken from the ambient shell is the machine's, not this test's.
+    shell_probe.clear_verdict()
+
+
 @pytest.fixture
 def job() -> Iterator[RunJob]:
     """Provide a fresh, empty benchmark run job."""

@@ -75,7 +75,14 @@ def _env_absolute(
     """
     source = os.environ if env is None else env
     value = source.get(name, "").strip().strip('"')
-    if not value or not os.path.isabs(value):
+    if not value:
+        return None
+    # Absoluteness is a *text* question, asked with ``ntpath`` (roadmap §9
+    # rule 2): ``os.path.isabs`` on Linux cannot see ``C:\Windows``, so the
+    # Windows guardrails would silently never join the lists on the runner that
+    # writes their tests. POSIX values answer the same either way, and
+    # ``prefix_hit`` folds separators on both sides of the compare.
+    if not ntpath.isabs(value):
         return None
     return value
 
@@ -123,9 +130,13 @@ def system_read_deny_prefix_candidates(
     env: Optional[Mapping[str, str]] = None,
 ) -> list[str]:
     """The Windows analogue of ``/etc/shadow``: the hive directory the system
-    root keeps — readable material is fine, this directory is not."""
+    root keeps — readable material is fine, this directory is not.
+
+    Joined with the separator the value itself uses, so the entry keeps the
+    spelling the OS stated; :func:`prefix_hit` folds separators on both sides.
+    """
     root = _env_absolute("SystemRoot", env)
-    return [os.path.join(root, "System32", "config")] if root else []
+    return [ntpath.join(root, "System32", "config")] if root else []
 
 
 # Scratch space is where an agent puts throwaway work, so a path that stays

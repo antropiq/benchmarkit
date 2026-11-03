@@ -8,7 +8,6 @@ the fold is passed as an argument, so both outcomes are assertable on the Linux
 runner (roadmap §9 rule 2).
 """
 
-import os
 from pathlib import Path
 from typing import Tuple
 
@@ -245,21 +244,35 @@ class TestPrefixHitComponentWise:
         assert path_policy.prefix_hit("//fileserver/share/x", unc) == "//fileserver/share"
         assert path_policy.prefix_hit("//fileserver/other/x", unc) is None
 
-    def test_deny_reason_threads_the_fold_to_the_prefix_half(self):
-        folded = path_policy.prefix_deny_reason(
-            Path("C:/WINDOWS/System32/cmd.exe"), for_write=False, fold=True
+    def test_deny_reason_threads_the_fold_to_the_prefix_half(self, monkeypatch):
+        """The fold reaches the prefix half, and the entry is quoted as stored.
+
+        The write list is patched with the Windows form a Windows box holds
+        there (B-D1); on this runner no environment states a Windows tree, so
+        the list in force is POSIX-only and silent about a drive path.
+        """
+        windows_entry = "C:/Windows"
+        monkeypatch.setattr(
+            path_policy, "DENY_PREFIXES", path_policy.DENY_PREFIXES + (windows_entry,)
         )
-        exact = path_policy.prefix_deny_reason(
-            Path("C:/WINDOWS/System32/cmd.exe"), for_write=False
-        )
-        assert folded is None  # C:/Windows is write-denied but readable
-        assert exact is None
+        # The system root is write-denied but readable, folded or not.
+        for read_fold in (True, False):
+            assert (
+                path_policy.prefix_deny_reason(
+                    Path("C:/WINDOWS/System32/cmd.exe"),
+                    for_write=False,
+                    fold=read_fold,
+                )
+                is None
+            )
         write_folded = path_policy.prefix_deny_reason(
             Path("c:/windows/x"), for_write=True, fold=True
         )
-        assert write_folded is not None and "WINDOWS" in write_folded
-        # On an exact volume the differently spelled tree is some other folder
-        # and the write is not refused by that prefix — the Linux answer.
+        # The sentence quotes the prefix **as the list spells it**, never the
+        # spelling the path arrived with — the fold compares only (A-D3).
+        assert write_folded == f"under the protected prefix {windows_entry!r}"
+        # On an exact volume the differently spelled tree is some other folder,
+        # and the write is not refused by that prefix.
         assert path_policy.prefix_deny_reason(
             Path("c:/windows/x"), for_write=True
         ) is None
@@ -317,7 +330,9 @@ class TestWindowsValuesArriveFromTheEnvironment:
     def test_the_hive_directory_joins_the_read_list_from_the_system_root(self):
         env = {"SystemRoot": r"C:\Windows"}
         read = path_policy.system_read_deny_prefix_candidates(env)
-        assert read == [os.path.join(r"C:\Windows", "System32", "config")]
+        # Separator as the OS states it, kept verbatim: ``prefix_hit`` folds
+        # backslashes itself, so the entry speaks the drive form either way.
+        assert read == [r"C:\Windows\System32\config"]
         assert path_policy.system_read_deny_prefix_candidates({}) == []
 
     def test_the_module_lists_speak_this_runners_own_working_location_form(self):
