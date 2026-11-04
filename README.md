@@ -1,140 +1,204 @@
 # Benchmark'it
 
-A self-hosted web app to benchmark LLM inference endpoints — llama.cpp or any
-OpenAI-compatible server — with natural language questions everybody
-understands 😆.
+**Benchmark'it started as a tool for measuring LLM endpoints, and it has grown
+into the workspace those measurements were only ever meant to feed: a place
+where a model writes your code, in front of you.**
 
-It streams each question through the model(s) you configure, measures how fast
-and how well they answer, and verifies every response against the expected
-answer using a secondary **verifier LLM**. Everything updates live in the
-browser over Server-Sent Events. A companion **Chat** tab lets you talk to the
-same configured model interactively.
+It is a self-hosted web app — FastAPI behind, Vue 3 in front, one browser tab
+in between — that puts a coding agent to work on a real checkout. The WorkBench
+tab drives the conversation: a model of your choice, the file tools, the
+language servers and the shell commands it is allowed to use, and a workspace
+whose read/write policy you set. The Editor tab shows the same tree the agent
+changes, with a Monaco pane and a real terminal, so you watch each edit land and
+commit it when you agree. The Benchmark tab, where the project began, is still
+there and still useful — it is now one tool among the others rather than the
+reason for the app.
 
-## Features
+Everything streams: answers, reasoning, tool calls and timings reach the browser
+over Server-Sent Events, and nothing about your code or your endpoint leaves the
+machine.
 
-- **Benchmark runs** — every question of a set is streamed to each configured
-  model; answers, scores, and timings appear as they arrive, with a live
-  chronometer and metric cards (score, generation token/s).
-- **LLM-based verification** — an optional second model judges each answer
-  against the expected one, so grading tolerates wording differences.
-- **Question sets** — drop JSON files in `resources/` and pick the active set
-  from the UI: `legacy` (30 hard questions from
-  [matchingpennies.com](https://matchingpennies.com/hard_questions_for_llms/)),
-  `78qcm` / `122qcm` (multi-domain multiple choice), and `30hardmath`.
-- **Honest timing** — time-to-first-token, generation duration, and token/s
-  are measured app-side from chunk arrivals (`time.monotonic()`), with a model
-  warm-up request so model loading never pollutes the numbers.
-- **Chat tab** — interactive streaming chat with the benchmark-configured
-  model, including a "thinking" indicator while the model emits reasoning.
-- **Editor tab** — browse the working location as a file tree and edit it in a
-  Monaco pane: save, create, rename and delete files and folders, with git
-  status badges and an integrated terminal.
-- **Deleted files are not lost** — the Editor never removes a file outright; it
-  moves it into a dated batch under `.nojae/trash/` of the **current** working
-  location (kept 30 days), so the batch is a `mv` away from the tree it came
-  from; each save keeps the previous bytes in `logs/editor_backups/`. That
-  folder is reserved — hidden from the tree, the read and the write routes — so
-  you restore it from a terminal. One wrinkle to know: `.nojae/` is only in
-  benchmarkit's own `.gitignore`, so in a *foreign* project's `git status` it
-  shows as untracked; the app never edits a repository it was pointed at, so it
-  will not add it to your `.gitignore` for you.
-- **A group of files moves in one gesture** — mark rows with `Ctrl`+click,
-  right-click one and answer `Move to…` with a destination folder: the files
-  move whole into a folder that already exists, in one request, so either the
-  set has moved or nothing has, and a file that is open keeps its tab and its
-  unsaved edits at the new path. The WorkBench's batch mode works through a
-  `todos/` folder of task files, so moving one **into** `todos/` re-arms it as
-  a pending task on the loop's next listing and moving one **out** retires it —
-  the loop reads the filesystem, not a flag, so the gesture is not a no-op. No
-  guard is added for it: the app has no way to know a `.md` is a task, and
-  `todos/` is an ordinary folder to every other surface.
-- **Optional MCP tools in Chat** — declare MCP connectors (remote HTTP or
-  local stdio) in `mcp_connectors/externals.json` and tick them in Settings so
-  the chat model can browse the web, read docs or run whitelisted shell
-  commands; tool calls appear as badges in the transcript.
-- **Rich rendering** — answers render as Markdown with KaTeX math,
-  syntax-highlighted code blocks, and Mermaid diagrams.
-- **Save / load a WorkBench session** — park a conversation on disk as a plain
-  JSON file (`{format, version, messages}` in OpenAI user/assistant form) and
-  re-open it later to continue where it stopped; each assistant turn may carry
-  its streamed `reasoning` for the tool panel, and attached images travel with
-  their turn as base64 `image_url` parts, so a loaded conversation still shows
-  (and re-sends) them; tool calls are not part of the file.
-- **In-app settings** — a dialog to edit endpoint, sampling parameters,
-  question set, and verifier; changes are persisted to `.env`.
-- **Dark / light theme**, self-hosted fonts, Pico.css.
-- **Stop anytime** — cancellation aborts between questions and mid-stream.
+---
 
-## Running the app
+## 1. Getting started
 
-Requirements: Python ≥ 3.10, Node.js (to build the frontend).
+You need **Python ≥ 3.10** for the backend and **Node.js** for the frontend. The
+app is desktop-browser only.
 
-**On Windows 10/11** the Benchmark tab, WorkBench chat, the verifier and the
-Editor's file surface (tree, read, search, git status, edit, create, rename,
-delete) work exactly as they do on Linux. The `console` connector runs over Git
-for Windows' POSIX toolset rather than a cmd vocabulary, and the Editor's
-terminal runs a real shell — **Git Bash** — once its optional driver is
-installed ([The Editor terminal](#the-editor-terminal-posix-and-windows)).
-Language servers start there too
-([Language servers](#language-servers-chat-tab-optional) gives their Windows
-declaration form). What cannot work on a platform says so in words instead of
-degrading quietly: the terminal refuses when its driver or a Git install is
-missing, and a language server refuses when its declared command resolves to
-nothing (both sections name their refusals). Nothing in the app auto-selects
-`cmd.exe` or PowerShell.
+### Git Bash on Windows 🪟
 
-### 1. Install Python dependencies
+On Windows, **Git for Windows is not optional**. It is what gives the two most
+useful parts of the app a vocabulary there:
 
-Either way works — pick one virtualenv manager, not both at once:
+- The `console` MCP connector runs its whitelisted commands through Git's POSIX
+  toolset (`ls.exe`, `grep.exe`, `find.exe`, `mv.exe` in `<Git>\usr\bin`) rather
+  than a `cmd` vocabulary, so the same command list behaves the same on both
+  systems.
+- The Editor's terminal opens **Git Bash** as its shell, over a pseudo-console.
+  It never falls back to `cmd.exe` or PowerShell: one working location gets one
+  tool vocabulary.
 
-**Using pyenv** (this project ships a `.python-version` pointing to a
-`benchmarkit` virtualenv, which auto-activates when you `cd` into the project):
+The app looks for an installation in the usual places — `git` on `PATH` first,
+then `C:\Program Files\Git`, `%LOCALAPPDATA%\Programs\Git`, Scoop and Chocolatey.
+An installation is only accepted when its `usr\bin\ls.exe` is really there, so a
+lone `git.exe` cannot be mistaken for one. If yours sits somewhere else, point
+`BENCHMARKIT_GIT_BASH_DIR` at its install root. When nothing answers, the
+terminal and the connector refuse **in words**, naming every folder they
+searched — they never half-work.
+
+### Setup on Windows
+
+```powershell
+# 1. Backend — from the project root
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[mcp,lsp,windows]"
+```
+
+`pip install -e .` alone gives you the benchmark, the chat and the Editor; the
+extras are what add the rest, and none of them is mandatory:
+
+| Extra | What it adds |
+|---|---|
+| `mcp` | The MCP SDK and Playwright — the WorkBench connectors. |
+| `lsp` | The LSP client — the language-server tools. |
+| `windows` | The Editor terminal's pseudo-console driver. Never pulled in on Linux. |
+| `test` | `pytest` and its plugins. |
+
+```powershell
+# 2. Frontend
+cd web
+npm install
+npm run build
+cd ..
+```
+
+Node is easiest to manage with [Volta](https://volta.sh), which pins the runtime
+per project: `volta install node@22` in the project root, then `npm install -g
+volta` once per machine. Volta keeps its shims in `%LOCALAPPDATA%\Volta\bin`, and
+those shims shell out to `volta.exe` in `%ProgramFiles%\Volta` — remember both
+folders, they come back when you declare a language server.
+
+### Run on Windows
+
+```powershell
+.venv\Scripts\Activate.ps1
+benchmarkit
+```
+
+Then open <http://127.0.0.1:8000>. The Editor's terminal needs Git Bash to be
+installed (and the `windows` extra); without either, it shows you what is missing
+instead of an empty pane.
+
+### Setup on Linux
+
+Either environment works — pick one virtualenv manager, not both at once.
+
+**Plain venv:**
 
 ```bash
 cd /path/to/benchmarkit
-pip install -e .
-```
-
-**Using plain venv:**
-
-```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[mcp,lsp]"
 ```
 
-> If you use the venv approach while pyenv is installed, make sure only **one**
-> environment is active — pyenv shims otherwise shadow `.venv/bin`.
-
-#### MCP connectors (Chat tab, optional)
-
-Connectors are declared — never coded — in
-`mcp_connectors/externals.json`, keyed by id: a `remote` entry (Streamable
-HTTP `url` plus optional `headers`) or a `local` entry (a stdio `command`
-argv, e.g. launched through `npx`). Install the optional `mcp` extra, and the
-Chromium binaries when a connector drives a browser:
+**pyenv:** this project ships a `.python-version` naming a `benchmarkit`
+virtualenv, which activates when you `cd` into the project. Create that
+environment once (`pyenv virtualenv 3.12 benchmarkit`, or let `pyenv install` do
+it), then:
 
 ```bash
-pip install -e ".[mcp]"          # adds the mcp SDK + playwright
-playwright install chromium      # Linux: playwright install --with-deps chromium
+pip install -e ".[mcp,lsp]"
 ```
 
-Enabled connectors are connected when the app starts and closed when it
-quits. Nothing is exposed to the model until its `enable` flag is on — the
-single source of truth, edited from **Settings → MCP** (which writes the flag
-back to the file and starts/stops the connector right away) or by hand;
-benchmark runs never use tools. The file may hold API keys, so it is
-gitignored and its `headers`/`env` are never returned by the API. The **Max
-tool iterations** field (`MAX_TOOL_ITERATION`, default 25) caps the
-tool-calling loop of a single chat reply and is shared by all connectors and
-language servers. Without the extra installed everything keeps working — the
-MCP settings panel just shows an install hint.
+> If you use a venv while pyenv is installed, make sure only **one** environment
+> is active — pyenv shims otherwise shadow `.venv/bin`.
+
+Then build the frontend. With **Volta**, `volta install node@22` in the project
+root is enough and no `PATH` editing is involved; Volta installs under
+`~/.volta/bin`, which your shell profile already puts on `PATH`:
+
+```bash
+cd web
+npm install
+npm run build
+cd ..
+```
+
+Finally, when a connector drives a browser, install its runtime once:
+
+```bash
+playwright install --with-deps chromium
+```
+
+### Run on Linux
+
+```bash
+source .venv/bin/activate     # or: pyenv activate benchmarkit
+benchmarkit
+```
+
+Then open <http://127.0.0.1:8000>. The terminal pane runs `$SHELL` (falling back
+to `/bin/sh`) over a kernel PTY.
+
+### Development (hot reload)
+
+Two processes, on either system:
+
+```bash
+uvicorn src.api.server:app --reload      # the API on :8000
+cd web && npm run dev                    # Vite on :5173, proxying /api to :8000
+```
+
+### Tests
+
+```bash
+pip install -e ".[test]"
+pytest                # backend
+cd web && npm test    # frontend
+```
+
+The suite is hermetic: it needs no reachable model, and `BENCHMARKIT_DISABLE_MCP`
+/ `BENCHMARKIT_DISABLE_LSP` switch the two hubs off entirely.
+
+---
+
+## 2. Configuring the app
+
+Three files hold everything, and **all three are hot**: a change is picked up by
+**Settings → Refresh MCP** / **Refresh LSP**, or by the toggles in the Settings
+dialog, without an app restart.
+
+| File | Declares |
+|---|---|
+| `.env` (from `.env.example`) | Endpoint, model, sampling, verifier, vision flag. |
+| `mcp_connectors/externals.json` | The MCP connectors the agent may call. |
+| `lsp_connectors/lsp_servers.json` (from `lsp_servers.example.json`) | The language servers. |
+
+The two declaration files may carry API keys, so they are gitignored and their
+secrets are never returned by the API.
+
+### The MCP setup file — `mcp_connectors/externals.json`
+
+One entry per connector id, each with an `enable` flag that is the only switch
+that counts. Two kinds:
+
+- **`remote`** — a Streamable HTTP endpoint (`url` plus optional `headers`);
+- **`local`** — a stdio child the hub starts and owns (`command` as an argv list,
+  e.g. launched through `npx`).
 
 Any `url`, `command`, `headers` or `env` value may reference an environment
-variable as `${NAME}` (or `${NAME:-fallback}` when the variable is optional) —
-expanded when the file is read, so a per-machine path or an API key can live
-in the environment instead of in the file, and one declaration works on every
-checkout:
+variable as `${NAME}`, or `${NAME:-fallback}` when the variable is optional. The
+reference is expanded when the file is read, using the environment the connector
+runs with — the app's own, `.env` included — so one declaration works on every
+machine and a secret can stay out of the file. Only the braced `${…}` form is
+special, an
+expanded value is never re-split into arguments, and an unset name is left
+written as-is and reported as a validation note in **Settings → MCP** rather
+than blanked.
+
+**On Linux:**
 
 ```json
 {
@@ -143,81 +207,129 @@ checkout:
     "enable": true,
     "url": "${MCP_BASE_URL:-https://mcp.context7.com/mcp}",
     "headers": { "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}" }
+  },
+  "chrome-devtools": {
+    "type": "local",
+    "enable": true,
+    "command": ["npx", "-y", "chrome-devtools-mcp@latest",
+                "--executablePath=/usr/bin/chromium", "--headless"]
+  },
+  "console": {
+    "type": "local",
+    "enable": true,
+    "description": "Console command",
+    "command": ["/home/me/.pyenv/versions/benchmarkit/bin/python",
+                "${BENCHMARKIT_PATH_LOCATION}/mcp_connectors/console_mcp.py",
+                "--root-dir", "${BENCHMARKIT_PATH_LOCATION}", "--transport", "stdio"]
+  },
+  "fedit": {
+    "type": "local",
+    "enable": true,
+    "description": "File editor",
+    "command": ["/home/me/.pyenv/versions/benchmarkit/bin/python",
+                "${BENCHMARKIT_PATH_LOCATION}/mcp_connectors/fedit_mcp.py",
+                "--root-dir", "${BENCHMARKIT_PATH_LOCATION}", "--transport", "stdio"]
   }
 }
 ```
 
-The environment is the process one, so anything exported before launch and
-everything in `.env` (loaded at startup) is available — `${HOME}`,
-`${CONTEXT7_API_KEY}`, … Only the braced `${…}` form is special, so a bare `$`
-stays literal and npm version pins (`pkg@$latest`) are untouched. An expansion
-never re-splits an argument, so a value containing spaces stays one argv
-element. An unset name is left written as-is and reported in the connector's
-validation note (visible in **Settings → MCP**) rather than silently blanked.
+**On Windows**, the same entries with the interpreter written the way a Windows
+venv lays out — and nothing else about the file changes:
 
-#### The Editor terminal (POSIX and Windows)
-
-The Editor tab's terminal pane opens one interactive shell per browser
-connection, in the working location. On POSIX that is `$SHELL` (falling back to
-`/bin/sh`), started over a kernel PTY. On Windows it is **Git Bash** — the same
-Git for Windows install the `console` connector runs its tools from — started
-over a pseudo-console, and that driver is an optional extra:
-
-```bash
-pip install -e ".[windows]"   # the pseudo-console driver (pywinpty); never installed on Linux
+```json
+{
+  "console": {
+    "type": "local",
+    "enable": true,
+    "description": "Console command",
+    "command": ["${BENCHMARKIT_PATH_LOCATION}\\.venv\\Scripts\\python.exe",
+                "${BENCHMARKIT_PATH_LOCATION}\\mcp_connectors\\console_mcp.py",
+                "--root-dir", "${BENCHMARKIT_PATH_LOCATION}", "--transport", "stdio"]
+  },
+  "fedit": {
+    "type": "local",
+    "enable": true,
+    "description": "File editor",
+    "command": ["${BENCHMARKIT_PATH_LOCATION}\\.venv\\Scripts\\python.exe",
+                "${BENCHMARKIT_PATH_LOCATION}\\mcp_connectors\\fedit_mcp.py",
+                "--root-dir", "${BENCHMARKIT_PATH_LOCATION}", "--transport", "stdio"]
+  }
+}
 ```
 
-With the extra missing, the pane refuses rather than half-working: it shows one
-error line naming the driver, and the connection closes with 4501. With no Git
-install to run, it refuses the same way, naming every place it looked — install
-Git for Windows, or point `BENCHMARKIT_GIT_BASH_DIR` at its install root.
+The `npx` lines work as they do on Linux — the connector process inherits your
+`PATH`, where npm put `npx` — so the only real difference is which Python you
+name. Two rules of thumb anyway: the brace closes right after the variable name
+(`${BENCHMARKIT_PATH_LOCATION}/web`, never `${BENCHMARKIT_PATH_LOCATION/web}`),
+and a backslash inside a JSON string is written twice.
 
-Two process-environment variables steer the Windows pane. Like
-`BENCHMARKIT_PATH_LOCATION` they are deliberately **not** keys of `.env`, so a
-settings save can neither erase them nor resurrect a stale value:
+`console` and `fedit` are the two connectors shipped with the app — the shell
+command surface and the file-edit surface (read, preview, apply, revert). Batch
+mode needs both. They take `--root-dir`, so their reach is bounded by their own
+deny-list, and `console` execs one command with no shell: no pipes, no
+redirections, no command chains. `chrome-devtools` and `context7` are third-party
+and entirely optional.
 
-- `TERMINAL_SHELL` — an explicit shell program instead of Git Bash, honoured
-  only when it is a drive-qualified path to an existing executable. A
-  POSIX-shaped value (`/bin/bash`, or the `/c/…` mount form a Git Bash window
-  puts in the environment) is refused by name rather than spawned, because the
-  refusal is what keeps the one knob honest.
-- `BENCHMARKIT_GIT_BASH_DIR` — the Git for Windows install root, for a checkout
-  where `git` is not on `PATH` and none of the usual install locations holds an
-  install.
+### The LSP setup file — `lsp_connectors/lsp_servers.json`
 
-`cmd.exe`/`%COMSPEC%` is never consulted and PowerShell is never auto-selected:
-one working location gets one tool vocabulary, which is the one Git for Windows
-already supplies to the `console` connector. That boundary cuts the other way
-too — the pane is a **human** surface for the browser only. A shell is never an
-MCP, LSP or chat tool, and the `console` connector still refuses a command named
-`bash`, `sh`, `cmd`, `powershell` or `pwsh` with its no-shell sentence: it runs
-Git's tools, never an interpreter.
+Copy the committed example and adapt it. One entry per server id: a stdio
+`command`, the `workspaceRoot` it indexes, the file `extensions` it owns and the
+`tools` to expose. An enabled server adds `lsp_<id>_<action>` tools —
+diagnostics, hover, definition, references, symbols, completion, formatting — to
+the WorkBench tab. `${NAME}` expansion works here exactly as it does for MCP.
 
-#### Language servers (Chat tab, optional)
-
-Language servers are declared — never coded — in
-`lsp_connectors/lsp_servers.json` (copy `lsp_servers.example.json` to start):
-one entry per server id, with a stdio `command` argv, a `workspaceRoot`, the
-file `extensions` it owns and the `tools` to expose. Install the optional
-`lsp` extra:
+Install the servers themselves with npm, the same line on either system (the
+`lsp` extra only brings the Python client side):
 
 ```bash
-pip install -e ".[lsp]"        # adds pygls + lsprotocol
+npm install -g pyright typescript typescript-language-server @vue/language-server
 ```
 
-An activated server adds `lsp_<id>_<action>` tools (diagnostics, hover,
-definition, references, symbols, completion, formatting) to the WorkBench tab
-only — a benchmark run never uses them. As with MCP, two gates must agree: the
-switch in **Settings → LSP** and the entry's `enable` flag; toggling either
-starts or stops the server with no app restart. An entry marked `"lazy": true`
-spawns on its first tool call instead of with the app (tsserver's cold start is
-multi-second and eats RAM), so a settings panel listing it as not running is not
-a failure — the state is `stopped`, and the first call brings it up. The file may
-carry secrets in its per-entry `env`, so it is gitignored and never returned by
-the API.
+**On Linux** — the form of the committed example, where `${VOLTA_BIN:-/usr/local/bin}`
+covers both a Volta-managed install and a plain global one:
 
-A Windows declaration looks like this — the same entries as the example file, in
-the form verified to start on Windows 11:
+```json
+{
+  "pyright": {
+    "enable": true,
+    "label": "Pyright (Python)",
+    "extensions": [".py", ".pyi"],
+    "command": ["${VOLTA_BIN:-/usr/local/bin}/pyright-langserver", "--stdio"],
+    "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}",
+    "env": { "PATH": "${VOLTA_BIN:-/usr/local/bin}:/usr/local/bin:/usr/bin:/bin" },
+    "initializationOptions": { "typeCheckingMode": "standard" },
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols"],
+    "idleShutdownSeconds": 300
+  },
+  "typescript": {
+    "enable": true,
+    "label": "TypeScript",
+    "extensions": [".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"],
+    "command": ["typescript-language-server", "--stdio"],
+    "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}/web",
+    "lazy": true,
+    "initializationOptions": { "tsserver": { "path": "/usr/local/lib/node_modules/typescript" } },
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols",
+              "completion", "signature_help", "formatting"],
+    "idleShutdownSeconds": 300
+  },
+  "vue": {
+    "enable": true,
+    "label": "Vue",
+    "extensions": [".vue"],
+    "command": ["vue-language-server", "--stdio",
+                "--tsdk=${BENCHMARKIT_PATH_LOCATION}/web/node_modules/typescript/lib"],
+    "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}/web",
+    "lazy": true,
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols",
+              "completion", "formatting"],
+    "idleShutdownSeconds": 300
+  }
+}
+```
+
+**On Windows** the same three entries take a different shape, and the two
+differences are exactly why a Linux declaration copied verbatim fails there:
 
 ```json
 {
@@ -226,276 +338,188 @@ the form verified to start on Windows 11:
     "extensions": [".py", ".pyi"],
     "command": ["pyright-langserver", "--stdio"],
     "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}",
-    "env": { "PATH": "${LOCALAPPDATA}\\Volta\\bin;${ProgramFiles}\\Volta" }
+    "env": { "PATH": "${LOCALAPPDATA}\\Volta\\bin;${ProgramFiles}\\Volta" },
+    "initializationOptions": { "typeCheckingMode": "standard" },
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols"],
+    "idleShutdownSeconds": 300
+  },
+  "typescript": {
+    "enable": true,
+    "extensions": [".ts", ".tsx", ".js", ".mjs", ".cjs", ".json"],
+    "command": ["typescript-language-server", "--stdio"],
+    "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}/web",
+    "lazy": true,
+    "env": { "PATH": "${LOCALAPPDATA}\\Volta\\bin;${ProgramFiles}\\Volta" },
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols",
+              "completion", "signature_help", "formatting"],
+    "idleShutdownSeconds": 300
+  },
+  "vue": {
+    "enable": true,
+    "extensions": [".vue"],
+    "command": ["vue-language-server", "--stdio",
+                "--tsdk=${BENCHMARKIT_PATH_LOCATION}/web/node_modules/typescript/lib"],
+    "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}/web",
+    "lazy": true,
+    "env": { "PATH": "${LOCALAPPDATA}\\Volta\\bin;${ProgramFiles}\\Volta" },
+    "tools": ["diagnostics", "hover", "definition", "references", "document_symbols",
+              "completion", "formatting"],
+    "idleShutdownSeconds": 300
   }
 }
 ```
 
-Two things differ from the POSIX form, and each is why a Linux declaration
-copied verbatim fails here:
+- **The `PATH` separator is `;`, not `:`** — and an `env.PATH` *replaces* the
+  child's `PATH` wholesale, so it must carry every folder the command resolves
+  through: with Volta, both the shim folder and the one holding `volta.exe` and
+  `node.exe`, otherwise the shim starts and immediately fails.
+- **Write the command as the bare program name.** What npm and Volta install
+  under `pyright-langserver` is a `#!/bin/bash` script Windows cannot exec; the
+  hub resolves `argv[0]` with `shutil.which` over the child's own `PATH`, which
+  honours `PATHEXT` and finds the `.cmd` beside it. When nothing answers the
+  name, the server is left at `error` with a sentence naming the command and the
+  folders searched.
 
-- **the `PATH` separator is `;`, not `:`** — and an `env.PATH` *replaces* the
-  child's PATH wholesale, so it has to carry every folder the command resolves
-  through (for Volta, the shim folder *and* the one holding `volta.exe` and
-  `node.exe`).
-- **write the command as the bare program name.** What npm and Volta install
-  under `pyright-langserver` is a `#!/bin/bash` script, which Windows cannot
-  exec. The hub resolves `argv[0]` with `shutil.which` over the child's own
-  `PATH`, which honours `PATHEXT` and finds the `.cmd` beside the script. When
-  nothing answers the name the server is left at `error` with a sentence naming
-  the command and the folders that were searched — never a `shell=True`
-  fallback, and no new dependency to resolve it.
+`${VOLTA_BIN}` is a POSIX idea and there is no conditional in `${…}` — no
+platform test, no OS-dependent default — which is why the example file states the
+Windows form in a `_windows_note` instead of pretending one string fits both.
 
-The guardrails around those servers are
-`lsp_connectors/restricted-paths.txt`: one prefix per line, and its entries now
-carry **both platforms' path forms** — `${SystemRoot}`, `${ProgramFiles}`,
-`${ProgramData}` beside `/etc`, `/proc`, `/sys`, and `${USERPROFILE}/.ssh` beside
-`${HOME}/.ssh`. They are expanded from the environment when the file is read, so
-the committed list spells no drive letter and no home directory, and a reference
-the running OS does not state is dropped and logged rather than pretended to be
-in force. One list answers every question about a language server's reach: a
-declared `workspaceRoot` inside one of those prefixes is rejected; the working
-location rule above is the same rule; and where the list can name no path form
-this filesystem uses, the hub refuses to start anything at all — on either
-platform, in words.
+Two more knobs worth knowing:
 
-### 2. Build the frontend
+- **`"lazy": true`** spawns a server on its first tool call instead of with the
+  app (tsserver's cold start is multi-second and eats RAM). A settings panel
+  listing a lazy server as *stopped* is not a failure.
+- **`lsp_connectors/restricted-paths.txt`** lists, one prefix per line and in
+  both platforms' path forms (`/etc`, `${SystemRoot}`, `${HOME}/.ssh`,
+  `${USERPROFILE}/.aws`, …), the roots no `workspaceRoot` may sit inside. A
+  language server indexing a secret tree would put that tree in the model's
+  context window, so the declaration is refused instead.
 
-```bash
-cd web
-npm install
-npm run build
-```
+### The working location
 
-### 3. Configure
+One value roots every file-touching part of the app — the `--root-dir` of the
+local connectors, every `workspaceRoot`, the Editor's tree and the terminal's
+starting directory: `BENCHMARKIT_PATH_LOCATION`. It is seeded with the install
+directory at startup, so a fresh checkout needs no configuration, and it is
+deliberately **not** a `.env` key, so a settings save can neither erase it nor
+resurrect a stale value.
 
-Copy `.env.example` to `.env` at the project root and point it at your server:
+**Settings → Working directory** shows the live value and repoints the MCP and
+LSP tools at another folder in one step; that change is process-local, and the
+next start is back at the install directory. Export the variable (or set it in
+`.env`) to pin it permanently. The folder must exist and must not sit under a
+restricted path. In a declaration, reference it as `${BENCHMARKIT_PATH_LOCATION}`
+— the app defines it for the connectors and the language servers it starts.
+
+That folder gets its own read/write policy in `<working location>/.nojae/read-write-policy.json`,
+which answers one question per file — `rw`, `ro` or `hidden` — for the Editor
+*and* for the agent's file tools: a folder you mark `ro` is not editable by an
+agent either. The file is seeded for you (dependency and build folders come
+read-only) and edited outside the app — see
+[`docs/POLICY-MANAGEMENT-DOC-EN.md`](docs/POLICY-MANAGEMENT-DOC-EN.md).
+
+### LLM configuration — `.env`
+
+Copy `.env.example` to `.env` and point it at your server. Everything else is
+optional and editable later from the Settings dialog:
 
 ```bash
 SERVER_URL=http://127.0.0.1:8080/v1
+SERVER_URL_API_KEY=not-needed
 ENDPOINT=my-model
+#SUPPORTS_VISION=1                  # enables the WorkBench image attach button
+#TEMPERATURE=0.2
+#REASONING=off|low|medium|high|xhigh
+#MAX_TOOL_ITERATION=25              # tool-loop cap for one WorkBench reply
+#VERIFIER_AGENT_SERVERURL=http://127.0.0.1:8080/v1   # second model, Benchmark tab
+#VERIFIER_AGENT_ENDPOINT=verifier-model
 ```
 
-Sampling parameters, the question set, and the verifier agent are optional —
-see the comments in `.env.example`, or edit them later from the settings dialog
-in the UI.
+A `.env` save **regenerates the file from a fixed template**: fixed key set and
+order, empty optional keys commented out, hand-written extras lost. Add or rename
+a key and you change the template, the renderer and the committed example
+together.
 
-#### Tools working directory
+### Run
 
-Both declaration files point their file-touching tools at a single folder
-through one environment variable, `BENCHMARKIT_PATH_LOCATION` (the
-`--root-dir` of the local connectors, and every `workspaceRoot`/`--tsdk` of the
-language servers). It is seeded at startup with the install directory, so a
-fresh checkout works with no configuration and moving the project needs no
-file edit.
-
-The **Settings → Working directory** field shows the live
-value; **Set** repoints the MCP and LSP tools at another folder and reloads
-them in one step (the same restart the refresh buttons do). The change is
-process-local on purpose: the next server start goes back to the install
-directory, so a remembered path can never break another machine's checkout.
-Export the variable (or set it in `.env`) to pin it permanently — an existing
-value is never overwritten. A folder must exist and must not sit under a
-`lsp_connectors/restricted-paths.txt` prefix, or the change is refused and
-nothing is restarted.
-
-One value cannot be a `PATH` for both systems (`${…}` has no conditional and no
-platform test), so the example file states its Windows form in `_windows_note`.
-
-Note the reference syntax: the closing brace goes right after the variable
-name, with the rest of the path outside it — `${BENCHMARKIT_PATH_LOCATION}/web`,
-never `${BENCHMARKIT_PATH_LOCATION/web}`.
-
-Whichever folder you point at gets its own read-write policy in
-`.nojae/read-write-policy.json`: which of its files the Editor (and the chat
-assistant's file tools) may show, read and change. It is seeded for you and
-edited outside the app. That folder also holds this workspace's prompt helpers —
-the texts behind the bullets above the WorkBench textarea — in
-`.nojae/prompt-helpers.json`, and that one benchmarkit writes for you whenever
-you fill a bullet, so each project keeps its own. See
-[`docs/POLICY-MANAGEMENT-DOC-EN.md`](docs/POLICY-MANAGEMENT-DOC-EN.md) /
-[`docs/POLICY-MANAGEMENT-DOC_FR.md`](docs/POLICY-MANAGEMENT-DOC_FR.md).
-
-#### Agent modes (Chat tab)
-
-The WorkBench composer carries a **mode** dropdown: who the assistant is being
-for this conversation, and how far it may reach.
-
-| id | label | MCP tools | language servers | editable |
-|---|---|---|---|---|
-| `chat` | Chat | no | no | yes |
-| `code` | Code | yes | yes | yes |
-| `architect` | Architect | yes | no | yes |
-| `todoBuilder` | Todo builder | yes | no | **no** — defined by benchmarkit |
-
-A mode replaces the system prompt the chat model is given (`LLM_SYSPROMPT` in
-`.env` still drives the benchmark, which has no mode), and its two booleans
-decide whether a whole tool hub reaches the model at all. It can only narrow
-what Settings and the conversation's own toggles allow, never widen them.
-
-Switching mode mid-conversation is free — except for Todo builder: once that
-thread has written a turn, the lot conventions it wrote under stay fixed for the
-rest of it. A launched batch takes its own mode for every task turn, so the
-dropdown has no effect on a lot that is running.
-
-The three editable modes live in `<working location>/.nojae/agent-modes.json`,
-seeded for you when a folder becomes the working location and edited by hand
-outside the app — the same rule as the read-write policy beside it. An unknown
-key in that file is reported rather than ignored, and a typo never costs you the
-conversation: the built-in modes answer, and the dropdown shows a line naming
-what the file got wrong. To get the old behaviour back for one mode, set
-`"systemMessage": ""` — that restores the prompt configured in `.env`.
-
-The file as benchmarkit seeds it, in full:
-
-```json
-{
-  "version": 1,
-  "readme": [
-    "benchmarkit reads this file to build the agent-mode dropdown.",
-    "The keys in it are matched exactly: an unknown key is refused with an error,",
-    "not ignored, so a misspelling is reported instead of quietly switching an",
-    "agent off. The allowed top-level keys are version, readme, default and",
-    "agents; the allowed keys of one mode are label, mcptools, lsptools and",
-    "systemMessage.",
-    "The entries under agents are kept in the order you wrote them, and that is",
-    "the order of the dropdown.",
-    "systemMessage is the persona sent to the model. Write it as a string, or as",
-    "a list with one line per entry (readable inside JSON). An empty or missing",
-    "systemMessage means: use LLM_SYSPROMPT from .env instead.",
-    "mcptools and lsptools are JSON booleans, true or false - not 1/0, not",
-    "\"yes\"/\"no\". A missing one means false. They decide whether that hub reaches",
-    "the model at all; Settings still decides which of its connectors are on.",
-    "\"todoBuilder\" is defined by benchmarkit and cannot be set here; an entry",
-    "for it is ignored.",
-    "benchmarkit seeds this file when a folder becomes the working location, then",
-    "never writes it again. It is machine-local and gitignored, so each checkout",
-    "edits its own agents."
-  ],
-  "default": "code",
-  "agents": {
-    "chat": {
-      "label": "Chat",
-      "mcptools": false,
-      "lsptools": false,
-      "systemMessage": [
-        "You are answering in Chat mode and you are a helpful assistant.",
-        "- Answer the question. Do not edit, create or move project files.",
-        "- Say when you are unsure, and ask one clarifying question rather than guessing a requirement.",
-        "- Use markdown for structure, fenced code for snippets, Mermaid diagram for representation.",
-        "  You can answer all type of questions. Not just questions related to the project.",
-        "- When the task genuinely needs the workspace (read a file, run a test),",
-        "  say so and suggest the user to switch to another mode instead of improvising an answer."
-      ]
-    },
-    "code": {
-      "label": "Code",
-      "mcptools": true,
-      "lsptools": true,
-      "systemMessage": [
-        "You are working in Code mode on the project at the working",
-        "location: you implement, and you leave the tree compiling and tested.",
-        "- Use the tools. Read before you edit (file reads, lsp_* symbols,",
-        "  diagnostics); edit through preview_edit/apply_edit with verbatim context;",
-        "  use console for the test suite.",
-        "- Keep edits small and in the file's own style. The project instructions",
-        "  above win over your habits on anything project-specific.",
-        "- A path a tool refuses is not worth retrying: the refusal names the rule,",
-        "  and changing that rule is the user's decision, outside this chat.",
-        "- Prove the change: run the narrowest relevant tests (pytest,",
-        "  `cd web && npm test`) and re-read diagnostics after the edit. Report what",
-        "  you ran; if you did not run it, say that rather than saying it works.",
-        "- Do one task per turn unless asked for more. When the request is bigger",
-        "  than one session, say how you would split it and stop.",
-        "- Touch the project instructions only when an invariant changed."
-      ]
-    },
-    "architect": {
-      "label": "Architect",
-      "mcptools": true,
-      "lsptools": false,
-      "systemMessage": [
-        "You are working in Architect mode: you turn a rough idea into a",
-        "written spec. You do not implement it.",
-        "- Talk first, write second. Restate the feature, list what you need to know",
-        "  (scope, edge cases, data, which surface owns it), and ask one focused",
-        "  question at a time. Summarise what you heard before you commit it to a file.",
-        "- Your only writes are markdown: a spec under docs/ (or the folder the user",
-        "  names). No source edits, no refactors, no test runs. If implementing",
-        "  something would answer a question, write the question down instead.",
-        "- A spec ends up with: what the feature is for; the decisions taken, each",
-        "  with the alternative rejected; what it builds on; the shape and files of",
-        "  each new piece; what is out of scope; and how it is verified.",
-        "- Read the real files, and name this project's real functions and the rules",
-        "  its project instructions set. A design that could describe any project is",
-        "  not a design for this one.",
-        "- End by offering to hand the spec to the Todo builder. That is the",
-        "  next step, not this one."
-      ]
-    }
-  }
-}
-```
-
-### 4. Run
+Both systems, once the two builds above are done:
 
 ```bash
-benchmarkit    # serves the API + UI on http://127.0.0.1:8000
+benchmarkit          # API + UI on http://127.0.0.1:8000
 ```
 
-### Development (hot reload)
+Nothing else is required — a fresh checkout with no configuration gives you a
+working WorkBench and a working Editor; the connectors and servers only decide
+how far the agent may reach.
 
-Terminal 1 (API):
+---
 
-```bash
-uvicorn src.api.server:app --reload
-```
+## 3. What the app does
 
-Terminal 2 (frontend dev server on :5173, proxies `/api` to :8000):
+### WorkBench — where the work happens 💬
 
-```bash
-cd web && npm run dev
-```
+A streaming chat with your configured model, in an **agent mode** you pick from
+the composer: **Chat** (no tools at all), **Code** (file tools and language
+servers — the mode that implements, and leaves the tree compiling and tested),
+**Architect** (reads and asks, writes only a markdown spec), and **Todo builder**,
+which turns a spec into a numbered lot of task files and is defined by the app.
+A mode replaces the persona sent to the model and decides whether a whole tool
+hub reaches it at all; it can only ever narrow what Settings already allows. The
+editable modes live in `<working location>/.nojae/agent-modes.json`, seeded for
+you and edited outside the app.
 
-### Tests
+**Batch mode** works through a folder of task files — `todos/` by default, files
+named `01-slug.md`, `02-slug.md`, …, with `00-…` as the lot's big picture, which
+rides on every request. One task is one chat turn; the app never reads a task
+body, it only hands the model the path and lets its own connectors open it. A
+task counts as finished when its **file has left the folder** — the agent moves
+it into `todos/done`, which is its own acknowledgement — so a file still in place
+is relaunched with a note saying why, up to three times, after which the lot
+aborts. The mode is pinned when the lot launches, the conversation is reset
+between tasks, and continuity comes from disk: git and the files that moved.
+Batch mode refuses to start unless the connectors it depends on are on.
 
-```bash
-pip install -e ".[test]"
-pytest
-```
+Around the composer: the reasoning and tool panel (every tool call, its result
+and the server that answered), image attach when `SUPPORTS_VISION` is set,
+workspace-scoped prompt helpers, a session stopwatch and context-size badge, and
+Save / Load of a conversation as a plain JSON file. Markdown renders with KaTeX,
+highlighted code and Mermaid diagrams, always through the sanitizer.
 
-If you have good questions to add please share them! 🙏
+### Editor — the same tree, in your hands 🗂
 
-## Technical details
+The working location as a file tree and a Monaco pane: create, rename, move and
+delete, save with a diff against the last commit, git status badges on the rows,
+a search that answers for the same set of files the tree lists, and **one
+terminal per connection**, on the platform's pseudo-terminal — `$SHELL` on
+POSIX, Git Bash on Windows.
 
-- **LiteLLM everywhere.** All calls (benchmark, verifier, chat) go through
-  `litellm.completion()` with the `openai/` provider prefix against your
-  `api_base`, so any OpenAI-compatible server works. `api_key="none"` — no
-  real credentials involved.
-- **Streaming architecture.** The benchmark loop and chat run synchronous
-  litellm calls in worker threads that publish to an in-memory, seq-numbered
-  event bus; a FastAPI SSE endpoint subscribes on the event loop. Clients
-  reconnect by replaying buffered events, so a refresh never loses state.
-- **Clean core.** `src/core/` has no FastAPI or browser concerns — modules
-  receive an `emit(event)` callable and stay testable in isolation;
-  `src/api/` owns transport only.
-- **Timing methodology.** Token rate is the mean of per-question
-  `completion_tokens / decode-window` rates, timed from chunk arrivals;
-  reasoning deltas count toward the decode window (they consume completion
-  tokens), verifier time never does. Usage comes from the final stream chunk
-  (`stream_options={"include_usage": true}`), with text-length estimation as
-  fallback.
-- **Frontend.** Vue 3 + Vite + Pico.css, plain JS, one reactive singleton per
-  screen (`useBenchmark.js`, `useChat.js`) — no store library. Rendered
-  Markdown always passes through DOMPurify.
-- **Single run.** One benchmark run at a time, state in memory; the run and
-  the chat share the configured endpoint and refuse to overlap.
-- **Session files are client-side.** WorkBench Save/Load (de)serialises the
-  conversation in the browser — the file is just the history `POST /api/chat`
-  already re-posts on every send, so no server state is involved; loading one
-  over a live conversation asks for confirmation first.
-- **MCP lifecycle.** Connector sessions live inside the app lifespan
-  (`src/core/mcphub/`): one persistent MCP client per declared connector on a
-  private asyncio thread that chat worker threads call through synchronously
-  (a `local` connector's stdio child is owned by that client); everything is
-  closed on shutdown.
+Nothing here is destroyed. Every save keeps the bytes it replaced in a backup
+folder, and a delete moves the file into a dated batch under the reserved
+`.nojae/trash/` of the current working location (kept 30 days), so a restore is
+one `mv` away. `Ctrl`+click a group of rows, right-click, `Move to…`: the set
+moves whole in one request, and a file that is open keeps its tab and its
+unsaved edits at the new path.
+
+The Editor's writes are the browser's own surface — never reachable from a
+connector, a tool or a chat path — and they are refused while a reply streams.
+That is asserted by a test rather than trusted.
+
+### Benchmark — the original tool ⏱
+
+Run a question set against the configured model and watch answers, scores,
+timings and token/s arrive live. Sets are JSON files in `resources/` —
+`legacy`, `78qcm`, `122qcm`, `30hardmath` — and an optional **verifier LLM**
+judges each answer against the expected one, so wording differences do not cost
+a point. Timing is measured app-side from chunk arrivals, anchored after a model
+warm-up, so loading and verification never enter the numbers; token/s counts
+completion tokens only. One run at a time, cancellation honoured between
+questions and mid-stream, and an answer the server cut short is failed rather
+than graded.
+
+### One configuration, one streaming layer
+
+All three tabs call the model through the same client against an
+OpenAI-compatible endpoint — llama.cpp, vLLM, or a hosted one — so adding a model
+is configuration, never code. Every event the server emits is numbered, so a
+reconnecting browser replays what it missed and a refresh loses nothing.
+Configuration changes take effect hot: no restart, ever.
