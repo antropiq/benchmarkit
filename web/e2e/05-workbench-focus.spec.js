@@ -6,6 +6,12 @@ import { expect, test } from '@playwright/test'
 // the geometry itself — `display: none`, the width and height a state hands
 // the reasoning timeline — is decided here.
 //
+// The strip's marks are font glyphs, so this is also the only layer that can
+// answer "is the mark actually drawn": jsdom loads no @font-face and measures no
+// text. A private-use code point with no glyph is stamped into a box the width
+// of one — which is the regression the last case below pins, on the face the
+// marks are generated against (tools/nerd_icons.py, `UI_GLYPHS`).
+//
 // No LLM call, no benchmark run, no streamed answer: the reasoning panel is
 // rendered unconditionally, so every box below is measurable on a cold, empty
 // WorkBench screen. A spec that waited for an answer would depend on
@@ -35,6 +41,11 @@ const LOWER_CONTROL = 1
 // the two focalisations (spec §3.1 of `docs/spec-live-reasoning-view.md`). Its
 // name is not state-dependent, so it is the one control this spec may name.
 const LIVE_CONTROL = 2
+
+// The face the three marks are drawn with — the family theme.css names for
+// `.chat-gutter-mark` and tools/nerd_icons.py subsets. Naming it here is what
+// lets the last case ask the browser which font a mark actually resolves to.
+const MARKS_FAMILY = 'JetBrains Mono Nerd Icons UI'
 
 // `useSplitter`'s own key for the dock's dragged height (D3). A storage key is
 // not an accessible name: naming it here is how the spec can prove no state
@@ -224,6 +235,32 @@ test.describe('WorkBench focus layout: three states, one gutter', () => {
     }
   })
 
+  // The strip is one column of marks, so the honest signal about it is measured:
+  // each control is a 28px box filling the gutter's width, and the glyph inside
+  // it sits on the gutter's own centre line. A mark's box spans its ink, so its
+  // left edge is read too — a test blind to the ink would keep passing while a
+  // rule nudged one mark sideways.
+  test('the three controls share the gutter centre line', async ({ page }) => {
+    await openWorkBench(page)
+
+    const gutter = await boxOf(page, GUTTER)
+    const centre = gutter.x + gutter.width / 2
+    await expect(page.locator(GUTTER).getByRole('button')).toHaveCount(3)
+
+    for (const index of [TOP_CONTROL, LOWER_CONTROL, LIVE_CONTROL]) {
+      const box = await boxOf(page, `${GUTTER} button >> nth=${index}`)
+      expect(box, `control ${index} is in the flow`).not.toBeNull()
+      // Same width and same left edge: the buttons fill the strip, so the three
+      // controls are vertically aligned with each other.
+      expect(Math.abs(box.width - gutter.width), `control ${index} width`).toBeLessThanOrEqual(1)
+      expect(Math.abs(box.x - gutter.x), `control ${index} left edge`).toBeLessThanOrEqual(1)
+
+      const mark = await boxOf(page, `${GUTTER} .chat-gutter-mark >> nth=${index}`)
+      const markCentre = mark.x + mark.width / 2
+      expect(Math.abs(markCentre - centre), `control ${index} mark`).toBeLessThanOrEqual(1)
+    }
+  })
+
   test('conversation: the column leaves the flow and the same control reaches it', async ({
     page,
   }) => {
@@ -386,5 +423,48 @@ test.describe('WorkBench focus layout: three states, one gutter', () => {
     await page.keyboard.press('Space')
     expect(await stateClasses(page)).toEqual([])
     await expect(page.locator(LEFT_COL)).toBeVisible()
+  })
+
+  // The marks are glyphs of the generated "JetBrains Mono Nerd Icons UI" face
+  // (theme.css names the family, tools/nerd_icons.py subsets it), so a browser
+  // is the only layer that can answer the two halves of that: the face the mark
+  // resolves to, and whether each state of a control draws a different glyph.
+  // A code point the face lacks is not invisible — the browser stamps it into a
+  // box, a control whose meaning silently left the screen. That is what the
+  // resolved font family says, and it is checked once the face is loaded.
+  test('the strip marks are drawn, and change with the state', async ({
+    page,
+  }) => {
+    await openWorkBench(page)
+
+    const marks = page.locator(GUTTER).locator('.chat-gutter-mark')
+    await expect(marks).toHaveCount(3)
+
+    // The subset is a fetch, so the wait is on the face, not on a render: the
+    // answer wanted is "this face has a glyph for that code point", which is
+    // what the FontFaceSet gives once the face itself is loaded.
+    const carried = (point) =>
+      page.evaluate(
+        ([family, ch]) =>
+          document.fonts.load(`16px "${family}"`, ch)
+            .then(() => document.fonts.check(`16px "${family}"`, ch)),
+        [MARKS_FAMILY, point],
+      )
+    const faces = []
+    for (const mark of await marks.all()) {
+      const text = await mark.evaluate((el) => el.textContent)
+      expect(text, 'one glyph per mark').toHaveLength(1)
+      const code = `U+${text.codePointAt(0).toString(16).toUpperCase()}`
+      await expect.poll(() => carried(text), `${code} is carried`).toBe(true)
+      faces.push(text)
+    }
+
+    // The three controls of the strip say three different things.
+    expect(new Set(faces).size).toBe(3)
+
+    // And the focus control's face follows the state, so "maximise" and
+    // "restore" are two marks and not one (D11).
+    await pressControl(page, TOP_CONTROL)
+    expect(await marks.first().evaluate((el) => el.textContent)).not.toBe(faces[0])
   })
 })

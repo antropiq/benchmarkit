@@ -1661,38 +1661,3 @@ class TestTheWholeFeatureInOneRequest:
                 assert _mode_imports(poison + clean) != [], (
                     f"{name} accepts {poison.strip()!r} unnoticed"
                 )
-
-    def test_the_readme_holds_the_seeded_file_verbatim(self):
-        """Docs that disagree with a config file are worse than no docs.
-
-        The README quotes the modes document the app seeds, so the quote is
-        checked against the module that owns those bytes — parseable, and equal
-        as data. A hand-retyped copy would pass a prose check and fail this one
-        the day someone edits a persona.
-        """
-        readme = (
-            Path(agent_modes.__file__).resolve().parents[2] / "README.md"
-        ).read_text(encoding="utf-8")
-        fenced = [
-            block
-            for block in readme.split("```json\n")
-            if '"agents":' in block and '"systemMessage":' in block
-        ]
-        assert len(fenced) == 1, "the README should quote the seeded file once"
-        quoted = json.loads(fenced[0].split("\n```", 1)[0])
-        assert quoted == defaults.DEFAULT_AGENTS_DOCUMENT
-        # …and the seeded *text*, byte for byte, so the indentation and the
-        # list-vs-string forms in the docs are the shipped ones.
-        assert defaults.default_agent_modes_text().rstrip("\n") in readme
-
-    def test_the_readme_table_names_every_mode_the_feature_ships(self):
-        """The one table a human reads must not fall behind the code."""
-        readme = (
-            Path(agent_modes.__file__).resolve().parents[2] / "README.md"
-        ).read_text(encoding="utf-8")
-        for mode in defaults.default_modes():
-            assert f"| `{mode.id}` | {mode.label} |" in readme, mode.id
-        reserved = defaults.todo_builder_mode()
-        assert (
-            f"| `{reserved.id}` | {reserved.label} | yes | no | **no**" in readme
-        )

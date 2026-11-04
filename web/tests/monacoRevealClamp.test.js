@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 import { clampReveal } from '../src/lib/monaco-surface'
 
@@ -64,5 +66,43 @@ describe('clampReveal', () => {
     ['a string line', { line: '2', column: 1 }],
   ])('rejects %s as null', (_label, position) => {
     expect(clamp(position)).toBeNull()
+  })
+})
+
+// The rule that puts the find widget's buttons back on Monaco's icon font,
+// asserted on the stylesheet's source. What the *browser* decides (which family
+// a button ends up drawing with) is the e2e layer's; what belongs here is the
+// shape of the fix, because both halves of it are easy to undo by accident: the
+// selector has to reach the buttons Monaco's own widget rule reaches (its
+// specificity is what beat the icon font's `font` shorthand), and the rule has
+// to name the face by its real family. A weaker selector silently stops applying
+// the moment the widget's markup shifts, and then the buttons are boxes again.
+describe('the find widget icon rule', () => {
+  const css = readFileSync(
+    join(resolve(), 'src', 'styles', 'monaco-pico.css'),
+    'utf8',
+  )
+
+  it('names the codicon family on the find widget buttons', () => {
+    const rules = css.match(/\.monaco-editor \.find-widget[^{]*\{[^}]*\}/g) ?? []
+    expect(rules.length, 'the widget buttons carry a rule of their own').toBeGreaterThan(0)
+    for (const rule of rules) {
+      expect(rule).toMatch(/font-family:\s*codicon\s*;/)
+    }
+    // Both kinds of mark the widget builds: the action buttons and the
+    // in-widget toggle whose class is the icon's own name.
+    expect(css).toMatch(/\.monaco-editor \.find-widget \.button,/)
+    expect(css).toMatch(/\.monaco-editor \.find-widget \.codicon-find-selection/)
+  })
+
+  it('restates only the family, leaving the widget its own size and colours', () => {
+    // A `font` shorthand here would reset the size Monaco authored for the
+    // widget's buttons — the family is the only property this fix owns.
+    const bodies = css.match(/\.monaco-editor \.find-widget[^{]*\{([^}]*)\}/g) ?? []
+    for (const body of bodies) {
+      expect(body.match(/[^;\n]+;/g).map((line) => line.trim())).toEqual([
+        'font-family: codicon;',
+      ])
+    }
   })
 })

@@ -1,11 +1,14 @@
 /* Self-hosted PUA icon subsets of JetBrains Mono (Nerd Fonts).
 
-Two faces, one per surface that shows Nerd Font glyphs:
+Three faces, one per surface that shows Nerd Font glyphs:
   * "JetBrains Mono Nerd"      -- the terminal pane (EditorTerminal.vue): the
     blocks a shell prompt emits, whatever the prompt is.
   * "JetBrains Mono Nerd Icons" -- the Editor's workspace tree, the ~100 glyphs
     src/lib/file-icons.js names. A file type is picked from that set, so the
     subset is exactly the set the code can ask for.
+  * "JetBrains Mono Nerd Icons UI" -- the app's own icon marks, the WorkBench
+    focus gutter (WorkBenchFocusGutter.vue). Generated like the tree's face, from
+    the UI_GLYPHS table in tools/nerd_icons.py rather than a JS module.
 
 A job-controlling shell prompt (Starship, powerlevel10k, ...) emits private-use-
 area icon glyphs (U+F0xx etc.). The app bundles plain JetBrains Mono, which has
@@ -78,4 +81,24 @@ Rebuild a face after editing the ranges with, per weight/style:
     U+E6B9,U+E704,U+E71E,U+E76D-E76E,U+E776,U+E794,U+E7B1-E7B2,U+E7C0,
     U+E7C4,U+E7D2,U+E7F2,U+E7F7,U+E80B,U+E82C,U+E881,U+E8BA,U+E8D6,
     U+E8EB,U+EAE8,U+F016,U+F1C3-F1C4;
+}
+
+/* The gutter marks' face, used by WorkBenchFocusGutter.vue: the eye of the Live
+   View and the expand/compress and chevron pair of the two focalisation
+   controls. Its code points and the two nerd-ui-icons-*.woff2 files are
+   GENERATED from the UI_GLYPHS table of tools/nerd_icons.py by
+   `python tools/nerd_icons.py generate`; `check` (run by the test suite) fails
+   if they drift, so a glyph the component asks for that this subset lacks cannot
+   reach a browser as a tofu box. */
+@font-face {
+  font-family: "JetBrains Mono Nerd Icons UI";
+  font-style: normal; font-weight: 400; font-display: block;
+  src: url("./nerd-ui-icons-400.woff2") format("woff2");
+  unicode-range: U+F053-F054,U+F065-F066,U+F06E,U+F070;
+}
+@font-face {
+  font-family: "JetBrains Mono Nerd Icons UI";
+  font-style: normal; font-weight: 700; font-display: block;
+  src: url("./nerd-ui-icons-700.woff2") format("woff2");
+  unicode-range: U+F053-F054,U+F065-F066,U+F06E,U+F070;
 }

@@ -307,69 +307,73 @@ describe('the state classes on the shell', () => {
   })
 })
 
-describe('the dashed marks', () => {
+// The marks are glyphs of one generated Nerd face (see WorkBenchFocusGutter and
+// the `UI_GLYPHS` table of tools/nerd_icons.py), so what is asserted here is the
+// state in the character, not a drawn shape: whether a private-use code point is
+// *displayed* is a font matter the browser layer answers (the Playwright spec
+// measures the mark's box).
+describe('the glyph marks', () => {
   function marks(wrapper) {
     return wrapper.findAll('.chat-gutter-mark')
   }
 
-  it('draws both marks as aria-hidden SVGs inside labelled buttons', () => {
+  it('draws the three marks as aria-hidden glyphs in labelled buttons', () => {
     const w = mount(WorkBenchView)
     const all = marks(w)
-    expect(all).toHaveLength(2)
+    expect(all).toHaveLength(3)
     for (const mark of all) {
       expect(mark.attributes()['aria-hidden']).toBe('true')
-      // The stroke is the glyph: a fill would turn a dashed square into a blob,
-      // and `currentColor` is what lets one color rule serve both themes.
-      expect(mark.attributes().fill).toBe('none')
-      expect(mark.attributes().stroke).toBe('currentColor')
-      // Every shape of the mark carries its own dash pattern — the pointillé is
-      // part of the glyph, and the hover rule is the one that removes it.
-      const shapes = mark.findAll('rect, path')
-      expect(shapes.length).toBeGreaterThan(0)
-      for (const shape of shapes) {
-        expect(shape.attributes()['stroke-dasharray']).toBeTruthy()
-      }
+      // A private-use code point: a screen reader gets the button's label, never
+      // the character, and the generated face is what gives the code point a
+      // glyph at all.
+      expect(mark.text()).toMatch(/^[\ue000-\uf8ff]$/)
     }
   })
 
-  // D11: "restore" must not reuse the "maximise" motif, so the inner square is
-  // only drawn while there is something to maximise.
-  it('shows one square once the reasoning owns the screen', async () => {
+  // D11: "restore" must not reuse the "maximise" motif, so the focus control
+  // swaps fa-expand for fa-compress rather than losing one of two shapes.
+  it('shows the restore mark once the reasoning owns the screen', async () => {
     const w = mount(WorkBenchView)
-    const focusMark = () => marks(w)[0]
-
-    expect(focusMark().findAll('rect')).toHaveLength(2)
-    // Concentric: the inner square is strictly inside the outer one.
-    const [outer, inner] = focusMark().findAll('rect').map((r) => ({
-      x: Number(r.attributes().x),
-      width: Number(r.attributes().width),
-    }))
-    expect(inner.x).toBeGreaterThan(outer.x)
-    expect(inner.width).toBeLessThan(outer.width)
+    const focusMark = () => marks(w)[0].text()
+    const maximise = focusMark()
 
     await buttons(w)[0].trigger('click')
-    expect(focusMark().findAll('rect')).toHaveLength(1)
+    const restore = focusMark()
+    expect(restore).not.toBe(maximise)
+    // One glyph each way: the box cannot move, only its face.
+    expect(restore).toHaveLength(maximise.length)
 
     await buttons(w)[0].trigger('click')
-    expect(focusMark().findAll('rect')).toHaveLength(2)
+    expect(focusMark()).toBe(maximise)
   })
 
   it('points the chevron at what the click will do', async () => {
     const w = mount(WorkBenchView)
-    const chevron = () => marks(w)[1].find('path')
+    const chevron = () => marks(w)[1].text()
 
-    // Column on screen: it is the one that will fold away, so it points left.
-    expect(chevron().attributes().d).toBe('m15 6-6 6 6 6')
-
-    await buttons(w)[1].trigger('click')
-    // Column gone: the same control brings it back, so it points right.
-    expect(chevron().attributes().d).toBe('m9 6 6 6-6 6')
+    // Column on screen: it is the one that will fold away, so the mark is
+    // fa-chevron_left (U+F053).
+    expect(chevron()).toBe('\uf053')
 
     await buttons(w)[1].trigger('click')
-    expect(chevron().attributes().d).toBe('m15 6-6 6 6 6')
+    // Column gone: the same control brings it back, so it is fa-chevron_right.
+    expect(chevron()).toBe('\uf054')
+
+    await buttons(w)[1].trigger('click')
+    expect(chevron()).toBe('\uf053')
+  })
+
+  // The eye of the Live View keeps its own pair, and the strip is one face: the
+  // code points of all three marks are the ones `UI_GLYPHS` subsets (asserted by
+  // `python tools/nerd_icons.py check`, run from tests/test_file_icons.py).
+  it('keeps the Live View mark on the same generated face', async () => {
+    const w = mount(WorkBenchView)
+    expect(marks(w)[2].text()).toBe('\uf06e')
+
+    await buttons(w)[2].trigger('click')
+    expect(marks(w)[2].text()).toBe('\uf070')
   })
 })
-
 // wf-04's sweep — what the two tasks that shipped this could not see while
 // each was in flight: a whole walk rather than one hop per case, and the walk
 // read from the mounted shell (the state class *and* the pair behind it), so a

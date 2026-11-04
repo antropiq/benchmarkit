@@ -31,6 +31,25 @@
   overflow-wrap: normal;
 }
 
+/* The find widget's buttons, back onto Monaco's own icon font.
+
+   The face and its rules are not the problem: the theme service injects
+   `.codicon[class*='codicon-'] { font: … codicon }` and its `@font-face` at
+   runtime, and the widget's toggles draw with it. What loses is that
+   shorthand — the find widget styles *its* buttons with a longer selector
+   (`.monaco-editor .find-widget .button`, 0,3,0), and an inherited `font`
+   shorthand resets `font-family` wholesale, so those buttons fall back to the
+   editor's UI font. A UI font has no glyph for a private-use code point, so the
+   button shows a small box instead of an arrow: the widget still works, it has
+   stopped saying what its buttons do. Only the family is restated, at the
+   widget's own specificity — its size, colour and hover rules are left in charge.
+   The face holds nothing but icons, so this asks for no glyph Monaco does not
+   already draw. */
+.monaco-editor .find-widget .button,
+.monaco-editor .find-widget .codicon-find-selection {
+  font-family: codicon;
+}
+
 /* Text inputs: the `.inputarea`, the IME input, the find/replace and
    goto-line `<input>`s, the suggest/details widgets. Reset the box, the
    chrome and the transition — Monaco sizes these in device pixels and moves

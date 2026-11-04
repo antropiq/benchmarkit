@@ -894,3 +894,48 @@ test('the badge says what the pane will do, including what is unsaved', async ({
   await expect(page.locator('.editor-tab-dirty')).toHaveCount(0)
   await expect(badge).not.toHaveAttribute('title', /Ctrl\+S writes them/)
 })
+
+// The find widget's buttons are icons of Monaco's own font, `codicon`, which the
+// face's own rule asks for — but the widget styles its buttons with a longer
+// selector, and an inherited `font` shorthand resets the family, so they end up
+// in the editor's UI font (the app's answer is the rule in monaco-pico.css). A
+// button left in a font with no glyph for its private-use code point is not
+// blank: the browser stamps the code point into a box, so it keeps looking like
+// a button and stops saying what it does. Only a browser can see which family a
+// mark actually drew with, which is why the whole check lives at this layer.
+test('the find widget buttons show Monaco own icons', async ({ page }) => {
+  const file = `${SCRATCH}/find.txt`
+  expect((await create(page.request, file)).ok()).toBe(true)
+
+  await openEditor(page)
+  await openFolders(page, SCRATCH)
+  await page.locator(`.tree-row[data-path="${file}"]`).first().click()
+  await expect(page.locator('.monaco-host .view-lines').first()).toBeVisible()
+
+  // Ctrl+F while the pane has focus — the gesture the report describes, not a
+  // call into the editor's API.
+  await page.locator('.monaco-host .view-lines').first().click()
+  await page.keyboard.press('Control+f')
+  const widget = page.locator('.monaco-editor .find-widget')
+  await expect(widget).toBeVisible()
+
+  const marks = widget.locator('.button.codicon')
+  await expect(marks.first(), 'the widget is icon-driven').toBeVisible()
+
+  // The mark's *resolved* family — the only question that matters and the only
+  // one a stylesheet cannot answer: several rules claim these buttons and the
+  // browser's own cascade decides, so the answer is read off the element.
+  const families = await marks.evaluateAll((els) =>
+    els.map((el) => getComputedStyle(el).fontFamily))
+  expect(families.length, 'the widget has several marks').toBeGreaterThan(3)
+  for (const [index, family] of families.entries()) {
+    expect(family, `mark ${index} asks for the codicon face`).toContain('codicon')
+  }
+  // And the family is backed by a face that really loaded: a name with no font
+  // behind it draws the same box. Any private-use code point of the face answers
+  // for it, so this one is named rather than read off a mark.
+  await expect
+    .poll(() => page.evaluate(() => document.fonts.check('16px codicon', '\uea50')),
+      'the codicon face is loaded')
+    .toBe(true)
+})

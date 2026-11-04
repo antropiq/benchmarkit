@@ -1312,8 +1312,8 @@ body {
    space either side of a 14px mark stays ~7px and the conversation loses
    little. Nothing overlaps: the margins pull into gap space only.
 
-   Top-aligned so both controls sit at the top of the column, and `flex: none`
-   on the buttons keeps the two 28px targets whole at any window height. There
+   Top-aligned so the controls sit at the top of the column, and `flex: none`
+   on the buttons keeps each 28px target whole at any window height. There
    is deliberately no separator drawn between them: in 28px of width a rule
    reads as noise next to the marks, and the gap alone groups them. */
 .chat-col-gutter {
@@ -1349,6 +1349,7 @@ body {
   color: var(--pico-muted-color);
   cursor: pointer;
   transition: color 0.15s ease, background-color 0.15s ease;
+  margin-right: 0.35rem;
 }
 
 .chat-gutter-btn:is(:hover, :focus-visible) {
@@ -1365,57 +1366,31 @@ body {
   outline-offset: -2px;
 }
 
-/* The dashed marks (see WorkBenchFocusGutter): the dash is the mark, the 28px
-   button is the target, and neither moves on hover. What "lighting up" changes
-   is the color (the rule above), the opacity and the dash — never the size, so
-   the target cannot slip under the cursor.
-
-   The dash *pattern* is an attribute of each shape in the template (it is part
-   of the glyph), so going solid has to target the shapes themselves: an
-   inherited value never beats a declaration on the element, and a presentation
-   attribute is a declaration — a `stroke-dasharray` on the <svg> here would
-   lose to the rects'. What wins is a class rule, which outranks presentation
-   attributes however they are spelled.
-
-   Butt caps, deliberately: `round`/`square` extend each dash by half a
-   stroke-width at both ends, which at this scale (14px glyph, 2-unit stroke)
-   eats the whole gap and the pointillé reads solid before anything is hovered.
+/* The three marks of the strip (see WorkBenchFocusGutter): each is one glyph of
+   the generated "JetBrains Mono Nerd Icons UI" face, so the character — not the
+   box around it — is what a state changes. What "lighting up" changes is the
+   color (the rule above) and the opacity, never the size, so the target cannot
+   slip under the cursor.
 
    The colors come from the two theme blocks (`--pico-muted-color` at rest,
    `--bi-icon` lit), so light and dark both work without a second rule, and the
    rest opacity is 0.85 because that is where the mark clears 3:1 against the
    page in *both* themes (measured: 3.4 light / 5.0 dark; at 0.75 the light
    theme falls to 2.8, and a control nobody sees cannot be clicked). Lit it is
-   16.2 / 13.0 against the button's own hover surface. */
+   16.2 / 13.0 against the button's own hover surface.
+
+   That family is `unicode-range`-gated to the private-use code points of the
+   component's generated block (tools/nerd_icons.py), so it claims these marks
+   and no text; the fallback is only what draws while the woff2 is in flight. */
 .chat-gutter-mark {
+  font-family: 'JetBrains Mono Nerd Icons UI', var(--pico-font-family-monospace);
+  font-size: 16px;
+  line-height: 1;
   opacity: 0.85;
   transition: opacity 0.15s ease;
 }
 
 .chat-gutter-btn:is(:hover, :focus-visible) .chat-gutter-mark {
-  opacity: 1;
-}
-
-.chat-gutter-btn:is(:hover, :focus-visible) .chat-gutter-mark :is(rect, path) {
-  stroke-dasharray: none;
-}
-
-/* The Live View's third control: its mark is a glyph of the Nerd face rather
-   than drawn SVG, so the one rule it needs is the family that carries the two
-   code points (see WorkBenchFocusGutter.vue) and a size that fits the 28px
-   target's box like the 14px marks do. Color and opacity ride `.chat-gutter-btn`
-   above, so at rest it is muted and hover lights it — the same step the two
-   focalisation controls take, and no size animation here either. */
-.chat-gutter-eye {
-  font-family: 'JetBrains Mono Nerd', var(--pico-font-family-monospace);
-  font-size: 16px;
-  line-height: 1;
-  opacity: 0.85;
-  transition: opacity 0.15s ease;
-  margin-right: 8px;
-}
-
-.chat-gutter-btn:is(:hover, :focus-visible) .chat-gutter-eye {
   opacity: 1;
 }
 
