@@ -14,13 +14,26 @@ import { defineConfig, devices } from '@playwright/test'
 const PORT = Number(process.env.E2E_PORT ?? 8123)
 const BASE_URL = `http://127.0.0.1:${PORT}`
 
-// Reuse the system Chromium the project's own MCP connector already drives, so
-// e2e needs no browser download of its own (the pip `mcp` extra already carries
-// a playwright). Verified against this build; on a machine where the version
-// gap bites, unset this and run `npx playwright install chromium` to get the
-// browser @playwright/test pins instead.
+// Which Chromium to drive — a "which binary is this" question, so the OS is the
+// honest thing to ask here; no capability probe answers it.
+//
+// Linux: reuse the system Chromium the project's own MCP connector already
+// drives, so e2e needs no browser download of its own (the pip `mcp` extra
+// already carries a playwright). Verified against this build; on a machine
+// where the version gap bites, unset PLAYWRIGHT_EXECUTABLE_PATH and run
+// `npx playwright install chromium` to get the browser @playwright/test pins.
+//
+// Windows: that path names nothing, and a launch failure about a missing file
+// is not an explanation of why the suite could not run — so the default there
+// is *unset*, which makes Playwright use the browser its own version pins: the
+// one `npx playwright install chromium` downloads. `e2e/global-setup.js` checks
+// that browser is installed before any spec runs and names the command when it
+// is not. Do not "repair" a Windows run by putting a hard-coded path back in
+// this file — the pinned browser is the supported one there, and an explicit
+// PLAYWRIGHT_EXECUTABLE_PATH stays the escape hatch on every platform.
 const EXECUTABLE_PATH =
-  process.env.PLAYWRIGHT_EXECUTABLE_PATH ?? '/usr/bin/chromium'
+  process.env.PLAYWRIGHT_EXECUTABLE_PATH ??
+  (process.platform === 'win32' ? undefined : '/usr/bin/chromium')
 
 // The env file that defines the LLM endpoint for the server under test.
 // `.env.test` (repo root, gitignored, copied from `.env.test.example`) names the

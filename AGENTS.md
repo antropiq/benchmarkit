@@ -9,120 +9,123 @@ answers, and grades every answer against the expected one with a secondary
 **verifier LLM**. Everything reaches the browser live over Server-Sent Events.
 Desktop browsers only.
 
-The app's tabs share one LLM configuration and one streaming layer:
+## Rules for this file
+
+This file is written **for agents** — coding, review and architect agents alike
+— and it is injected into every WorkBench turn, so every line is paid for on
+every message.
+
+- It states **what the app is and how its pieces fit**, not how to build it.
+- No **machine-specific setup**: no virtualenv manager, package-manager or
+  browser-install commands, no ports or paths tied to one machine. That differs
+  between machines and belongs in the README.
+- No **code details that move**: no line numbers, quoted code, exhaustive route
+  or member lists, counts or version numbers. The code and its tests are the
+  source of truth for those.
+- A **big-picture view only**: what each part is and which invariants hold.
+  Feature-by-feature detail belongs in the README, route-level detail in the
+  code and its doc comments.
+- Keep it **short and current** — the shorter it is, the more of it a model
+  actually holds. Cut or shrink a paragraph when the code it described changes
+  instead of appending a newer one beside it, and describe the app as it is now,
+  never as it used to be.
+
+Setup, run and test commands live in the README; read that when you need to
+build, install or launch something on this machine.
+
+## Shape of the app
+
+The tabs share one LLM configuration and one streaming layer:
 
 - **Benchmark** — runs a question set against the configured model, showing
   answers, scores, timings and token/s as they arrive.
 - **WorkBench** — interactive streaming chat with that same model, optionally
-  augmented with MCP connectors and language servers.
+  augmented with MCP connectors and language servers, plus a batch mode that
+  works through a folder of task files.
 - **Editor** — the working location as a file tree and a code pane. Its writes
-  are one bounded surface reachable from the browser only, never from a hub or
-  a tool. The app's one shell is a separate human surface (`core/termhub/`, one
-  WebSocket per session), never an agent tool either.
+  form one bounded surface reachable from the browser only, never from a hub or
+  a tool. The app's one shell — the Editor's terminal — is a human surface too,
+  never an agent tool.
 
-## Commands
-
-```bash
-# Setup — pyenv virtualenv named `benchmarkit`, no .venv directory
-pip install -e .
-pip install -e ".[test]"     # test deps
-pip install -e ".[mcp]"      # MCP extras, then: playwright install chromium
-pip install -e ".[lsp]"      # LSP extras (pygls, lsprotocol)
-
-cd web && npm install && npm run build   # SPA -> web/dist, served by FastAPI
-cd web && npm run dev                    # Vite dev server :5173, proxies /api
-
-benchmarkit                              # app on http://127.0.0.1:8000
-pytest                                   # test suite (tests/)
-cd web && npm test                       # JS unit/component tests (Vitest, web/tests)
-cd web && npm run test:e2e               # Playwright e2e (web/e2e), against its own server
-```
-
-No lint step; the only frontend build is `vite build`. `web/dist` must exist
-for FastAPI to serve the UI — the API works without it.
-
-Frontend tests come as unit/component runs (Vitest+jsdom over composables and
-`lib/`) and Playwright e2e against the real FastAPI app (it builds `web/dist`
-itself). e2e starts its own server on a separate port and takes its LLM endpoint
-from `.env.test`, never from the developer's `.env`.
-
-## Code structure
+## Code layout
 
 ### Backend (`src/`)
 
 A UI-free **core** and the **API** in front of it. Core functions never touch
-FastAPI — they take an injected `emit(event: dict)` callable and report
-progress through it.
+FastAPI — they take an injected `emit(event: dict)` callable and report progress
+through it.
 
-| Module | Purpose |
-|---|---|
-| `config.py` | `.env` loading, the managed-key template, question-set discovery. |
-| `api/server.py` | `create_app()`: routers, static SPA, hub startup/shutdown, uvicorn entry. |
-| `api/routes.py` | REST + SSE endpoints; `RunState` holds the single active run. |
-| `api/events.py` | `EventBus`: seq-numbered in-memory buffer with replay, SSE framing. |
-| `core/llm.py` | One streamed LLM call, model warm-up, and the verifier call. |
-| `core/bench.py` | Benchmark loop: question → answer → verify → emit. |
-| `core/chat.py` | One streamed chat reply, including the shared tool-call loop. |
-| `core/job.py` | `RunJob`: per-run results and score/token/time aggregates. |
-| `core/batch.py` | Batch-mode lot listing: numbered task files + the big-picture body, gated by the connector path policy — never a task body. |
-| `core/agent_modes{,_defaults}.py` | The WorkBench modes: the read/validate/seed side of `.nojae/agent-modes.json`, and the seeded personas + the app-owned mode's rendered text. |
-| `core/prompt_helpers.py` | The workspace's nine prompt-helper slots (the WorkBench bullets): read, save, seed, and the one-time lift from the legacy app-level file. |
-| `core/editorfs/` | Editor tab's file surface: `path` relative to the working location, every call answering from the workspace policy's verdict. Reads are bounded; writes are refused by `ro`/`hidden` and never destroy bytes — a save backs up what it replaces, a delete moves the file to a dated batch. The Editor's search answers about the same set of paths the tree lists: a `hidden` folder is pruned and its bytes never quoted, `ro` is searched, and no count of policy-skipped files is reported — an observation of a hidden path is still indistinguishable from absence. |
-| `core/models.py` | Pydantic config models, built from env. |
-| `core/mcphub/` | MCP connectors: declared in `externals.json`, hot toggles. |
-| `core/lsphub/` | Language servers: declared in `lsp_servers.json`, hot toggles. |
-| `core/termhub/` | Editor's terminal: one PTY shell per WebSocket, session registry on `app.state.terminal`. |
-| `core/proctree.py` | Shared process-tree teardown (SIGTERM→reap→SIGKILL) used by both hubs and the terminal. |
+- `config` — `.env` loading, the managed-key template, question-set discovery,
+  and the project-instructions block injected into chat.
+- `api` — the REST and SSE endpoints under one route prefix (everything else
+  serves the SPA), plus the event bus that numbers events so a reconnecting
+  client can replay what it missed.
+- `core` — one streamed LLM call with model warm-up and the verifier call; the
+  benchmark loop; one streamed chat reply including the shared tool-call loop;
+  per-run results and their aggregates; the batch-mode lot listing (task files
+  are listed through the path policy, never read); the WorkBench agent modes.
+- `core/mcphub/` and `core/lsphub/` — the MCP and language-server hubs. Their
+  declarations live in the declaration files under `mcp_connectors/` and
+  `lsp_connectors/` and are hot-toggled from the UI. The two mirror each other —
+  `constants` (paths, timeouts), `discovery` (read/validate/write the
+  declaration file), `manager` (the live hub), plus rendering of tool results.
+  Keep that symmetry when touching either one.
+- `core/editorfs/` — the Editor's file surface. Paths are relative to the working
+  location and every call answers from the workspace policy's verdict. Reads are
+  bounded; writes to `ro`/`hidden` are refused; and no write destroys bytes — a
+  save backs up what it replaces, a delete moves the file into a dated batch in
+  the reserved folder. What the tree lists, the search can answer about, and
+  what is invisible to both is the same set of paths.
+- `core/termhub/` — the Editor's terminal: one shell per WebSocket, on the
+  platform's pseudo-terminal (a PTY, or ConPTY); `$SHELL` on POSIX, and on
+  Windows `TERMINAL_SHELL` or, by default, Git Bash.
+- `core/proctree.py` and `core/proctree_jobs.py` — the process-tree teardown the
+  hubs and the terminal share: one seam, group signalling or a job object.
 
-`mcphub/` and `lsphub/` mirror each other — `constants` (paths, timeouts),
-`discovery` (read/validate/write the declaration file), `manager` (the live
-hub), plus formatting/rendering of tool results. Keep that symmetry when
-touching either one.
+### Frontend (`web/src/`)
 
-### Frontend (`web/src/`, Vite + Vue 3, plain JS, Pico.css)
+Vite + Vue 3, plain JavaScript, Pico.css.
 
-| Path | Purpose |
-|---|---|
-| `composables/` | One reactive singleton per concern; components use them directly. |
-| `lib/markdown.js` | The single markdown renderer (marked + DOMPurify + KaTeX + hljs). |
-| `App.vue` | App bar and the tab views (`v-show`, so every view stays mounted; the Editor view is a lazy chunk). |
-| `components/` | Benchmark widgets, WorkBench widgets, shared chrome. |
-| `styles/theme.css` | Pico CSS variable overrides + app classes (light and dark). |
+- `composables/` hold run and stream state and own each EventSource and its
+  reconnect; components use them directly.
+- `lib/` holds the single markdown renderer — all rendered HTML goes through it,
+  never raw `v-html`.
+- `components/` and `styles/` are the widgets and the theme.
+- The tree's per-file-type icons are a **generated unit**: the glyph mapping, the
+  font subsets and their coverage all come from the tables in
+  `tools/nerd_icons.py`. Edit the tables and regenerate; never hand-edit the
+  generated artifacts.
 
-Frontend invariants: rendered HTML always goes through `lib/markdown.js`, never
-raw `v-html`; and run/stream state lives in the composables, which own the
-EventSource and its reconnect.
+Configuration — `.env` and the two hub declaration files — is edited from the UI
+and takes effect hot, so a change never needs an app restart.
 
 ## How a request flows
 
-All app endpoints live under `/api/`; anything else serves the SPA. The exact
-route list belongs to `api/routes.py` — what matters architecturally:
+The exact route list belongs to the API module; what matters architecturally:
 
-- **Run**: starts the benchmark in a worker thread, watched live over SSE.
-  One run at a time (WorkBench is refused while one runs), cancelled through a
-  `threading.Event` polled both between questions and inside the stream reader.
+- **Run**: the benchmark starts in a worker thread and is watched live over SSE.
+  Only one run at a time (a chat request is refused while one runs), and
+  cancellation is honoured both between questions and mid-stream.
 - **Chat**: one request per reply, streamed back over SSE. The client re-posts
   the whole history each time; the server keeps no conversation state.
 - **Every WorkBench turn runs in an agent mode** — a workspace-owned persona in
-  `.nojae/agent-modes.json` that replaces `LLM_SYSPROMPT` for chat (never for the
-  benchmark) and may switch a whole hub off. Settings ∩ conversation ∩ mode: the
-  mode narrows, it never grants. AGENTS.md itself is always injected, and one
-  mode is app-owned and not editable from the file.
-- **Configuration**: `.env` and the hub declaration files are edited from the UI
-  and take effect hot — an app restart is never needed.
+  the reserved folder's mode file that replaces the configured system prompt for
+  chat (never for the benchmark) and may switch a whole hub off. A mode only ever
+  narrows what settings and the conversation already allow; it never grants
+  anything. This file is injected into every chat turn whatever the mode, and one
+  mode is app-owned and not editable from that file.
 
 ### SSE is the UI's only source of truth
 
-Core emits plain dicts into the `EventBus`, which numbers them so a
-reconnecting client replays what it missed. Each stream has its own channel and
-closes with exactly one terminal event (event names live in `api/routes.py` and
-`core/`). A reply the user paused with `POST /api/chat/pause` still ends on its
-own ack, keeping its partial turn.
+Core emits plain dicts into the event bus, which numbers them so a reconnecting
+client replays what it missed. Each stream has its own channel and closes with
+exactly one terminal event; a reply the user paused still ends on its own ack,
+keeping its partial turn.
 
 Measurement rules hold across every stream:
 
-- **Timing is app-side** (`time.monotonic()`, anchored to content chunks) —
-  warm-up and verifier time never enter the numbers.
+- **Timing is app-side**, anchored to content-chunk arrivals — warm-up and
+  verifier time never enter the numbers.
 - **Cost and rate are different numbers**: token/s uses completion tokens only,
   the displayed cost is prompt + completion.
 
@@ -131,157 +134,117 @@ Measurement rules hold across every stream:
 | File | Role |
 |---|---|
 | `.env` | Run configuration: endpoint, key, prompt, sampling, set, verifier. |
-| `.env.test` | e2e-only endpoint, same key set as `.env.example`. |
-| `resources/<set>.json` | Question sets — `{uuid, question, expected}`. |
+| `.env.test` | Test-only endpoint, same key set as the template. |
+| `resources/*.json` | Question sets — every file there is one selectable set. |
 | `results.json` | Run output, written once when a run ends. |
-| `mcp_connectors/externals.json` | MCP connectors: `remote` (HTTP) or `local` (stdio). |
-| `lsp_connectors/lsp_servers.json` | Language servers: `command` (stdio), `workspaceRoot`. |
-| `<working location>/.nojae/` | The workspace's reserved folder. Its files follow one shared seeding rule and split on who edits them after: `read-write-policy.json` and `agent-modes.json` are seeded by exclusive create when a folder becomes the working location, then edited only outside the app; `prompt-helpers.json` is seeded the same way and is the app's own store, written by the WorkBench bullet picker. `trash/` holds the dated batches the Editor's deletes move. |
+| MCP connector declarations | Which connectors exist: `remote` (HTTP) or `local` (stdio). |
+| Language-server declarations | Which servers exist: a stdio command and its workspace root. |
+| Reserved workspace folder | This workspace's read/write policy, its agent-mode personas, and the app-owned prompt-helper store. |
 
-Any new file in `resources/` becomes a selectable set. The `.env`, `.env.test`
-and the hub declaration files are gitignored, may hold secrets, and each has a
-committed template; `.nojae/` is gitignored too (machine-local per checkout) and
-has no template — it is written by the seeding code. These rules tie them together:
+Those files may hold secrets, so they are gitignored and each has a committed
+template; the reserved folder's files have no template — the app seeds them.
+These rules tie them together:
 
-- **`.env` is regenerated from a fixed template on every save** (`SETTING_KEYS`
-  and `_render_env()` in `src/config.py`): fixed key set and order, empty
-  optional keys commented out, hand-written extras lost. A new or renamed key
-  means editing `SETTING_KEYS`, `_render_env()` and `.env.example` together.
+- **`.env` is regenerated from a fixed template on every save** — fixed key set
+  and order, empty optional keys commented out, hand-written extras lost. A new
+  or renamed key means changing the template, the renderer and the committed
+  example together.
 - **The declaration files are the only source of truth for what runs.** Their
-  `enable` flag is the switch, toggled hot from the UI; their secrets
-  (`headers`, `env`, `initializationOptions`) never leave the server.
-- **The declaration files accept `${NAME}` / `${NAME:-fallback}`**, expanded at
-  read time by each hub's `discovery` module via shared helpers in
-  `mcphub/validation.py`, so a
-  per-machine path or key stays in the environment. Expansion runs *before*
-  validation, and only the braced form is special (a bare `$` stays literal).
-  An unresolved name is kept verbatim with a note, never blanked.
-- **`BENCHMARKIT_PATH_LOCATION`** is the working-location every file-touching
-  connector roots itself at, so one value moves them together. Seeded at boot
-  from the install dir; deliberately not a managed `.env` key, so a settings
-  save can neither erase it nor resurrect a stale value.
-- **Every path the app holds is relative to that location**, so a switch
-  invalidates them all at once: the Editor's tree re-roots (cached listings,
-  branches and selection are forgotten, not re-listed) and every tab of the root
-  it leaves closes, unsaved edits reported rather than negotiated with.
-- **A targeted workspace gets its `.nojae` files** (the read-write policy, the
-  agent modes and the prompt helpers) — seeded with a default at the moments a
-  folder becomes the working location (boot, and the settings switch), by
-  exclusive create so an edited file is never clobbered. Seeding failure is a
-  note, never a refused switch. The folder is **reserved by code**: hidden from
-  the tree, the read and git status, and hand-edited only outside the app — the
-  one file the app itself writes is the prompt-helper store behind the bullets.
-- **Path rules come from two levels, one verdict.** Level A is the app's own
-  rules about files it writes (`**/.env**`, `logs/**`), live only while the
-  working location *is* the install dir — so another project's `.env` is an
-  ordinary file. Level B is the workspace's file, always live. The strictest
-  match wins, so B tightens but never loosens A. A hidden path answers 404 to a
-  read and 422 naming the rule to a write; `ro` answers 422 to a write only.
-- **The connectors answer level B for their own root.** Each local connector reads
-  that workspace file in its own process, so an `ro` folder is uneditable by an
-  agent too; the two stdio connector processes and the app share one parser, one
-  matcher and one refusal sentence. They do not apply level A (a rule about the
-  pane fighting the settings dialog over a generated file), and the connector
-  deny-list still guards everything outside the root — the lists stay separate
-  on purpose, and merging them would move secrets into a per-project file.
+  `enable` flag is the switch; their secrets never leave the server. A value may
+  reference an environment variable so one declaration works on every machine; an
+  unresolved name is kept verbatim with a note, never blanked.
+- **A test run takes its endpoint from the test env file, never from a
+  developer's.**
+- **One setting defines the working location** that every file-touching part of
+  the app roots itself at. It is deliberately outside the settings file, so a
+  settings save can neither erase it nor resurrect a stale value. Every path the
+  app holds is relative to it, so moving it invalidates them all at once: cached
+  views are discarded rather than re-negotiated, and unsaved work is reported
+  rather than silently dropped.
+- **The reserved folder is seeded, then read-only to the app**: its files are
+  created only when absent, so an edited file is never clobbered, and they are
+  changed only outside the app — except the app's own prompt-helper store,
+  which it writes. The folder is hidden from the tree, from reads and from
+  git status; failed seeding is a reported note, never a refusal. Deleted files
+  land in its dated batches instead of vanishing.
+- **Path rules come from two levels, one verdict: the strictest match wins.** One
+  level is the app's rules about files the app itself writes, active only while
+  the working location is the app's own directory — so another project's config
+  files are ordinary files. The other is the workspace's own file, always active:
+  it can tighten the app's rules but never loosen them. A hidden path is
+  indistinguishable from an absent one to a reader and named to a writer; a
+  read-only path is searchable but named to a writer.
+- **The connectors answer the workspace level for their own root**, each reading
+  that policy in its own process, so a read-only folder is uneditable by an agent
+  too — the app and the connector processes share one parser, one matcher and one
+  refusal sentence. The deny-lists guarding everything outside a root stay
+  separate from the workspace's rules on purpose: merging them would move secrets
+  into a per-project file.
 
 ## Key patterns
 
-- **LiteLLM everywhere**: every LLM call is `litellm.completion()` with the
-  `openai/<model>` prefix against an OpenAI-compatible server, `api_key="none"`.
-  The verifier is its own optional endpoint block (`VERIFIER_AGENT_*`); with no
-  verifier endpoint configured, an answer cannot be graded and is failed.
-- **Core owns logic, API owns transport**: blocking LLM work runs in a worker
-  thread publishing to the `EventBus`; the SSE generator consumes it on the
-  event loop. Run and chat use the same worker + cancel pattern.
-- **Hubs are long-lived singletons**: a restart rebuilds the *internals* of the
-  same `McpManager`/`LspManager`. Never swap the object in `app.state` — chat
-  workers hold the reference across a request.
-- **An activated language server is never invisible**: one with no live session
-  (not started, mid-handshake, or reaped for idleness) is still published from
-  its declared tools and revived by its first call. Only `enable: false` and
-  `error` keep it out.
-- **Hub teardown kills process *trees*, not wrappers**: every child leads its
-  own process group and is signalled by group, so the children a language
-  server spawns of its own never outlive the app that started them.
-- **Tools are read-only by design**: LSP tools return information (even
-  `formatting` returns a proposed diff), the `console` connector execs one argv
-  with no shell (pipes, chains, redirections and `$VAR` expansion are refused,
-  `check_command_allowed` is the same parse), and each connector's reach is
-  bounded by a deny-list — `lsp_connectors/restricted-paths.txt` for paths,
-  `mcp_connectors/restricted-fqdn.txt` for hosts.
-- **A `/api/fs` write route is reachable from the SPA only**: no connector, LSP
-  tool or chat code path may call one, and every write route is refused while a
-  chat reply streams. `tests/test_write_surface_isolation.py` asserts that
-  instead of trusting this sentence.
-- **Batch mode never touches file contents**: the `todos/` lot is *listed*
-  through the shared deny-list (`core/batch.py`) and *read/written* only
-  through the connectors; its loop is client-side (`useBatch.js`), so a reload
-  discards a running lot.
-- **A lot runs its tasks in one mode, pinned at launch** — the workspace's
-  coding mode, never the composer's selection, so a dropdown move mid-lot can
-  reach no task. A workspace that has no such mode launches on the server's
-  default and says so rather than being refused.
-- **A batch task is finished when its file left the lot folder**: that move is
-  the agent's own acknowledgement, and re-listing is the only way the loop can
-  see it. A task whose file is still there is relaunched with a retry note,
-  up to the loop's fixed budget, then the whole lot aborts.
-- **Tree file icons are one generated unit**: the per-file-type glyph mapping
-  (`web/src/lib/file-icons.js`), the `nerd-icons-*.woff2` subsets and the
-  `unicode-range` of the "JetBrains Mono Nerd Icons" faces in `nerd-fonts.css`
-  are all produced from the tables in `tools/nerd_icons.py` (`generate`), and a
-  test holds them in sync — a code point with no glyph renders a tofu box, so
-  edit the tables and regenerate, never the artifacts by hand.
-- **AGENTS.md feeds the chat**: when the working location carries an
-  `AGENTS.md`, it is appended to every chat system prompt, re-read per request.
-  Keep it accurate and short — the model acts on it.
-- **Python style**: explicit type annotations (`: str`, `Dict`, `typing`
-  imports).
-- **Tests stay hermetic**: `BENCHMARKIT_DISABLE_MCP=1` / `_LSP=1` skip
-  connecting and spawning; patchable file locations live on `mcphub.constants`
-  / `lsphub.constants` and must be patched through those modules.
+- **One LLM layer.** Every model call — benchmark answer, verifier, chat — goes
+  through the same client against an OpenAI-compatible endpoint, so adding a model
+  is configuration, never new code. Without a verifier endpoint an answer cannot
+  be graded, and is failed rather than guessed.
+- **Core owns logic, the API owns transport.** Blocking work runs in a worker
+  thread publishing to the event bus; the streaming endpoint consumes it. Run and
+  chat share that worker-plus-cancellation pattern, and nothing under `core` may
+  import the API layer.
+- **Hubs are long-lived singletons.** A restart rebuilds a hub's internals but
+  never replaces the object the app holds, because worker threads keep the
+  reference across a request.
+- **A declared-but-unconnected language server is still published** from its
+  declared tools and revived by its first call; only being switched off or
+  errored keeps it out of the catalogue.
+- **Teardown kills process *trees*, not wrappers**, on either platform and by
+  either mechanism, so children a hub or the terminal spawned of their own never
+  outlive the app that started them.
+- **Tools are read-only by design.** Every tool returns information, the shell
+  connector execs a single command with no shell (so command chains, pipes and
+  redirections are unrepresentable), and each connector's reach is bounded by its
+  own deny-list. `tests/test_write_surface_isolation.py` asserts that instead of
+  trusting this sentence: no connector, tool or chat path reaches a write route,
+  and the terminal is never a tool.
+- **The Editor's write surface is the browser's alone**, and it is refused while
+  a chat reply streams. Batch mode lists its lot of task files through the shared
+  path policy but never reads or writes their contents — only the connectors do.
+- **A lot runs every task in one mode, pinned at launch** — the workspace's coding
+  mode, never whatever the composer currently has selected, so moving that choice
+  mid-lot reaches no task. A workspace with no such mode falls back to the
+  server's default and says so rather than being refused.
+- **A task is finished when its file leaves the lot folder**; that move is the
+  agent's own acknowledgement, and re-listing is the only way the loop can see it.
+  A file still there is relaunched up to the loop's budget, then the lot aborts.
+- **This file feeds the chat**: when the working location carries it, it is
+  injected into every chat turn and re-read per request. The model acts on it, so
+  accuracy matters more than volume.
+- **Tests stay hermetic**: connectors and language servers can be disabled by an
+  environment flag, and a test patches a hub's declared file location through that
+  hub's own constants rather than a path it computed.
 
 ## Gotchas
 
-- **A server-cut stream is indistinguishable from a finished answer at the
-  chunk level**: litellm fabricates `finish_reason: "stop"` when no chunk
-  carried one. The honest signal is on the wrapper once the loop is drained —
-  `core.llm.saw_finish_reason()` reads it and fails open. Both loops act on it:
-  a truncated answer is failed and **never sent to the verifier** (grading a
-  fragment measures the transport, not the model), and a truncated chat reply
-  ends on `error` rather than `done` — which also stops a half-streamed tool
-  call from being executed.
-- **Token counts can look server-reported when they are not**: if a stream dies
-  before any usage chunk, litellm back-fills usage by re-counting the chunks it
-  saw, so `tokensEstimated` stays `False`. Missing usage on a normal stream is
-  char-estimated and does get flagged.
-- **litellm cannot price local model names**, and under `LITELLM_DEBUG=1` it
-  logs that swallowed error once per call. `config` registers a zero-cost,
-  provider-qualified entry per configured model to keep it silent.
-- **Node language servers need a real TypeScript compiler** — the frontend's
-  `node_modules/typescript`, passed to Vue via `--tsdk`. Volar delegates `.vue`
-  semantics to its client and awaits the answer, so the hub relays it
-  (`lsphub/tsserver.py`); `lsp_vue_*` checks templates only, not `<script>`
-  type errors.
-- **Adding a connector is never a module in `src/`**: the local connectors are
-  the scripts in `mcp_connectors/`, referenced as `local` entries in
-  `externals.json`. Add the file *and* the entry.
+- **A stream cut by the server looks like a finished answer** at the chunk level.
+  The honest signal is whether a real finish marker was ever seen, read after the
+  loop is drained. A truncated benchmark answer is failed and never sent to the
+  verifier (grading a fragment measures the transport, not the model), and a
+  truncated chat reply ends as an error, which also stops a half-streamed tool call
+  from being executed.
+- **Token counts can look server-reported when they are not**: a stream that dies
+  before any usage chunk gets a re-counted back-fill, so a reported figure is not
+  evidence of where it came from. Keep the estimated flag honest.
+- **Local model names cannot be priced** by the client, which logs that swallowed
+  error on every call when client debugging is on; each configured model is
+  registered at zero cost to keep the log clean.
+- **Adding a connector is never a module under `src/`** — a local connector is a
+  script next to its declaration file plus an entry naming it. Both halves are
+  needed.
 
-## Editing AGENTS.md
+## Maintaining this file
 
-- This file is injected into every WorkBench system prompt, so its size is paid
-  for on each message. Stay under ~300 lines.
-- Describe the **big picture**: what the pieces are and which invariants hold.
-  Route-level detail, exhaustive lists and per-feature essays belong in the
-  code, the README, or a doc comment next to the thing they describe.
-- Keep out anything a routine code change would make wrong: counts ("three
-  tabs", "four routes"), named enumerations of members, test totals and version
-  numbers. State the invariant instead — *what* the write surface guarantees,
-  not how many endpoints implement it. The code and its tests are the source of
-  truth for those details. Naming the *one* test that enforces an invariant is
-  the exception: it is a pointer, not a count.
-- One idea per bullet, no single long line — wrap prose at ~100 columns.
-- Describe the app as it is now. Nothing about a past session, a rename, a
-  previous state of the file, or what used to be true.
-- When code changes, delete or shrink the paragraph here rather than appending
-  a newer, longer one beside it.
+Apply the rules above whenever you edit it: keep the big picture, cut what the
+code already says, and name the invariant rather than describing an implementation
+that a routine change would move. One idea per bullet, and no line so long it
+stops being read. A test that exists to enforce an invariant is worth naming as a
+pointer — the invariant stays the point.

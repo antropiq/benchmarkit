@@ -65,7 +65,8 @@ from typing import Optional, Tuple
 
 from src.config import path_location
 
-from .constants import policy_shared as shared
+from . import fscase
+from .constants import path_norm, policy_shared as shared
 
 
 class WorkspacePathError(Exception):
@@ -155,6 +156,72 @@ def workspace_root() -> str:
     return os.path.realpath(path_location())
 
 
+def _is_within(parent: str, child: str, *, fold: bool) -> bool:
+    r"""Is ``child`` the same path as ``parent`` or below it? The one rule (A-D2.2).
+
+    Both arguments are **absolute, already-resolved** text (``os.path.realpath``
+    or ``Path.resolve()``) — this answers where a path landed, never whether a
+    caller may ask for it; the textual lock in :func:`normalise_rel` and the
+    verdict in :func:`editorfs.policy_modes.mode_for` stay the other two.
+
+    It replaces the prefix test each of five sites hand-built — the child
+    equal to the parent, or beginning with the parent plus one separator
+    (roadmap §2.5). Those were separator-consistent, both sides came from
+    ``realpath``, but they were exact-text, so on a volume that folds case one
+    spelling of one folder stopped matching. Comparing **component lists**
+    through the shared splitter (``path_norm.path_parts``) keeps the meaning and
+    drops the two traps: a ``\``-spelled Windows path compares correctly on any
+    runner, and ``/a/bc`` is not inside ``/a/b`` because the components differ,
+    not because a trailing separator is missing.
+
+    ``fold`` is always explicit (win-05's convention, roadmap §9 rule 2): the
+    answer comes from :func:`editorfs.fscase.case_folded` at the call site, which
+    keeps both outcomes testable on the Linux runner. With ``fold=False`` this is
+    exactly the old prefix test, so every existing Linux verdict is unchanged.
+    Folding cannot merge two components — no character casefolds to a separator —
+    so the component counts still line up.
+
+    A parent with **no components to compare** contains nothing: ``""`` is a
+    caller bug, and refusing is the safe direction for a lock (see
+    :func:`_absolute_parts`, which is what leaves a component list empty).
+
+    **Which root's fold answers a deny-list compare.** The sites that compare a
+    root against ``lsp_connectors/restricted-paths.txt`` (:func:`_check_workspace_root`,
+    ``api/routes.py``, ``lsphub/discovery.py``) ask about a pair that may sit on
+    different volumes — a denied credential store under one profile home and a
+    workspace on another volume.
+
+    The honest simple choice, taken here and to be revisited by target B: fold
+    such a compare when the probe of the **workspace** says its filesystem folds
+    case — the workspace the app works in, or the one being switched *to* at the
+    settings dialog — so there is one answer per running configuration and no
+    probing a folder the app has just decided it may not open.
+    """
+    parent_parts = _absolute_parts(parent)
+    child_parts = _absolute_parts(child)
+    if not parent_parts or len(child_parts) < len(parent_parts):
+        return False
+    if fold:
+        parent_parts = tuple(part.casefold() for part in parent_parts)
+        child_parts = tuple(part.casefold() for part in child_parts)
+    return child_parts[: len(parent_parts)] == parent_parts
+
+
+def _absolute_parts(text: str) -> Tuple[str, ...]:
+    """``text`` as the components a containment compare is allowed to see.
+
+    The shared splitter (win-02/win-04) answers what a path *text* is, so it is
+    used here too — and for an absolute path its leading separator survives as an
+    empty leading component. Dropping the empties keeps the compare about
+    **names**, and keeps the guard above honest: a text with no component of its
+    own — ``""``, or the bare ``/`` the old prefix test matched nothing against
+    either — contributes no list to match, so it contains nothing rather than
+    everything. Two real paths cannot be merged by it: what remains still has to
+    match in order and in count.
+    """
+    return tuple(part for part in path_norm.path_parts(text) if part)
+
+
 def _check_workspace_root() -> str:
     """The workspace root, refused when it sits on the LSP root deny-list.
 
@@ -167,9 +234,15 @@ def _check_workspace_root() -> str:
     from src.core.lsphub.discovery import restricted_lsp_roots
 
     root = workspace_root()
-    for denied in restricted_lsp_roots():
+    denied_entries = restricted_lsp_roots()
+    # One fold answer for the whole compare, from the *workspace's* volume
+    # (see :func:`_is_within`); the denied entries themselves are never probed.
+    # Asked only when the list has lines, so a hub without a deny-list costs no
+    # disk question.
+    fold = fscase.case_folded(root) if denied_entries else False
+    for denied in denied_entries:
         entry = os.path.realpath(denied)
-        if root == entry or root.startswith(entry + os.sep):
+        if _is_within(entry, root, fold=fold):
             raise WorkspacePathError(
                 422,
                 f"Working location is on the deny-list: {denied}",
@@ -177,28 +250,96 @@ def _check_workspace_root() -> str:
     return root
 
 
-def normalise_rel(rel: Optional[str]) -> str:
-    """The textual lock: a clean root-relative path, or a 422.
+def _qualified_refusal(text: str, rel: Optional[str]) -> WorkspacePathError:
+    """The 422 for a path text that **cannot** be workspace-relative, by shape.
 
-    Returns "" for the workspace root itself. ``os.path.normpath`` collapses
-    ``a/../b`` *before* the check, so a traversal that stays inside the
-    workspace stays legal and only a ``..`` that survives normalisation (one
-    that would leave it) is refused — as are a NUL byte, an absolute path and
-    a leading ``~`` (which the connectors never expand).
+    A-D2.1: the sentence names what is wrong with the text — an absolute POSIX
+    path, a UNC share root, a drive-relative name, an absolute Windows path —
+    never where the path happened to land. "outside the working location" is the
+    containment lock's sentence, and using it here would let the reader conclude
+    that a different workspace would take the path, when the shape never can.
+
+    Every sentence keeps the phrase **"relative to the workspace"**: the shape
+    has to be refused whatever the working location is, and that is the one
+    clause the browser and the tests both match on.
+    """
+    workspace = path_location()
+    backslash = "\\"
+    # The leading-separator shapes are read off the caller's own text, so a UNC
+    # root keeps its name (``canonical_rel`` collapses ``//srv/share`` to a
+    # single-slash path). The drive letter is read off the **canonical** form:
+    # ``..`` cancellation can create the leading spec (``a\..\C:x`` -> ``C:x``),
+    # and the shape to name is the one a later ``join`` would have received.
+    canonical = path_norm.canonical_rel(text)
+    if text[:2] in ("//", backslash * 2):
+        # ``\\srv\share`` / ``//srv/share`` — a share root, whose first name is
+        # a server rather than a component of this workspace.
+        reason = "it is a UNC share root"
+    elif text[:1] in ("/", backslash):
+        # ``/etc/x``: on Windows ``os.path.isabs`` calls this *relative*, so it
+        # used to reach ``os.path.join`` and escape through it.
+        reason = "it is an absolute path, rooted at the machine rather than here"
+    elif canonical[2:3] in ("/", backslash):
+        # ``C:\x`` — absolute on a drive the workspace is not on.
+        reason = f"it names a drive ({canonical[:2]}), not the workspace"
+    else:
+        # ``C:x`` names that drive's *current* directory, so
+        # ``ntpath.join(workspace, "C:x")`` answers a path on another drive.
+        # ``a:b`` is the residue of the same rule (win-02): a legal POSIX name,
+        # and no rule refuses ``C:x`` without refusing it too, so the sentence
+        # names the shape rather than the letter.
+        reason = (
+            f"it names a drive ({canonical[:2]}), not the workspace "
+            "(a drive-relative path)"
+        )
+    return WorkspacePathError(
+        422,
+        f"Path must be relative to the workspace: {rel!r} — {reason} "
+        f"(workspace {workspace})",
+    )
+
+
+def normalise_rel(rel: Optional[str]) -> str:
+    """The textual lock: the canonical root-relative path, or a 422.
+
+    The one inbound lock (A-D1): everything downstream — the matcher, the
+    ancestor walk, every ``path`` payload echoed to the browser, ``results.json``
+    — sees ``/``-joined workspace-relative text **on every platform**. A backslash
+    is accepted here and never emitted, so Windows ``src\\config.py`` and Linux
+    ``src/config.py`` name one file, and a path string still means the same thing
+    in a report from either box.
+
+    Returns "" for the workspace root itself. ``path_norm.canonical_rel`` collapses
+    ``a/../b`` *before* the check, so a traversal that stays inside the workspace
+    stays legal and only a ``..`` that survives normalisation (one that would
+    leave it) is refused — as are a NUL byte, a qualified path of any shape (see
+    :func:`_qualified_refusal`) and a leading ``~``, which the connectors never
+    expand and which is therefore refused **before** any expansion could run
+    (A-D2.3).
+
+    The order of those checks is load-bearing: a shape is refused before it is
+    canonicalised, because ``canonical_rel`` deliberately keeps a leading
+    separator rather than translating the shape away. ``os.path.isabs`` is not
+    consulted at all — it is OS-relative and misses ``/etc/x``, ``//srv/share``
+    and ``C:x`` on Windows (roadmap §2.1), and a second absolute check here would
+    be a second definition of the same thing, free to drift from the first.
     """
     text = (rel or "").strip()
     if "\0" in text:
         raise WorkspacePathError(422, "Path must not contain a NUL byte")
-    if os.path.isabs(text) or text.startswith("~"):
+    if path_norm.is_qualified(text):
+        raise _qualified_refusal(text, rel)
+    if text.startswith("~"):
         raise WorkspacePathError(
             422,
-            f"Path must be relative to the workspace: {rel} "
+            f"Path must be relative to the workspace: {rel} — a leading '~' is "
+            f"a home directory the workspace does not own, and it is not expanded "
             f"(workspace {path_location()})",
         )
-    normalised = os.path.normpath(text)
+    normalised = path_norm.canonical_rel(text)
     if normalised in ("", "."):
         return ""
-    if normalised == ".." or os.path.isabs(normalised) or ".." in Path(normalised).parts:
+    if normalised == ".." or ".." in Path(normalised).parts:
         raise WorkspacePathError(422, f"Path must not contain '..': {rel}")
     return normalised
 
@@ -213,7 +354,7 @@ def _resolve(normalised: str, *, for_write: bool) -> Path:
     """
     workspace = _check_workspace_root()
     candidate = os.path.realpath(os.path.join(workspace, normalised))
-    if candidate != workspace and not candidate.startswith(workspace + os.sep):
+    if not _is_within(workspace, candidate, fold=fscase.case_folded(workspace)):
         raise WorkspacePathError(
             422,
             f"Path is outside the working location: {normalised} "
@@ -276,12 +417,15 @@ def resolve_write_target(rel: Optional[str]) -> Tuple[Tuple[str, Path], ...]:
         raise blocked
     normalised = normalise_rel(rel)
     resolved = _resolve(normalised, for_write=True)
+    # ``path_norm.path_parts`` rather than a split of this module's own: the
+    # ancestor walk and the matcher must agree about what a component is *by
+    # construction* (win-04 / A-D1). The payload shape is unchanged — one pair
+    # per level, ancestors first, each prefix ``/``-joined.
     chain: Tuple[Tuple[str, Path], ...] = ()
-    if normalised:
-        prefix = ""
-        for component in normalised.split("/")[:-1]:
-            prefix = f"{prefix}/{component}" if prefix else component
-            chain += ((prefix, _resolve(prefix, for_write=True)),)
+    components = path_norm.path_parts(normalised)
+    for depth in range(1, len(components)):
+        prefix = "/".join(components[:depth])
+        chain += ((prefix, _resolve(prefix, for_write=True)),)
     return chain + ((normalised, resolved),)
 
 
@@ -367,8 +511,13 @@ def resolve_parent_in_workspace(rel: Optional[str]) -> Tuple[str, Path, str]:
         raise WorkspacePathError(
             400, "A new file or folder needs a name inside the workspace"
         )
-    parent_rel, _, name = normalised.rpartition("/")
-    parent_rel = normalise_rel(parent_rel)
+    # One splitter again (win-04 / A-D1): on a ``\``-shaped input the right-hand
+    # split found no separator and handed back an empty parent, so a create
+    # *named* the workspace root (roadmap §2.4). The parent is everything but the
+    # last component, re-joined with ``/`` and re-normalised as before.
+    components = path_norm.path_parts(normalised)
+    name = components[-1]
+    parent_rel = normalise_rel("/".join(components[:-1]))
     _, parent = resolve_write_target(parent_rel)[-1]
     # The leaf name itself, asked of the same verdict — on the **relative** path,
     # since that is the form the rules are written in. It cannot go through the

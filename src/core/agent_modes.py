@@ -623,9 +623,6 @@ def _read_text(path: str) -> Tuple[Optional[str], bool, List[ModeFinding]]:
             return (handle.read(), True, [])
     except FileNotFoundError:
         return (None, False, [])
-    except IsADirectoryError as exc:
-        return (None, True, [_file_error(
-            path, f"is a folder, not a file: {exc.strerror or exc}")])
     except NotADirectoryError as exc:
         return (None, True, [_file_error(
             path, f"cannot be reached: {exc.strerror or exc}")])
@@ -634,6 +631,19 @@ def _read_text(path: str) -> Tuple[Optional[str], bool, List[ModeFinding]]:
             path, f"is not UTF-8 text: {exc.reason} (at byte {exc.start})"
         )])
     except OSError as exc:
+        # Which exception a folder answers with is the platform's choice —
+        # ``IsADirectoryError`` on POSIX, a bare ``PermissionError`` (errno 13)
+        # on Windows — so what the finding says is decided by what stands at the
+        # path, not by which of the two the OS raised. Otherwise a Windows user
+        # is told the folder they can see is an unreadable file. Asking only on
+        # this failing path keeps the normal ones at the cache's one ``stat``.
+        try:
+            info = os.stat(path)
+        except OSError:
+            # The name is gone by the time we ask — the ordinary absent case.
+            return (None, False, [])
+        if not stat_module.S_ISREG(info.st_mode):
+            return (None, True, [_file_error(path, "is a folder, not a file")])
         return (None, True, [_file_error(
             path, f"cannot be read: {exc.strerror or exc}")])
 
@@ -894,6 +904,17 @@ def _ensure_agent_modes(root: str) -> Dict[str, Any]:
                 "failed", path, "a folder stands where the agent-modes file belongs"
             )
         return _state_dict("existing", path)
+    except PermissionError:
+        # Which error a **folder** at that path answers with is the platform's
+        # choice: ``EEXIST`` on POSIX, ``EACCES`` on Windows — the exclusive open
+        # cannot create over a directory there. Same condition, same sentence, so
+        # a user is told what stands where the file belongs rather than being
+        # told the folder they can see is an unreadable file.
+        if not _is_regular_file(path):
+            return _state_dict(
+                "failed", path, "a folder stands where the agent-modes file belongs"
+            )
+        return _state_dict("failed", path, "the agent-modes path cannot be written")
     except OSError as exc:
         return _state_dict("failed", path, exc.strerror or str(exc))
     try:

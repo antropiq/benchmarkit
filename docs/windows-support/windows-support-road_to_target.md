@@ -192,6 +192,12 @@ implementation selected by capability, with the *same* escalation shape
 honest to the same contract. This belongs to B because it is only needed once
 connectors and language servers run there.
 
+**Landed (csl-02) as `src/core/proctree_jobs.py`** — `ctypes` only, no new
+dependency — behind `proctree`'s two existing entry points, plus its
+cross-platform liveness probe `process_is_gone`. The terminal is its second
+caller (target C); the LSP hub still refuses on Windows until a further lot
+lifts that guard.
+
 ## 6. The terminal is the model, not a problem
 
 `termhub/session.py` imports `pty`/`fcntl`/`termios` under an
@@ -202,6 +208,13 @@ renders as a sentence. That is the pattern every other subsystem should follow
 when it cannot work: **refuse in words that name the reason.** A's job for the
 terminal is only to keep it that way. C is the work to make it actually run
 (ConPTY), and it is the only target that needs a new dependency.
+
+**Both halves landed, and the sentence is still the model** (target C, the csl
+lot): the platform-name guard is gone from `routes.py` and from `session.py`, and
+what refuses is a **capability probe** — no available pseudo-console driver, or
+no usable shell — each answering the same shape (`error` frame, close code 4501,
+one sentence naming what was looked for), forced by tests on both platforms.
+`useTerminal.js` renders it unchanged: C needed no frontend change.
 
 ## 7. What is already correct — do not let a "Windows pass" churn it
 
@@ -246,6 +259,16 @@ a lower target pretends to be a higher one.
 | **New dependency** | none | none (ctypes/Win32 for jobs, or `pywin32` — decided in B) | one (`pywinpty`-class) |
 | **Size** | small and surgical: one normalisation point, one case decision, a refusal path, the test gate | medium: a redesign of `proctree` and `console_mcp`'s command model | medium, isolated to `termhub/` |
 | **Blocks the other** | B and C both sit on A — a connector whose path policy does not match is unsafe to enable | C sits on B's `proctree` work (a terminal session is a process tree) | — |
+
+**How each landed** (a correction to the table, not an annotation beside it):
+**A** landed as the win lot. **B** landed only for the MCP hub — target B1, the
+console connector over Git's toolset — so B's promise is **not** fully kept:
+language servers still refuse on Windows, and lifting that is a further lot with
+its own verification. **C** landed as the csl lot, with **C-D2 amended**: the
+terminal's shell is Git Bash over ConPTY, not `cmd.exe`, and the `windows` extra
+(`pywinpty`) is the one new dependency the C column predicted. B's open
+dependency question settled as `ctypes` against `kernel32` — no package for the
+job half.
 
 **Order, and why.** A first, always: it is the only target that closes a hole,
 and B is *unsafe* without it — enabling a connector whose path policy silently
@@ -302,9 +325,20 @@ risk in developing B and C there.
 - **A Windows CI runner.** The plans assume a Linux runner plus a developer's
   Windows box, with the A plan's marker conventions making that safe. Adding a
   Windows job is an option, not a requirement.
-- **Windows ARM, Server Core, and Git Bash / MSYS as a runtime.** The target is
-  Windows 10/11 desktop with CPython and Node, as AGENTS.md already scopes the app
-  to desktop browsers.
+- **Windows ARM and Server Core.** The target is Windows 10/11 desktop with
+  CPython and Node, as AGENTS.md already scopes the app to desktop browsers.
+- **"Git Bash / MSYS as a runtime" — corrected: this excluded the app itself
+  running on MSYS, not Git's binaries being used.** The target is still native
+  Windows CPython and Node: nothing about the app is hosted under an emulation
+  layer, and its path model stays the Windows one. What the two shipped lots do
+  use Git for Windows for is (a) the `console` connector's **tool binaries**
+  (target B1 — `ls.exe`, `grep.exe`, … `Popen`'d directly, never an interpreter)
+  and (b) the Editor terminal's **shell** (target C's amendment to C-D2, Git Bash
+  over ConPTY). Both come from the one install probe, `mcp_connectors/gitbash.py`.
+  The console tool still executes no shell. Launching the app *from* a Git Bash
+  window is ordinary too: `termhub/shells.py` refuses a POSIX-shaped
+  `TERMINAL_SHELL` by name rather than spawning it, and hands the child Git's
+  directories prepended to `PATH` in Windows form.
 
 ## 11. How this document set is verified
 

@@ -30,6 +30,28 @@ def mcp_installed() -> bool:
     return importlib.util.find_spec("mcp") is not None
 
 
+def mcp_reach_is_refused() -> bool:
+    """Must a ``local`` connector be refused here? (win-07 / A-D4, lifted by B1.)
+
+    One answer, consulted by :func:`load_externals` (called at boot and on every
+    hub reload, so the validation note appears in both) and by ``McpManager``
+    (which must not spawn the entry). It is read through this hub's
+    ``constants`` — the single named seam — so a test forces it by patching one
+    attribute here. This hub's guardrails are the connector prefix lists of
+    ``mcp_connectors/path_policy``, so the shape question is asked without an
+    explicit list.
+
+    This hub asks only the *guardrail* half, and since lspfinal-04 so does the
+    LSP hub: the two predicates are one shape again (AGENTS.md — the hubs mirror
+    each other). What a connector's path reach is bounded by is the prefix lists
+    of ``path_policy``, which speak both platforms' path forms; its children are
+    short-lived direct children the connector itself kills on timeout, on top of
+    the hub's wrapper kill — bounding *path* reach is the whole claim a console
+    or fedit makes.
+    """
+    return not constants.guardrails_speak_here()
+
+
 def load_externals(
     path: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -58,6 +80,10 @@ def load_externals(
         return [], [f"{root.name} is not readable JSON: {exc}"]
     if not isinstance(data, dict):
         return [], [f"{root.name} must contain an object of connectors keyed by id"]
+    # One reach answer per scan, not per entry (the capability is a property of
+    # the deployment, and asking the seam once keeps every note in one load
+    # consistent with every other).
+    refused_local = mcp_reach_is_refused()
     for connector_id in sorted(data):
         prefix = f"{root.name}: '{connector_id}'"
         entry = data[connector_id]
@@ -113,6 +139,19 @@ def load_externals(
         note = unresolved_env_note(prefix, missing)
         if note is not None:
             errors.append(note)
+        if kind == "local" and refused_local and entry.get("enable", False):
+            # A ``local`` entry is a stdio child whose reach is bounded only by
+            # the POSIX prefixes of ``mcp_connectors/path_policy``. Where those
+            # speak nothing (win-07 / A-D4) the entry is still loaded — a card
+            # naming the gap beats a vanished connector — but the hub refuses to
+            # start it and marks it ``error`` with the same words. Asked only of
+            # an entry that *wants* to run: a disabled one is nobody's missing
+            # capability, and its silence is today's Linux behaviour. Remote
+            # entries are untouched: they carry no local path reach, and their
+            # ``restricted-fqdn.txt`` guard is separator-free.
+            errors.append(
+                f"{prefix}: {constants.LOCAL_REACH_REFUSAL} — not started"
+            )
         description = entry.get("description")
         connectors.append(
             {

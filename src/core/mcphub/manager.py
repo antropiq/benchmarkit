@@ -20,9 +20,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import constants
-from .discovery import mcp_installed
+from .discovery import mcp_installed, mcp_reach_is_refused
 from .formatting import extract_tool_result_text, tools_to_openai_format
 from .process import connector_environment
+
+
+def _wants_local_run(connector: Dict[str, Any]) -> bool:
+    """Is this entry a ``local`` connector the declaration file wants running?
+
+    The refusal is about a capability the user asked for and cannot be had, so
+    an ``enable: false`` entry is excluded: its silence is the switch it already
+    made, not a missing guardrail (and on Linux the whole question is never
+    asked).
+    """
+    return bool(connector.get("enable")) and connector.get("kind") == "local"
 
 
 class McpManager:
@@ -56,16 +67,32 @@ class McpManager:
 
     @staticmethod
     def _index(connectors: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        """Definition list -> id-keyed live records (also used by :meth:`restart`)."""
-        return {
-            connector["id"]: {
+        """Definition list -> id-keyed live records (also used by :meth:`restart`).
+
+        A ``local`` entry that asks to run whose reach cannot be bounded
+        (win-07 / A-D4) is named ``error`` here, at the moment the declaration
+        file is read, rather than only when a start is attempted: the panel then
+        shows the sentence the validation scan shows, and the entry is kept out
+        of the tool catalogue by the rule that already excludes a failed
+        connection. ``remote`` entries keep their ``stopped`` starting state —
+        they have no local path reach — and a disabled entry is the user's own
+        switch, so it stays ``stopped`` whatever the guardrails can bound.
+        """
+        refused = mcp_reach_is_refused()
+        records: Dict[str, Dict[str, Any]] = {}
+        for connector in connectors:
+            refusal = (
+                constants.LOCAL_REACH_REFUSAL
+                if refused and _wants_local_run(connector)
+                else None
+            )
+            records[connector["id"]] = {
                 **connector,
                 "kind": connector.get("kind", ""),
-                "status": "stopped",
-                "error": None,
+                "status": "error" if refusal else "stopped",
+                "error": refusal,
             }
-            for connector in connectors
-        }
+        return records
 
     async def start_all(self) -> None:
         """Connect a client to every enabled connector. Never raises.
@@ -97,8 +124,20 @@ class McpManager:
         self._loop.run_forever()
 
     async def _start_one(self, connector_id: str) -> None:
-        """Bring one connector up. Never raises."""
+        """Bring one connector up. Never raises.
+
+        The refusal (win-07 / A-D4) lands here rather than only in
+        :meth:`start_all`, because this is the one gate every start path goes
+        through — boot, the settings toggle, and a hub restart — so a ``local``
+        connector cannot be spawned by any of them while its guardrails match
+        nothing. The status is the same sentence the declaration scan reports,
+        so the card and the note cannot disagree.
+        """
         info = self._connectors[connector_id]
+        if info.get("kind") == "local" and mcp_reach_is_refused():
+            info["status"] = "error"
+            info["error"] = constants.LOCAL_REACH_REFUSAL
+            return
         try:
             await self._start_connector(connector_id, info)
         except Exception as exc:  # noqa: BLE001 — startup errors land in status
@@ -193,10 +232,17 @@ class McpManager:
         """Start (or restart) one connector from a synchronous caller. Never raises.
 
         Fire-and-forget: the status flips to ``starting`` right away and the
-        connection attempt runs on the hub thread.
+        connection attempt runs on the hub thread. The reach refusal (win-07 /
+        A-D4) is answered *here* rather than left to the queued coroutine, so a
+        refused entry is never briefly shown as ``starting`` by the settings
+        toggle that just asked for it.
         """
         info = self._connectors.get(connector_id)
         if info is None or self._loop is None or self._stopped:
+            return
+        if _wants_local_run(info) and mcp_reach_is_refused():
+            info["status"] = "error"
+            info["error"] = constants.LOCAL_REACH_REFUSAL
             return
         info["status"] = "starting"
         info["error"] = None

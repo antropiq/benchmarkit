@@ -261,12 +261,22 @@ test('a search raised on the root row names the workspace, and reaches a nested 
   await seed(request, file, 'needle at the top level\n')
   // `rootLabel()` is the basename of the working location, read from the app
   // rather than hardcoded: the same route `03-workspace-switch.spec.js` asks.
+  // The separator is the host's (`realpath`'s answer, win-01), so the split
+  // takes both shapes — the same fold the app's own `rootLabel()` does.
   const rootName = (await (await request.get('/api/path-location')).json()).path
     .replace(/[/\\]+$/, '')
-    .split('/')
+    .split(/[/\\]/)
     .pop()
 
   await openEditor(page)
+  // The first listing is what teaches the app *which* workspace it is browsing:
+  // `rootLabel()` answers the basename off that payload, and until it lands the
+  // root row (and a scope label snapshotted from it, 2.7) says only
+  // `workspace`. Waiting for one of the root's own child rows is the app's
+  // statement that the listing has landed — a user makes this gesture on a
+  // named row, and raising it earlier would snapshot the fallback rather than
+  // the name under test.
+  await expect(page.locator(`.tree-row[data-path="${SCRATCH}"]`)).toBeVisible()
   // The root row is the tree's own first row (`data-path=""`). Nothing below it
   // is expanded: the scan walks collapsed branches, so a nested file is found
   // without the user ever opening its folder.

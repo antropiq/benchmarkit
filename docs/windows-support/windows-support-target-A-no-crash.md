@@ -136,7 +136,7 @@ declaration-file problem.
 
 | surface | today on Windows | A's behaviour |
 |---|---|---|
-| Editor terminal | already honest (`os.name != "posix"` → `error` frame + `CLOSE_CODE_UNSUPPORTED`) | unchanged, and tested from Windows too |
+| Editor terminal | already honest (`os.name != "posix"` → `error` frame + `CLOSE_CODE_UNSUPPORTED`) | unchanged, and tested from Windows too — **superseded by target C**: the refusal is now the driver/shell **capability probe** behind `termhub/drivers.py` and `termhub/shells.py`, same `error` frame and same 4501, and a Windows shell now runs when the probe answers yes |
 | Local MCP connectors | spawn `python mcp_connectors/x_mcp.py`; policy no-ops | refused, note naming target B (A-D4) |
 | Language servers | spawn; `start_new_session` ignored; teardown kills the wrapper only | refused, note naming target B (A-D4) |
 | `console` connector command set | `dir` is whitelisted but has no `dir.exe` → `FileNotFoundError` | not reached (row above) |

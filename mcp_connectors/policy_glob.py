@@ -27,8 +27,11 @@ The vocabulary pol-00, pol-04 and pol-06 rely on:
   ``**`` **zero or more whole path components**.
 * **Component boundary, always**: a wildcard ends on a ``/`` or at the end of a
   name, never mid-name -- unless the pattern says so (``.env*``, ``node*``). So
-  ``web/node`` never matches ``web/node_modules/x``. Case-sensitive on POSIX:
-  ``Dist`` and ``dist`` are two directories.
+  ``web/node`` never matches ``web/node_modules/x``. Case: ``Dist`` and ``dist``
+  are two directories on a filesystem that keeps them apart, and one directory
+  on one that does not -- so comparison folds only when the caller says it may
+  (the ``fold`` keyword, win-05). The default is ``False``, which is the answer
+  for every caller that has not probed a filesystem, and exactly right on POSIX.
 * **A rule naming a directory covers its subtree**: the pattern is tested as a
   whole-component prefix of the path too, so ``web/node_modules`` matches
   ``web/node_modules/react/index.js`` without writing ``web/node_modules/**``.
@@ -50,6 +53,15 @@ pattern that would mean "this whole workspace" is a bare ``**``, and
 
 from typing import List, Optional
 
+try:  # imported as part of the package (tests, the app through ``editorfs``)
+    from . import path_norm
+except ImportError:  # run as a plain script path, as externals.json does
+    import os
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import path_norm  # type: ignore[no-redef]
+
 # The two characters with meaning inside a name. Everything else, ``[``
 # included, is literal.
 _WILDCARD_CHARS: frozenset[str] = frozenset({"*", "?"})
@@ -62,7 +74,7 @@ _WILDCARD_CHARS: frozenset[str] = frozenset({"*", "?"})
 CROSS_COMPONENT = "**"
 
 
-def pattern_matches(pattern: str, rel: str) -> bool:
+def pattern_matches(pattern: str, rel: str, *, fold: bool = False) -> bool:
     """True when ``pattern`` matches the normalised workspace-relative ``rel``.
 
     Both sides are POSIX-joined relative paths: no leading ``"./"``, no trailing
@@ -74,6 +86,16 @@ def pattern_matches(pattern: str, rel: str) -> bool:
     Never raises on a weird pattern: one that :func:`pattern_error` rejects
     matches nothing. pol-04 turns that verdict into a message, and "a rule that
     cannot be read applies to no path" is the safe half of the deal.
+
+    ``fold`` (win-05, A-D3) says whether ``Dist`` and ``dist`` are one name:
+    the **caller's filesystem** decides it, never this module, which reads no
+    disk. The app passes the answer of :func:`editorfs.fscase.case_folded` for
+    the active workspace; the two stdio connectors leave the default, which is
+    what is true of their POSIX reach today (target B is what gives them a
+    real value). Folding is **comparison only**: the pattern, the path, a
+    verdict's ``pattern`` field and a refusal sentence all keep the spelling
+    the author typed, because a rule that prints ``DIST/**`` when the file said
+    ``dist/**`` is a panel that lies about the user's own file.
     """
     if pattern_error(pattern) is not None:
         return False
@@ -81,7 +103,7 @@ def pattern_matches(pattern: str, rel: str) -> bool:
     path = _path_segments(rel)
     if path is None:
         return False
-    return _match_with_subtree(pattern.split("/"), path)
+    return _match_with_subtree(pattern.split("/"), path, fold=fold)
 
 
 def literal_prefix(pattern: str) -> str:
@@ -142,7 +164,9 @@ def pattern_error(pattern: str) -> Optional[str]:
     return None
 
 
-def reserved_component_hit(rel: str, dirname: str) -> Optional[str]:
+def reserved_component_hit(
+    rel: str, dirname: str, *, fold: bool = False
+) -> Optional[str]:
     """The component of ``rel`` equal to the reserved folder name, else ``None``.
 
     Checked on the **component list, before any ``stat``**: an absent path still
@@ -151,14 +175,23 @@ def reserved_component_hit(rel: str, dirname: str) -> Optional[str]:
     rule naming the folder that holds the rules is a contradiction (pol-00 D5),
     so the check has to survive a broken or absent policy file.
 
+    ``fold`` means what it means in :func:`pattern_matches` (win-05): on a
+    filesystem that keeps ``.NOJAE`` and ``.nojae`` as one folder, the
+    reservation has to cover both spellings or the reserved folder stops being
+    reserved there. The answer is always ``dirname`` — the name in use — never
+    the spelling the caller arrived with, so a refusal still quotes the folder
+    the user has to edit the file in.
+
     It lives in this module because it is the same kind of pure text test, and
     pol-08 has the two stdio connectors make it too: they cannot import ``src``,
     so the one implementation has to sit where both reach it.
     """
     if not dirname:
         return None
-    for component in rel.split("/"):
-        if component == dirname:
+    needle = dirname.casefold() if fold else dirname
+    for component in path_norm.path_parts(rel):
+        name = component.casefold() if fold else component
+        if name == needle:
             return dirname
     return None
 
@@ -173,17 +206,31 @@ def _path_segments(rel: str) -> Optional[List[str]]:
     ``"a//b"`` or ``"./a"`` reaching this far means a lock was skipped -- and
     answering "no match" is what keeps that mistake from being reported as a
     rule that hides a folder.
+
+    The split is :func:`mcp_connectors.path_norm.path_parts` — the one splitter
+    the ancestor walk, the search prune and the batch lot use too, so the
+    matcher and the locks agree about what a component is *by construction*
+    (win-04/win-05). That splitter is deliberately forgiving about shapes the
+    lock refuses outright, so the tripwire is stated here rather than inherited
+    from it: a backslash, a leading separator or a ``..``, and anything not
+    already in canonical form, answers ``None``. A rule is written relative to
+    the workspace, so a path that is not relative has nothing for a rule to be
+    about -- matching its tail would be right-anchoring, the very thing this
+    module refuses to do (see the module docstring on ``PurePosixPath.match``).
     """
     if not rel:
         return []
-    components = rel.split("/")
-    for component in components:
-        if component in ("", ".", ".."):
-            return None
+    if rel != path_norm.canonical_rel(rel) or path_norm.is_qualified(rel):
+        return None
+    components = list(path_norm.path_parts(rel))
+    if any(component in ("", ".", "..") for component in components):
+        return None
     return components
 
 
-def _match_with_subtree(pattern: List[str], path: List[str]) -> bool:
+def _match_with_subtree(
+    pattern: List[str], path: List[str], *, fold: bool = False
+) -> bool:
     """The direct match, plus the folder rule that covers its subtree.
 
     Testing the pattern against every whole-component prefix of the path *is*
@@ -193,12 +240,14 @@ def _match_with_subtree(pattern: List[str], path: List[str]) -> bool:
     matched by nothing.
     """
     for cut in range(1, len(path) + 1):
-        if _match_segments(pattern, path[:cut]):
+        if _match_segments(pattern, path[:cut], fold=fold):
             return True
     return False
 
 
-def _match_segments(pattern: List[str], path: List[str]) -> bool:
+def _match_segments(
+    pattern: List[str], path: List[str], *, fold: bool = False
+) -> bool:
     """One pattern against one complete path, component by component."""
     if not pattern:
         return not path
@@ -207,25 +256,34 @@ def _match_segments(pattern: List[str], path: List[str]) -> bool:
         # ``**`` absorbs zero or more whole components, so the rest of the
         # pattern is tried against every remaining suffix of the path.
         for skip in range(len(path) + 1):
-            if _match_segments(pattern[1:], path[skip:]):
+            if _match_segments(pattern[1:], path[skip:], fold=fold):
                 return True
         return False
 
     if not path:
         return False
-    return _name_matches(pattern[0], path[0]) and _match_segments(pattern[1:], path[1:])
+    return _name_matches(pattern[0], path[0], fold=fold) and _match_segments(
+        pattern[1:], path[1:], fold=fold
+    )
 
 
-def _name_matches(component: str, name: str) -> bool:
+def _name_matches(component: str, name: str, *, fold: bool = False) -> bool:
     """One pattern component against one path component -- ``*`` and ``?`` only.
 
     ``current[n]``: does the pattern component so far match ``name[:n]``? Carried
     as two rows. The ``*`` row is the only interesting one: it takes zero or more
     characters **of this name**, and a name never contains ``/``, which is where
-    the component boundary comes from for free. Comparison is exact -- no
-    case-folding, the temptation that would make ``Dist`` and ``dist`` one
-    folder.
+    the component boundary comes from for free. Comparison is exact **where the
+    filesystem is exact** and folded where it is not: ``fold`` is the caller's
+    probe answer, and it changes only the comparison below -- never the pattern,
+    the path, or anything returned or printed (A-D3). Folding unconditionally
+    would make ``Dist`` and ``dist`` one folder on Linux, where they are two.
     """
+    if fold:
+        # Two local names, deliberately: the caller's strings are never rewritten.
+        component = component.casefold()
+        name = name.casefold()
+
     previous = [False] * (len(name) + 1)
     previous[0] = True
 

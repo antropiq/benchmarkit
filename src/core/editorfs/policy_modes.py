@@ -23,8 +23,8 @@ locks do not change in this lot.
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import builtin_policy, constants, policy_file
-from .policy import WorkspacePathError
+from . import builtin_policy, constants, fscase, policy_file
+from .policy import WorkspacePathError, workspace_root
 
 from .constants import policy_glob
 from .constants import policy_shared as shared
@@ -36,18 +36,24 @@ from .constants import policy_shared as shared
 # remove, so the rules arrive from their own sources or not at all.
 
 
-def list_builtin_rules(rel: str) -> List[shared.Rule]:
+def list_builtin_rules(rel: str, *, fold: bool = False) -> List[shared.Rule]:
     """Rules benchmarkit's own code contributes.
 
     Not written here: they live in :mod:`editorfs.builtin_policy`, where the
     condition on the workspace *being* this installation is stated once, so a
     foreign project's ``.env`` stays an ordinary file. The reserved folder is
     answered there too, and unconditionally.
+
+    ``fold`` is this workspace's case answer (win-05), decided by
+    :func:`editorfs.fscase.case_folded` at the one caller that computes a verdict
+    and passed down rather than read here: an explicit argument is what keeps both
+    outcomes testable on a Linux runner (roadmap §9 rule 2). The default is the
+    exact comparison every other caller of the matcher already gets.
     """
-    return builtin_policy.builtin_rules(rel)
+    return builtin_policy.builtin_rules(rel, fold=fold)
 
 
-def list_workspace_rules(rel: str) -> List[shared.Rule]:
+def list_workspace_rules(rel: str, *, fold: bool = False) -> List[shared.Rule]:
     """Rules from ``<workspace>/.nojae/read-write-policy.json``, as pol-04 read it.
 
     The loader owns the file: it parses, validates and caches it, and answers the
@@ -60,8 +66,12 @@ def list_workspace_rules(rel: str) -> List[shared.Rule]:
     Absence is the other normal state — a workspace that never got a policy file,
     or whose seed failed, has level B empty and level A dormant unless it *is*
     benchmarkit.
+
+    ``fold`` means what it means in :func:`list_builtin_rules`. A rule is stored
+    and reported in the spelling the user wrote whatever it says; folding touches
+    only whether it *matches*.
     """
-    return policy_file.matching_rules(rel)
+    return policy_file.matching_rules(rel, fold=fold)
 
 
 def rule_lists() -> Tuple[List[shared.Rule], List[shared.Rule]]:
@@ -175,12 +185,22 @@ def mode_for(rel: str) -> shared.Verdict:
     the three locks in :mod:`editorfs.policy` answer those *before* this is
     consulted, and :func:`reserved_hit` answers the reserved folder separately so
     a broken policy file cannot open it.
+
+    The comparison folds case exactly where this workspace's **filesystem** folds
+    it (win-05, A-D3): this is the one place that asks
+    :func:`editorfs.fscase.case_folded`, and the answer is passed down as an
+    explicit ``fold`` rather than read by the matcher — so the verdict stays the
+    single place the question is computed, and a test can force either outcome on
+    a Linux runner.
     """
-    candidates = list_builtin_rules(rel) + list_workspace_rules(rel)
+    fold = fscase.case_folded(workspace_root())
+    candidates = (
+        list_builtin_rules(rel, fold=fold) + list_workspace_rules(rel, fold=fold)
+    )
     return shared.verdict_for(candidates)
 
 
-def reserved_hit(rel: str) -> Optional[str]:
+def reserved_hit(rel: str, *, fold: Optional[bool] = None) -> Optional[str]:
     """The component of ``rel`` equal to the reserved folder name, else None.
 
     Checked on the **component list, before any stat** — an absent path still has
@@ -193,12 +213,21 @@ def reserved_hit(rel: str) -> Optional[str]:
     un-reserve it. It is a separate question from :func:`mode_for` because its
     answer has to survive a broken policy file — a JSON typo must not open the
     folder that holds the JSON.
+
+    ``fold`` defaults to the same probe answer :func:`mode_for` uses: on a
+    filesystem where ``.NOJAE`` and ``.nojae`` are one folder, the reservation has
+    to cover both spellings or the reserved folder stops being reserved there. A
+    caller may pass ``False`` to ask the exact-name question alone.
     """
     # The one implementation is in ``policy_glob``, where pol-08's stdio
     # connectors reach it too. The name is read through ``constants`` (the
     # mirrored alias) so an app-side test can move it without touching the
     # connector processes' default.
-    return policy_glob.reserved_component_hit(rel, constants.POLICY_DIRNAME)
+    return policy_glob.reserved_component_hit(
+        rel,
+        constants.POLICY_DIRNAME,
+        fold=fscase.case_folded(workspace_root()) if fold is None else fold,
+    )
 
 
 def refusal_message(verdict: shared.Verdict, *, for_write: bool) -> str:

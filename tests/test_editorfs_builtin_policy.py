@@ -77,6 +77,10 @@ class TestIsSelfWorkspace:
     def test_the_install_directory_itself_is_self(self, app_workspace):
         assert builtin_policy.is_self_workspace() is True
 
+    @pytest.mark.requires_symlink(
+        "is_self_workspace compares realpaths, so a working location spelled "
+        "through a link to the install tree is still the app itself"
+    )
     def test_a_symlinked_location_for_the_same_tree_is_still_self(
         self, tmp_path: Path, monkeypatch
     ):
@@ -332,7 +336,7 @@ class TestReservedFolderIsUnconditional:
         monkeypatch.setattr(
             policy_modes,
             "list_workspace_rules",
-            lambda rel: [
+            lambda rel, *, fold=False: [
                 shared.Rule(
                     mode=shared.READ_WRITE,
                     pattern=".nojae",

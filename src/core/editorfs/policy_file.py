@@ -220,18 +220,24 @@ def policy_file_info() -> Dict[str, Any]:
     }
 
 
-def matching_rules(rel: str) -> List[shared.Rule]:
+def matching_rules(rel: str, *, fold: bool = False) -> List[shared.Rule]:
     """The level-B rules matching a normalised workspace-relative ``rel``.
 
     :func:`editorfs.policy_modes.list_workspace_rules` is its only caller: which
     rules match is decided where the file is read, so the verdict in
     ``policy_modes`` stays the pure merge of two rule lists it was in pol-01 and
     never has to know that a cache exists.
+
+    ``fold`` is that caller's probe answer for the active workspace (win-05) and
+    it is **not** part of the cache key: the cached entry holds the file's rules
+    verbatim, and only this comparison folds, so one read answers both outcomes.
+    The rules handed back keep the spelling the author typed, which is what the
+    policy panel quotes and what a 422 names.
     """
     return [
         rule
         for rule in workspace_rules()
-        if policy_glob.pattern_matches(rule.pattern, rel)
+        if policy_glob.pattern_matches(rule.pattern, rel, fold=fold)
     ]
 
 
@@ -277,6 +283,14 @@ def _level_a_notes(rules: List[shared.Rule]) -> List[shared.PolicyFinding]:
     over this pattern language is a decision problem this module will not pretend
     to solve, and a wrong note about a rule that *does* fire would teach the user
     to ignore the panel.
+
+    One asymmetry is deliberate (win-05): the witness is fed to level A with the
+    matcher's **default exact** comparison, not the workspace's fold. The fold
+    can only add matches, so the worst this does is *omit* a note about a rule
+    that happens to differ from level A's only in case — while threading the
+    probe in here would put a filesystem answer inside the cache entry, whose
+    stamp is the file's own, and make the panel's findings depend on which
+    volume the file was last read from.
     """
     notes: List[shared.PolicyFinding] = []
     for rule in rules:

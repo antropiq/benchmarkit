@@ -125,12 +125,19 @@ def builtin_rule_list() -> List[shared.Rule]:
     ]
 
 
-def builtin_rules(rel: str) -> List[shared.Rule]:
+def builtin_rules(rel: str, *, fold: bool = False) -> List[shared.Rule]:
     """Every level-A rule matching the normalised workspace-relative ``rel``.
 
     Never raises and never touches the disk: the caller resolved the path before
     asking (the three locks in :mod:`editorfs.policy`), and a rule here is a
     statement about a *name*, not about what is on disk under it.
+
+    ``fold`` (win-05) is the active workspace's case answer, handed down by
+    :func:`editorfs.policy_modes.mode_for` — this module does not probe anything,
+    and the default keeps the comparison exact for every other caller. It changes
+    only whether a rule *matches*: level A's patterns, and the reserved name in
+    the ``Rule`` below, are still reported in the spelling they are written in,
+    so the panel and a 422 quote ``logs/**`` and never ``LOGS/**``.
 
     The reserved folder is the one rule that applies in **every** workspace,
     self or foreign, whether or not a policy file exists or loaded — and no
@@ -138,7 +145,8 @@ def builtin_rules(rel: str) -> List[shared.Rule]:
     by pol-04's validation, and even a matching one could not beat ``hidden``,
     which :func:`policy_shared.verdict_for` treats as absolute.
     """
-    if policy_glob.reserved_component_hit(rel, constants.POLICY_DIRNAME) is not None:
+    if policy_glob.reserved_component_hit(rel, constants.POLICY_DIRNAME,
+                                          fold=fold) is not None:
         # Quoted as the reserved name itself, so the refusal names the folder the
         # user has to edit the file in — not a pattern they never wrote. It is a
         # **built-in** verdict, so the sentence says benchmarkit reserved it and
@@ -167,5 +175,5 @@ def builtin_rules(rel: str) -> List[shared.Rule]:
             level=shared.LEVEL_BUILTIN,
         )
         for index, (pattern, mode, reason) in enumerate(BUILTIN_RULES)
-        if policy_glob.pattern_matches(pattern, rel)
+        if policy_glob.pattern_matches(pattern, rel, fold=fold)
     ]

@@ -41,10 +41,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import constants
+from . import constants, fscase
 from .files import fsync_dir
 from .policy import (
     WorkspacePathError,
+    _absolute_parts,
+    _is_within,
     missing_path_error,
     normalise_rel,
     resolve_existing_in_workspace,
@@ -645,12 +647,25 @@ def _rel_in_workspace(resolved: Path) -> Optional[str]:
     question. ``None`` is a real answer here, not a failure: it means the path —
     always a symlink's target, since the walk starts at a resolved root — sits
     where no policy of this workspace reaches, and the caller refuses that.
+
+    Containment is the one shared rule (A-D2.2, win-06) rather than a prefix
+    built here: what this function used to do was trim the root's trailing
+    separator, append one, and compare that against slash-joined text — which
+    never matched a ``C:\\…`` root, so it answered ``None`` for *every* path on
+    Windows and each folder delete was refused with the "outside the working
+    location" wording (roadmap §2's loud-but-correct row).
+    The fold comes from the workspace's own filesystem, and the remainder keeps
+    ``/`` separators like every other Editor payload.
     """
-    workspace = workspace_root().rstrip("/") + "/"
-    text = resolved.as_posix()
-    if text == workspace.rstrip("/"):
-        return ""
-    return text[len(workspace) :] if text.startswith(workspace) else None
+    workspace = workspace_root()
+    text = str(resolved)
+    if not _is_within(workspace, text, fold=fscase.case_folded(workspace)):
+        return None
+    # Same component list the containment compare used, so the two cannot
+    # disagree about where the workspace stops. The remainder keeps the
+    # spelling of the path on disk — folding is comparison only (A-D3).
+    parent_parts = _absolute_parts(workspace)
+    return "/".join(_absolute_parts(text)[len(parent_parts) :])
 
 
 def _subtree_refusal(
@@ -716,9 +731,12 @@ def _batch_label(batch: Path) -> str:
     """
     workspace = Path(workspace_root())
     try:
-        return str(batch.relative_to(workspace))
+        rel = batch.relative_to(workspace)
     except ValueError:
         return str(batch)
+    # ``/``-joined whatever the host separator (A §7, roadmap §9 rule 1): this
+    # label is Editor payload text, and a payload field never carries ``\``.
+    return rel.as_posix()
 
 
 def trash_path(rel: str) -> Dict[str, Any]:

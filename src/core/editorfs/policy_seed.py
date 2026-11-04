@@ -34,7 +34,7 @@ import os
 import stat as stat_module
 from typing import Any, Dict, Tuple
 
-from . import constants, policy_file
+from . import constants, fscase, policy_file
 from .constants import policy_shared as shared
 
 # The seeded document, in the shape pol-04 validates: ``version``, a ``readme``
@@ -204,6 +204,17 @@ def _ensure(root: str) -> Dict[str, Any]:
         if not _is_regular_file(path):
             return _failed(path, "a folder stands where the policy file belongs")
         return _existing(path)
+    except PermissionError:
+        # Which error a **folder** at that path answers with is the platform's
+        # choice: ``EEXIST`` on POSIX, ``EACCES`` on Windows — the exclusive
+        # open cannot create over a directory there. Same condition, same
+        # sentence, so a user is told what stands where the file belongs rather
+        # than being told the folder they can see is an unreadable file. A real
+        # permission problem on an ordinary name falls through to the branch
+        # below, which is the platform's own word for it.
+        if not _is_regular_file(path):
+            return _failed(path, "a folder stands where the policy file belongs")
+        return _failed(path, "the policy path cannot be written")
     except OSError as exc:
         return _failed(path, exc.strerror or str(exc))
     try:
@@ -226,6 +237,11 @@ def _ensure(root: str) -> Dict[str, Any]:
     # a moment ago, so forget them — a switch lands on the new root's rules,
     # not the ones cached while its policy was still absent.
     policy_file.invalidate_policy_cache()
+    # Same moment, same reason, for the case answer (win-05): this is one of the
+    # two points where a folder *becomes* the working location, so the probe
+    # belongs to the new filesystem rather than to whatever the previous root
+    # was mounted on.
+    fscase.invalidate_case_cache()
     return _created(path)
 
 

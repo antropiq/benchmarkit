@@ -25,7 +25,12 @@ keep working when the optional ``[mcp]`` extra is not installed.
 from typing import TYPE_CHECKING, Any
 
 from . import constants
-from .discovery import load_externals, mcp_installed, set_externals_enabled
+from .discovery import (
+    load_externals,
+    mcp_installed,
+    mcp_reach_is_refused,
+    set_externals_enabled,
+)
 from .formatting import extract_tool_result_text, tools_to_openai_format
 from .manager import McpManager
 from .process import connector_environment
@@ -81,6 +86,7 @@ __all__ = [
     "extract_tool_result_text",
     "load_externals",
     "mcp_installed",
+    "mcp_reach_is_refused",
     "set_externals_enabled",
     "str_map",
     "tools_to_openai_format",

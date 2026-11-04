@@ -45,6 +45,44 @@ SETTING_KEYS: Tuple[str, ...] = (
     "LSP_ENABLED",
 )
 
+# Names an operating system already owns, which a managed key may therefore
+# never take.
+#
+# This joins the rule AGENTS.md states about a new or renamed key — edit
+# ``SETTING_KEYS``, ``_render_env()`` and ``.env.example`` together — with a
+# fourth demand: the name must be free of OS variables on *every* supported
+# platform. ``load_dotenv_once`` below deliberately keeps dotenv's "existing
+# environment wins" precedence, so a key that names an OS variable does not set
+# a value at all: the OS value survives and the app reads something it never
+# wrote. That is the whole ``TEMP`` story — on Windows ``TEMP`` is the temp
+# folder, so a sampling parameter became a directory path (and a stray folder
+# appeared in the working location). The check lives on the key list rather
+# than inside the loader, because that precedence is the point and not a bug to
+# paper over: the collision is prevented by never choosing such a name.
+_RESERVED_ENV_NAMES: frozenset[str] = frozenset(
+    {
+        "TEMP",
+        "TMP",
+        "PATH",
+        "HOME",
+        "USER",
+        "USERNAME",
+        "USERPROFILE",
+        "SYSTEMROOT",
+        "COMSPEC",
+        "PROMPT",
+        "OS",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMFILES",
+        "COMPUTERNAME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "NUMBER_OF_PROCESSORS",
+        "PATHEXT",
+    }
+)
+
 # Keys always written to .env; the others are commented out when empty.
 REQUIRED_SETTING_KEYS: Tuple[str, ...] = ("SERVER_URL", "ENDPOINT")
 

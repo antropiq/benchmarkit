@@ -9,28 +9,34 @@ independently of where the rules eventually come from.
 """
 
 import ast
+import inspect
 from pathlib import Path
 from typing import List, Tuple
 
 import pytest
 
+from mcp_connectors import policy_glob as glob
 from mcp_connectors import policy_shared as shared
 
 from src.core import editorfs
-from src.core.editorfs import constants
+from src.core.editorfs import builtin_policy, constants, policy_file
 from src.core.editorfs import policy_modes
 
 
 @pytest.fixture
 def no_rules(monkeypatch: pytest.MonkeyPatch) -> None:
     """Both sources empty, so every test decides the candidate list itself."""
-    monkeypatch.setattr(policy_modes, "list_builtin_rules", lambda rel: [])
-    monkeypatch.setattr(policy_modes, "list_workspace_rules", lambda rel: [])
+    # ``fold`` is part of the seam's signature (win-05): the doubles replace the
+    # real source wholesale, so they take what ``mode_for`` passes.
+    monkeypatch.setattr(policy_modes, "list_builtin_rules",
+                        lambda rel, *, fold=False: [])
+    monkeypatch.setattr(policy_modes, "list_workspace_rules",
+                        lambda rel, *, fold=False: [])
 
 
 def rules(monkeypatch: pytest.MonkeyPatch, level: str, *pairs: Tuple[str, str]) -> None:
     """Make one level's source return ``[(pattern, mode), ...]`` in file order."""
-    def source(rel: str) -> List[shared.Rule]:
+    def source(rel: str, *, fold: bool = False) -> List[shared.Rule]:
         return [
             shared.Rule(mode=mode, pattern=pattern, reason=None, index=index, level=level)
             for index, (pattern, mode) in enumerate(pairs)
@@ -176,6 +182,82 @@ class TestReservedHit:
         assert policy_modes.reserved_hit("sub/.policydir/x") == ".policydir"
         assert policy_modes.reserved_hit("sub/.nojae/x") is None
 
+    def test_a_folded_filesystem_reserves_the_other_spelling(self):
+        """win-05: the app-side predicate folds with the workspace's filesystem."""
+        assert policy_modes.reserved_hit(".NOJAE/x", fold=True) == ".nojae"
+        assert policy_modes.reserved_hit(".NOJAE/x", fold=False) is None
+
+    def test_the_default_is_the_workspaces_own_probe_answer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Not a second decision: the same probe :func:`mode_for` consults."""
+        from src.core.editorfs import fscase
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        assert policy_modes.reserved_hit(".NOJAE/x") == ".nojae"
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        assert policy_modes.reserved_hit(".NOJAE/x") is None
+
+
+class TestTheFoldTravelsFromTheVerdict:
+    """win-05's threading, pinned at the seam (pol-06: one place computes it).
+
+    The two rule sources are the seam this file has always used, so what is
+    asserted here is the *shape*: ``mode_for`` reads the probe once and hands the
+    answer to both levels, and neither level is free to consult a filesystem or a
+    global of its own (roadmap §9 rule 2 — the value is an explicit argument, so
+    each outcome is reachable on this runner).
+    """
+
+    def test_both_levels_are_asked_with_the_workspaces_case_answer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from src.core.editorfs import fscase
+
+        asked: List[Tuple[str, bool]] = []
+
+        def source(rel: str, *, fold: bool = False) -> List[shared.Rule]:
+            asked.append((rel, fold))
+            return []
+
+        monkeypatch.setattr(policy_modes, "list_builtin_rules", source)
+        monkeypatch.setattr(policy_modes, "list_workspace_rules", source)
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        policy_modes.mode_for("Dist/app.js")
+        assert asked == [("Dist/app.js", True), ("Dist/app.js", True)]
+
+    def test_the_probe_is_read_once_per_verdict(self, monkeypatch: pytest.MonkeyPatch):
+        from src.core.editorfs import fscase
+
+        asks: List[str] = []
+        monkeypatch.setattr(
+            fscase, "case_folded", lambda root: asks.append(root) or False
+        )
+        policy_modes.mode_for("src/config.py")
+        assert len(asks) == 1
+
+    def test_every_level_of_the_chain_defaults_to_the_exact_comparison(self):
+        """The default is the deal: an untouched call site keeps today's answer.
+
+        pol-08's connectors, pol-07's panel and the load-time checks (witness
+        paths, the unreachable-pattern and self-shadowing notes) all call the
+        matcher without a ``fold``, and a default of ``True`` there would change
+        a Linux verdict silently. A keyword-only parameter whose default is
+        written in the signature is the one thing that cannot drift by accident,
+        so it is read off the signature rather than by calling anything (this
+        file asks the verdict without a workspace on disk).
+        """
+        for callable_ in (
+            glob.pattern_matches,
+            glob.reserved_component_hit,
+            policy_modes.list_builtin_rules,
+            policy_modes.list_workspace_rules,
+            builtin_policy.builtin_rules,
+            policy_file.matching_rules,
+        ):
+            parameter = inspect.signature(callable_).parameters["fold"]
+            assert parameter.default is False, callable_
+            assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, callable_
 
 class TestRefusalMessage:
     def test_a_hidden_path_read_names_the_level_mode_and_pattern(self):

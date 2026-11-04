@@ -25,6 +25,30 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.config import PROJECT_ROOT, path_location
 
+# The one containment rule of the path locks (A-D2.2, win-06), imported from
+# the Editor's gate rather than re-spelled here: this module already answers its
+# lot folder with the same three locks the tree uses, and a hand-built
+# prefix of the workspace root plus one separator was exact-text — it stopped
+# matching a folder whose spelling differs in case on a volume that folds case.
+# The fold comes from the workspace's own filesystem, the same probe the verdict
+# reads.
+from src.core.editorfs import fscase
+from src.core.editorfs.policy import _is_within
+
+# ``path_norm`` (win-02) lives outside ``src`` so the two stdio connectors can
+# read it too (pol-08), so it is imported the way :func:`_path_policy` imports
+# the deny-list: the project root is not always on ``sys.path``. It is pure
+# text, so unlike that one it is bound here at import rather than re-resolved
+# per call -- no test patches it.
+try:
+    from mcp_connectors import path_norm
+except ImportError:  # pragma: no cover - depends on how the app is started
+    import sys
+
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from mcp_connectors import path_norm  # type: ignore[no-redef]
+
 # Lot file names are ``<prefix><NN>-<slug>.md``: a leading alnum, then word
 # characters. This one check is what keeps the query out of glob-injection
 # territory (``*``, ``?``, ``[``, ``]``, ``/`` and NUL are all refused).
@@ -198,11 +222,17 @@ def _path_policy():
 def resolve_lot_dir(raw: Optional[str]) -> Tuple[str, Path]:
     """Normalise ``raw`` and resolve it to a folder inside the workspace.
 
-    Three locks, in order: no absolute path and no ``..`` component; a
-    ``realpath`` prefix check against the working location; then the connector
-    deny-list, read-only flavour (a lot folder is only ever listed here). A name
-    that exists but is not a folder is a 422 (a naming mistake), a name that is
-    absent a 404 ("create the folder") -- two different dialog messages.
+    Three locks, in order: no absolute path and no ``..`` that survives
+    normalisation; a ``realpath`` prefix check against the working location; then
+    the connector deny-list, read-only flavour (a lot folder is only ever listed
+    here). A name that exists but is not a folder is a 422 (a naming mistake), a
+    name that is absent a 404 ("create the folder") -- two different dialog
+    messages.
+
+    The name is canonicalised by ``path_norm.canonical_rel`` before it is asked
+    of any of them, so the returned ``dir`` and every ``taskLocation`` built from
+    it are ``/``-joined workspace-relative text on every platform -- the form the
+    frontend's ``split('/')`` and the model's own tools both expect.
     """
     text = (raw or "").strip() or DEFAULT_LOT_DIR
     if os.path.isabs(text) or text.startswith("~"):
@@ -211,9 +241,19 @@ def resolve_lot_dir(raw: Optional[str]) -> Tuple[str, Path]:
             f"Batch folder must be relative to the workspace: {raw} "
             f"(workspace {path_location()})",
         )
-    if ".." in Path(text).parts:
+    # Both separators in, ``/`` out (win-04 / A-D1): a Windows user typing
+    # ``todos\drafts`` gets the same folder as ``todos/drafts``, and every
+    # ``taskLocation`` handed to the model stays ``/``-joined. ``os.path.normpath``
+    # could not do that -- on either platform it leaves a backslash alone, so
+    # ``todos\drafts`` was one strange *name* rather than a path, and
+    # ``a\..\..\b`` kept a traversal the check below could not see.
+    normalised = path_norm.canonical_rel(text)
+    # The ``..`` check now reads the **normalised** text, which is the shape the
+    # lock is about: a traversal that cancels itself away (``a/../b`` -> ``b``)
+    # stays legal, and only a ``..`` that survives is refused -- the same
+    # property ``editorfs.policy.normalise_rel`` enforces.
+    if ".." in path_norm.path_parts(normalised):
         raise BatchListingError(422, f"Batch folder must not contain '..': {raw}")
-    normalised = os.path.normpath(text)
     if normalised in ("", ".", "..") or os.path.isabs(normalised):
         # A named folder, so every taskLocation handed to the model (and shown
         # in the dialog) is a clean root-relative path rather than "./x.md".
@@ -224,8 +264,8 @@ def resolve_lot_dir(raw: Optional[str]) -> Tuple[str, Path]:
 
     workspace = Path(path_location()).resolve()
     resolved = os.path.realpath(workspace / normalised)
-    if resolved != str(workspace) and not resolved.startswith(
-        str(workspace) + os.sep
+    if not _is_within(
+        str(workspace), resolved, fold=fscase.case_folded(str(workspace))
     ):
         raise BatchListingError(
             422,

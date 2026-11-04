@@ -69,6 +69,20 @@ same configured model interactively.
 
 Requirements: Python ≥ 3.10, Node.js (to build the frontend).
 
+**On Windows 10/11** the Benchmark tab, WorkBench chat, the verifier and the
+Editor's file surface (tree, read, search, git status, edit, create, rename,
+delete) work exactly as they do on Linux. The `console` connector runs over Git
+for Windows' POSIX toolset rather than a cmd vocabulary, and the Editor's
+terminal runs a real shell — **Git Bash** — once its optional driver is
+installed ([The Editor terminal](#the-editor-terminal-posix-and-windows)).
+Language servers start there too
+([Language servers](#language-servers-chat-tab-optional) gives their Windows
+declaration form). What cannot work on a platform says so in words instead of
+degrading quietly: the terminal refuses when its driver or a Git install is
+missing, and a language server refuses when its declared command resolves to
+nothing (both sections name their refusals). Nothing in the app auto-selects
+`cmd.exe` or PowerShell.
+
 ### 1. Install Python dependencies
 
 Either way works — pick one virtualenv manager, not both at once:
@@ -141,6 +155,110 @@ never re-splits an argument, so a value containing spaces stays one argv
 element. An unset name is left written as-is and reported in the connector's
 validation note (visible in **Settings → MCP**) rather than silently blanked.
 
+#### The Editor terminal (POSIX and Windows)
+
+The Editor tab's terminal pane opens one interactive shell per browser
+connection, in the working location. On POSIX that is `$SHELL` (falling back to
+`/bin/sh`), started over a kernel PTY. On Windows it is **Git Bash** — the same
+Git for Windows install the `console` connector runs its tools from — started
+over a pseudo-console, and that driver is an optional extra:
+
+```bash
+pip install -e ".[windows]"   # the pseudo-console driver (pywinpty); never installed on Linux
+```
+
+With the extra missing, the pane refuses rather than half-working: it shows one
+error line naming the driver, and the connection closes with 4501. With no Git
+install to run, it refuses the same way, naming every place it looked — install
+Git for Windows, or point `BENCHMARKIT_GIT_BASH_DIR` at its install root.
+
+Two process-environment variables steer the Windows pane. Like
+`BENCHMARKIT_PATH_LOCATION` they are deliberately **not** keys of `.env`, so a
+settings save can neither erase them nor resurrect a stale value:
+
+- `TERMINAL_SHELL` — an explicit shell program instead of Git Bash, honoured
+  only when it is a drive-qualified path to an existing executable. A
+  POSIX-shaped value (`/bin/bash`, or the `/c/…` mount form a Git Bash window
+  puts in the environment) is refused by name rather than spawned, because the
+  refusal is what keeps the one knob honest.
+- `BENCHMARKIT_GIT_BASH_DIR` — the Git for Windows install root, for a checkout
+  where `git` is not on `PATH` and none of the usual install locations holds an
+  install.
+
+`cmd.exe`/`%COMSPEC%` is never consulted and PowerShell is never auto-selected:
+one working location gets one tool vocabulary, which is the one Git for Windows
+already supplies to the `console` connector. That boundary cuts the other way
+too — the pane is a **human** surface for the browser only. A shell is never an
+MCP, LSP or chat tool, and the `console` connector still refuses a command named
+`bash`, `sh`, `cmd`, `powershell` or `pwsh` with its no-shell sentence: it runs
+Git's tools, never an interpreter.
+
+#### Language servers (Chat tab, optional)
+
+Language servers are declared — never coded — in
+`lsp_connectors/lsp_servers.json` (copy `lsp_servers.example.json` to start):
+one entry per server id, with a stdio `command` argv, a `workspaceRoot`, the
+file `extensions` it owns and the `tools` to expose. Install the optional
+`lsp` extra:
+
+```bash
+pip install -e ".[lsp]"        # adds pygls + lsprotocol
+```
+
+An activated server adds `lsp_<id>_<action>` tools (diagnostics, hover,
+definition, references, symbols, completion, formatting) to the WorkBench tab
+only — a benchmark run never uses them. As with MCP, two gates must agree: the
+switch in **Settings → LSP** and the entry's `enable` flag; toggling either
+starts or stops the server with no app restart. An entry marked `"lazy": true`
+spawns on its first tool call instead of with the app (tsserver's cold start is
+multi-second and eats RAM), so a settings panel listing it as not running is not
+a failure — the state is `stopped`, and the first call brings it up. The file may
+carry secrets in its per-entry `env`, so it is gitignored and never returned by
+the API.
+
+A Windows declaration looks like this — the same entries as the example file, in
+the form verified to start on Windows 11:
+
+```json
+{
+  "pyright": {
+    "enable": true,
+    "extensions": [".py", ".pyi"],
+    "command": ["pyright-langserver", "--stdio"],
+    "workspaceRoot": "${BENCHMARKIT_PATH_LOCATION}",
+    "env": { "PATH": "${LOCALAPPDATA}\\Volta\\bin;${ProgramFiles}\\Volta" }
+  }
+}
+```
+
+Two things differ from the POSIX form, and each is why a Linux declaration
+copied verbatim fails here:
+
+- **the `PATH` separator is `;`, not `:`** — and an `env.PATH` *replaces* the
+  child's PATH wholesale, so it has to carry every folder the command resolves
+  through (for Volta, the shim folder *and* the one holding `volta.exe` and
+  `node.exe`).
+- **write the command as the bare program name.** What npm and Volta install
+  under `pyright-langserver` is a `#!/bin/bash` script, which Windows cannot
+  exec. The hub resolves `argv[0]` with `shutil.which` over the child's own
+  `PATH`, which honours `PATHEXT` and finds the `.cmd` beside the script. When
+  nothing answers the name the server is left at `error` with a sentence naming
+  the command and the folders that were searched — never a `shell=True`
+  fallback, and no new dependency to resolve it.
+
+The guardrails around those servers are
+`lsp_connectors/restricted-paths.txt`: one prefix per line, and its entries now
+carry **both platforms' path forms** — `${SystemRoot}`, `${ProgramFiles}`,
+`${ProgramData}` beside `/etc`, `/proc`, `/sys`, and `${USERPROFILE}/.ssh` beside
+`${HOME}/.ssh`. They are expanded from the environment when the file is read, so
+the committed list spells no drive letter and no home directory, and a reference
+the running OS does not state is dropped and logged rather than pretended to be
+in force. One list answers every question about a language server's reach: a
+declared `workspaceRoot` inside one of those prefixes is rejected; the working
+location rule above is the same rule; and where the list can name no path form
+this filesystem uses, the hub refuses to start anything at all — on either
+platform, in words.
+
 ### 2. Build the frontend
 
 ```bash
@@ -180,6 +298,9 @@ Export the variable (or set it in `.env`) to pin it permanently — an existing
 value is never overwritten. A folder must exist and must not sit under a
 `lsp_connectors/restricted-paths.txt` prefix, or the change is refused and
 nothing is restarted.
+
+One value cannot be a `PATH` for both systems (`${…}` has no conditional and no
+platform test), so the example file states its Windows form in `_windows_note`.
 
 Note the reference syntax: the closing brace goes right after the variable
 name, with the rest of the path outside it — `${BENCHMARKIT_PATH_LOCATION}/web`,

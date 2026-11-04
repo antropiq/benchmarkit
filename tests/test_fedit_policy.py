@@ -42,6 +42,11 @@ def _backups_go_to_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(f, "BACKUP_DIR", tmp_path / "fedit-backups")
 
 
+@pytest.mark.posix_behaviour(
+    "the /etc/shadow and /etc/ssh fixtures are POSIX paths: on another "
+    "platform the deny-prefixes have nothing to match (the ~/.ssh and "
+    ".git-credentials halves are name-based and run everywhere)"
+)
 def test_reads_of_credential_stores_are_refused():
     for target in (
         Path.home() / ".git-credentials",
@@ -88,6 +93,10 @@ def test_traversal_and_symlinks_cannot_smuggle_a_secret():
     assert DENIED_READ in f.read_file("/etc/hosts/../shadow")
 
 
+@pytest.mark.requires_symlink(
+    "a path whose own name looks harmless is judged as the file it really "
+    "points at, so a link cannot reach a credential store"
+)
 def test_a_symlink_under_an_allowed_name_cannot_reach_a_secret(tmp_path):
     # A path whose own name looks harmless must still be judged as the file it
     # really points at. Uses a directory named like a credential store so the
@@ -111,6 +120,11 @@ def test_secret_shaped_names_are_refused_wherever_they_live():
         assert DENIED_READ in out, name
 
 
+@pytest.mark.posix_behaviour(
+    "the two entries that make this a refusal are the `/etc` and `/usr` deny "
+    "prefixes, which speak no Windows path; the ~/.aws half is name-based and "
+    "would still be checked"
+)
 def test_writes_still_refuse_system_prefixes_and_own_sources():
     for target in ("/etc/hosts", "/usr/bin/ls",
                    Path.home() / ".aws" / "credentials"):
@@ -118,6 +132,10 @@ def test_writes_still_refuse_system_prefixes_and_own_sources():
         assert DENIED_WRITE in out, target
 
 
+@pytest.mark.posix_behaviour(
+    "the invariant needs /etc/hosts and /etc/passwd to exist and be readable; "
+    "the source-under-a-library check is the half that would still be pinned"
+)
 def test_harmless_system_files_and_sources_stay_readable():
     """The fix must not turn the connector useless: reads of ordinary files
     (including its own source, so an agent can see what constrains it)."""
@@ -153,6 +171,11 @@ def test_policy_reports_both_lists():
 # --- round-trip properties (fedit-issues F-1) -------------------------------
 
 
+@pytest.mark.posix_behaviour(
+    "the invariant is the st_mode round-trip: chmod and the 0600/0755/0444 "
+    "bits it checks are POSIX facts, so on another platform the atomic "
+    "replace's mode handling is not what this test can observe"
+)
 def test_an_edit_preserves_the_file_mode(tmp_path):
     """F-1: the atomic write used to leave every edited file at 0600.
 
@@ -431,6 +454,10 @@ def test_a_traversing_path_is_judged_where_it_lands(tmp_path):
     assert DENIED_READ in f.read_file(f"{Path.home()}/.config/../.config/gh/config.yml")
 
 
+@pytest.mark.requires_symlink(
+    "two spellings of one file share a policy verdict and a backup chain, which "
+    "needs a second name for the same bytes"
+)
 def test_two_spellings_of_one_file_share_a_policy_and_a_backup_chain(tmp_path):
     """F-9: the workspace here is reachable through two prefixes (a mount
     point). One file must not be editable under one name and protected under
@@ -477,6 +504,10 @@ def test_old_backups_are_swept(tmp_path):
     assert "swept after" in f.edit_policy()
 
 
+@pytest.mark.requires_symlink(
+    "the root bypass must not be reachable *through* a link planted in a "
+    "system directory: the address is judged, not only where the target is"
+)
 def test_the_root_bypass_needs_a_sane_address(tmp_path, monkeypatch):
     """F-9 made the root bypass decide on the resolved target -- it must not
     become a way of writing *through* a link planted in a system directory.
@@ -696,6 +727,10 @@ def test_the_same_named_folder_inside_the_root_is_governed(ws: Path):
     assert DENIED_WRITE in f.apply_edit(str(inner / "a.md"), EDIT_ONE)
 
 
+@pytest.mark.requires_symlink(
+    "the workspace policy is decided on where a file really is, so a link "
+    "cannot carry a path around a hidden folder"
+)
 def test_a_symlink_cannot_carry_a_path_around_the_workspace_policy(ws: Path):
     """The bypass is decided on where a file *really* is, and so is the policy.
 

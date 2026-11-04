@@ -65,8 +65,8 @@ def git(repo: Path, *args: str) -> str:
 def ws(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A committed two-file repository, pointed at as the working location."""
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "keep.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
-    (tmp_path / "pkg" / "mod.py").write_text("x\n", encoding="utf-8")
+    (tmp_path / "keep.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8", newline="")
+    (tmp_path / "pkg" / "mod.py").write_text("x\n", encoding="utf-8", newline="")
     git(tmp_path, "init", "-q")
     git(tmp_path, "add", "-A")
     git(tmp_path, "commit", "-qm", "seed")
@@ -102,7 +102,7 @@ def plain_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     plain = tmp_path / "no-repo"
     plain.mkdir()
-    (plain / "file.txt").write_text("x\n", encoding="utf-8")
+    (plain / "file.txt").write_text("x\n", encoding="utf-8", newline="")
     monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(plain))
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     with TestClient(create_app()) as test_client:
@@ -135,24 +135,24 @@ class TestStatusClassification:
         assert payload["entries"] == []
 
     def test_modified_tracked_file_is_comparable(self, client, ws):
-        (ws / "keep.py").write_text("a = 1\nB = 2\nc = 3\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 1\nB = 2\nc = 3\n", encoding="utf-8", newline="")
         entry = entries_by_path(status(client))["keep.py"]
         assert entry == {"path": "keep.py", "kind": "modified", "comparable": True}
 
     def test_untracked_file_is_marked_but_not_comparable(self, client, ws):
-        (ws / "fresh.txt").write_text("new\n", encoding="utf-8")
+        (ws / "fresh.txt").write_text("new\n", encoding="utf-8", newline="")
         entry = entries_by_path(status(client))["fresh.txt"]
         assert entry == {"path": "fresh.txt", "kind": "untracked", "comparable": False}
 
     def test_staged_only_change_is_not_unstaged(self, client, ws):
-        (ws / "keep.py").write_text("a = 9\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 9\n", encoding="utf-8", newline="")
         git(ws, "add", "keep.py")
         assert status(client)["entries"] == []
 
     def test_staged_then_edited_again_is_unstaged(self, client, ws):
-        (ws / "keep.py").write_text("a = 9\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 9\n", encoding="utf-8", newline="")
         git(ws, "add", "keep.py")
-        (ws / "keep.py").write_text("a = 10\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 10\n", encoding="utf-8", newline="")
         entry = entries_by_path(status(client))["keep.py"]
         assert entry["kind"] == "modified"
         assert entry["comparable"] is True
@@ -163,16 +163,16 @@ class TestStatusClassification:
         assert entry == {"path": "keep.py", "kind": "deleted", "comparable": True}
 
     def test_entries_are_sorted_by_path(self, client, ws):
-        (ws / "zeta.txt").write_text("z\n", encoding="utf-8")
-        (ws / "alpha.txt").write_text("a\n", encoding="utf-8")
-        (ws / "pkg" / "mid.py").write_text("m\n", encoding="utf-8")
+        (ws / "zeta.txt").write_text("z\n", encoding="utf-8", newline="")
+        (ws / "alpha.txt").write_text("a\n", encoding="utf-8", newline="")
+        (ws / "pkg" / "mid.py").write_text("m\n", encoding="utf-8", newline="")
         paths = [entry["path"] for entry in status(client)["entries"]]
         assert paths == sorted(paths)
         assert paths == ["alpha.txt", "pkg/mid.py", "zeta.txt"]
 
     def test_rename_is_detected_with_its_old_name(self, client, ws):
         git(ws, "mv", "keep.py", "moved.py")
-        (ws / "moved.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8")
+        (ws / "moved.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8", newline="")
         entry = entries_by_path(status(client))["moved.py"]
         assert entry == {
             "path": "moved.py",
@@ -183,7 +183,7 @@ class TestStatusClassification:
 
     def test_status_entry_cap_is_patchable_and_honest(self, ws, client, monkeypatch):
         for name in ("a.txt", "b.txt", "c.txt", "d.txt"):
-            (ws / name).write_text("x\n", encoding="utf-8")
+            (ws / name).write_text("x\n", encoding="utf-8", newline="")
         monkeypatch.setattr(editorfs.constants, "MAX_STATUS_ENTRIES", 2)
         payload = status(client)
         assert len(payload["entries"]) == 2
@@ -205,22 +205,22 @@ class TestStatusFollowsTheTreePolicy:
             {"path": "**/.env**", "mode": "hidden"},
         ])
         (ws / ".ssh").mkdir()
-        (ws / ".ssh" / "notes.txt").write_text("public\n", encoding="utf-8")
-        (ws / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+        (ws / ".ssh" / "notes.txt").write_text("public\n", encoding="utf-8", newline="")
+        (ws / ".env").write_text("TOKEN=secret\n", encoding="utf-8", newline="")
         assert status(client)["entries"] == []
         # The very same call lists a name no rule hides, so the emptiness above
         # is the policy and not a broken query.
-        (ws / "outer.txt").write_text("shown\n", encoding="utf-8")
+        (ws / "outer.txt").write_text("shown\n", encoding="utf-8", newline="")
         assert [entry["path"] for entry in status(client)["entries"]] == ["outer.txt"]
 
     def test_a_read_only_folders_dirty_file_keeps_its_row(self, ws, client):
         """``ro`` is a write rule: the tree shows the file, so status marks it."""
         write_policy(ws, [{"path": "**/vendor", "mode": "ro"}])
         (ws / "vendor").mkdir()
-        (ws / "vendor" / "lib.js").write_text("x\n", encoding="utf-8")
+        (ws / "vendor" / "lib.js").write_text("x\n", encoding="utf-8", newline="")
         git(ws, "add", "-A")
         git(ws, "commit", "-qm", "vendor")
-        (ws / "vendor" / "lib.js").write_text("changed\n", encoding="utf-8")
+        (ws / "vendor" / "lib.js").write_text("changed\n", encoding="utf-8", newline="")
         assert [entry["path"] for entry in status(client)["entries"]] == ["vendor/lib.js"]
         listed = [
             entry["name"]
@@ -239,7 +239,7 @@ class TestStatusFollowsTheTreePolicy:
         rule hides it — with the same file written either way, so what changed is
         the policy and not the tree.
         """
-        (ws / "pkg" / "mod.py").write_text("changed\n", encoding="utf-8")
+        (ws / "pkg" / "mod.py").write_text("changed\n", encoding="utf-8", newline="")
         assert "pkg/mod.py" in [entry["path"] for entry in status(client)["entries"]]
 
         write_policy(ws, [{"path": "pkg", "mode": "hidden"}])
@@ -262,7 +262,7 @@ class TestStatusFollowsTheTreePolicy:
         # delete's batch would land in `.nojae/trash` — both untracked.
         policy_seed.ensure_policy_file(str(ws))
         (ws / editorfs.constants.POLICY_DIRNAME / "trash" / "batch").mkdir(parents=True)
-        (ws / "shown.txt").write_text("x\n", encoding="utf-8")
+        (ws / "shown.txt").write_text("x\n", encoding="utf-8", newline="")
 
         # The raw query really does report the folder — this repo has no
         # `.gitignore` naming it, which is exactly the foreign-workspace wrinkle.
@@ -283,11 +283,11 @@ class TestSubdirectoryWorkspace:
 
     @pytest.fixture
     def inner(self, ws: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        (ws / "outer.txt").write_text("outer\n", encoding="utf-8")
+        (ws / "outer.txt").write_text("outer\n", encoding="utf-8", newline="")
         git(ws, "add", "outer.txt")
         git(ws, "commit", "-qm", "outer")
-        (ws / "outer.txt").write_text("outer changed\n", encoding="utf-8")
-        (ws / "pkg" / "mod.py").write_text("x changed\n", encoding="utf-8")
+        (ws / "outer.txt").write_text("outer changed\n", encoding="utf-8", newline="")
+        (ws / "pkg" / "mod.py").write_text("x changed\n", encoding="utf-8", newline="")
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(ws / "pkg"))
         return ws / "pkg"
 
@@ -314,7 +314,7 @@ class TestSubdirectoryWorkspace:
 
 class TestDiffPayload:
     def test_modified_file_gets_both_sides(self, client, ws):
-        (ws / "keep.py").write_text("a = 1\nB = 2\nc = 3\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 1\nB = 2\nc = 3\n", encoding="utf-8", newline="")
         body = client.get("/api/fs/diff", params={"path": "keep.py"}).json()
         assert body["original"] == "a = 1\nb = 2\nc = 3\n"
         assert body["modified"] == "a = 1\nB = 2\nc = 3\n"
@@ -333,7 +333,7 @@ class TestDiffPayload:
 
     def test_rename_falls_back_to_the_stored_blob(self, client, ws):
         git(ws, "mv", "keep.py", "moved.py")
-        (ws / "moved.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8")
+        (ws / "moved.py").write_text("a = 1\nb = 2\nc = 3\nd = 4\n", encoding="utf-8", newline="")
         body = client.get("/api/fs/diff", params={"path": "moved.py"}).json()
         assert body["status"] == "renamed"
         assert body["renamedFrom"] == "keep.py"
@@ -341,14 +341,14 @@ class TestDiffPayload:
         assert body["modified"].endswith("d = 4\n")
 
     def test_untracked_file_has_no_committed_side(self, client, ws):
-        (ws / "fresh.txt").write_text("new\n", encoding="utf-8")
+        (ws / "fresh.txt").write_text("new\n", encoding="utf-8", newline="")
         body = client.get("/api/fs/diff", params={"path": "fresh.txt"}).json()
         assert body["status"] == "untracked"
         assert body["original"] == ""
         assert body["modified"] == "new\n"
 
     def test_a_file_added_to_the_index_is_reported_as_such(self, client, ws):
-        (ws / "staged.txt").write_text("staged\n", encoding="utf-8")
+        (ws / "staged.txt").write_text("staged\n", encoding="utf-8", newline="")
         git(ws, "add", "staged.txt")
         body = client.get("/api/fs/diff", params={"path": "staged.txt"}).json()
         assert body["status"] == "added"
@@ -361,7 +361,7 @@ class TestDiffPayload:
 
     def test_the_answer_comes_from_git_not_from_the_browser(self, client, ws):
         """A marker that went stale cannot make a committed file look changed."""
-        (ws / "keep.py").write_text("a = 42\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 42\n", encoding="utf-8", newline="")
         git(ws, "add", "keep.py")
         git(ws, "commit", "-qm", "absorbed")
         body = client.get("/api/fs/diff", params={"path": "keep.py"}).json()
@@ -393,7 +393,7 @@ class TestDiffPayload:
         endpoints stay identical to each other either way.
         """
         write_policy(ws, [{"path": "**/.env**", "mode": "hidden"}])
-        (ws / ".env").write_text("A=1\n", encoding="utf-8")
+        (ws / ".env").write_text("A=1\n", encoding="utf-8", newline="")
         response = client.get("/api/fs/diff", params={"path": ".env"})
         assert response.status_code == 404
         assert "does not exist" in response.json()["detail"]
@@ -402,7 +402,7 @@ class TestDiffPayload:
     def test_a_read_only_path_diffs_normally(self, client, ws):
         """``ro`` says nothing may change, not that nothing may be seen."""
         write_policy(ws, [{"path": "keep.py", "mode": "ro"}])
-        (ws / "keep.py").write_text("a = 1\nB = 2\nc = 3\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 1\nB = 2\nc = 3\n", encoding="utf-8", newline="")
         response = client.get("/api/fs/diff", params={"path": "keep.py"})
         assert response.status_code == 200
         assert response.json()["modified"] == "a = 1\nB = 2\nc = 3\n"
@@ -416,7 +416,7 @@ class TestDiffPayload:
         assert response.status_code == 404
 
     def test_the_size_cap_applies_to_the_disk_side(self, ws, client, monkeypatch):
-        (ws / "keep.py").write_text("a = 1\nbig\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 1\nbig\n", encoding="utf-8", newline="")
         monkeypatch.setattr(editorfs.constants, "MAX_EDITOR_BYTES", 4)
         response = client.get("/api/fs/diff", params={"path": "keep.py"})
         assert response.status_code == 413
@@ -427,11 +427,11 @@ class TestOddPathNames:
     """Names are byte-exact through ``-z`` and literal through the pathspec."""
 
     def test_spaces_and_non_ascii_survive_the_round_trip(self, client, ws):
-        (ws / "with space.txt").write_text("one\n", encoding="utf-8")
+        (ws / "with space.txt").write_text("one\n", encoding="utf-8", newline="")
         git(ws, "add", "with space.txt")
         git(ws, "commit", "-qm", "space")
-        (ws / "with space.txt").write_text("two\n", encoding="utf-8")
-        (ws / "caf\u00e9.md").write_text("caf\u00e9\n", encoding="utf-8")
+        (ws / "with space.txt").write_text("two\n", encoding="utf-8", newline="")
+        (ws / "caf\u00e9.md").write_text("caf\u00e9\n", encoding="utf-8", newline="")
 
         paths = list(entries_by_path(status(client)))
         assert "with space.txt" in paths
@@ -441,11 +441,16 @@ class TestOddPathNames:
         assert body["original"] == "one\n"
         assert body["modified"] == "two\n"
 
+    @pytest.mark.posix_behaviour(
+        "the name planted is ``a*b.txt``: ``*`` is legal in a POSIX filename and "
+        "illegal on Windows, so the literal-pathspec guarantee can only be "
+        "staged through a name on this half of the pair"
+    )
     def test_a_name_that_looks_like_a_glob_is_the_file_itself(self, client, ws):
-        (ws / "a*b.txt").write_text("one\n", encoding="utf-8")
+        (ws / "a*b.txt").write_text("one\n", encoding="utf-8", newline="")
         git(ws, "add", "a*b.txt")
         git(ws, "commit", "-qm", "glob")
-        (ws / "a*b.txt").write_text("two\n", encoding="utf-8")
+        (ws / "a*b.txt").write_text("two\n", encoding="utf-8", newline="")
         body = client.get("/api/fs/diff", params={"path": "a*b.txt"}).json()
         assert body["status"] == "modified"
         assert body["original"] == "one\n"
@@ -480,7 +485,7 @@ class TestGitFailuresAreHonest:
             return real_run(args, **kwargs)
 
         monkeypatch.setattr(editorfs.gitstatus.subprocess, "run", spy)
-        (ws / "keep.py").write_text("a = 7\n", encoding="utf-8")
+        (ws / "keep.py").write_text("a = 7\n", encoding="utf-8", newline="")
         assert editorfs.git_status()["entries"]
 
         assert seen, "no git command was run"
@@ -496,11 +501,11 @@ class TestIgnoredPaths:
     """
 
     def test_an_ignored_file_and_an_ignored_folder_are_both_named(self, ws: Path):
-        (ws / ".gitignore").write_text("*.log\nbuild/\n", encoding="utf-8")
-        (ws / "notes.log").write_text("x\n", encoding="utf-8")
+        (ws / ".gitignore").write_text("*.log\nbuild/\n", encoding="utf-8", newline="")
+        (ws / "notes.log").write_text("x\n", encoding="utf-8", newline="")
         (ws / "build" / "deep").mkdir(parents=True)
-        (ws / "build" / "gen.js").write_text("x\n", encoding="utf-8")
-        (ws / "build" / "deep" / "gen.js").write_text("x\n", encoding="utf-8")
+        (ws / "build" / "gen.js").write_text("x\n", encoding="utf-8", newline="")
+        (ws / "build" / "deep" / "gen.js").write_text("x\n", encoding="utf-8", newline="")
         assert editorfs.gitstatus.ignored_paths("") == {"notes.log", "build"}
 
     def test_an_ignored_folder_arrives_collapsed_not_enumerated(self, ws: Path):
@@ -510,16 +515,16 @@ class TestIgnoredPaths:
         files happen to sit under ``build/``, and a folder git had not listed
         could still be walked into.
         """
-        (ws / ".gitignore").write_text("build/\n", encoding="utf-8")
+        (ws / ".gitignore").write_text("build/\n", encoding="utf-8", newline="")
         (ws / "build").mkdir()
         for name in ("a.js", "b.js", "c.js"):
-            (ws / "build" / name).write_text("x\n", encoding="utf-8")
+            (ws / "build" / name).write_text("x\n", encoding="utf-8", newline="")
         assert editorfs.gitstatus.ignored_paths("") == {"build"}
 
     def test_a_nested_gitignore_is_part_of_the_answer(self, ws: Path):
-        (ws / "pkg" / ".gitignore").write_text("secret/\n", encoding="utf-8")
+        (ws / "pkg" / ".gitignore").write_text("secret/\n", encoding="utf-8", newline="")
         (ws / "pkg" / "secret").mkdir(parents=True)
-        (ws / "pkg" / "secret" / "deep.md").write_text("x\n", encoding="utf-8")
+        (ws / "pkg" / "secret" / "deep.md").write_text("x\n", encoding="utf-8", newline="")
         assert editorfs.gitstatus.ignored_paths("") == {"pkg/secret"}
 
     def test_a_tracked_file_matching_an_ignore_rule_is_not_reported(self, ws: Path):
@@ -529,23 +534,23 @@ class TestIgnoredPaths:
         in despite ``*.pyc`` is a real file of the project, and a search that
         re-derived the rules would hide bytes the repository holds.
         """
-        (ws / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
-        (ws / "keep.pyc").write_text("x\n", encoding="utf-8")
+        (ws / ".gitignore").write_text("*.pyc\n", encoding="utf-8", newline="")
+        (ws / "keep.pyc").write_text("x\n", encoding="utf-8", newline="")
         git(ws, "add", "-f", "keep.pyc")
         git(ws, "commit", "-qm", "a mistake, checked in")
         assert editorfs.gitstatus.ignored_paths("") == set()
 
     def test_a_rule_that_matches_files_arrives_as_the_files(self, ws: Path):
         """``*.pyc`` names no folder, so the caller has to check ancestors too."""
-        (ws / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+        (ws / ".gitignore").write_text("*.pyc\n", encoding="utf-8", newline="")
         (ws / "src" / "__pycache__").mkdir(parents=True)
-        (ws / "src" / "__pycache__" / "m.pyc").write_text("x\n", encoding="utf-8")
+        (ws / "src" / "__pycache__" / "m.pyc").write_text("x\n", encoding="utf-8", newline="")
         assert editorfs.gitstatus.ignored_paths("") == {"src/__pycache__/m.pyc"}
 
     def test_a_scope_asks_about_that_subtree_alone(self, ws: Path):
-        (ws / ".gitignore").write_text("*.log\n", encoding="utf-8")
-        (ws / "notes.log").write_text("x\n", encoding="utf-8")
-        (ws / "pkg" / "inner.log").write_text("x\n", encoding="utf-8")
+        (ws / ".gitignore").write_text("*.log\n", encoding="utf-8", newline="")
+        (ws / "notes.log").write_text("x\n", encoding="utf-8", newline="")
+        (ws / "pkg" / "inner.log").write_text("x\n", encoding="utf-8", newline="")
         assert editorfs.gitstatus.ignored_paths("pkg") == {"pkg/inner.log"}
 
     def test_the_names_stay_workspace_relative_below_a_subtree(
@@ -553,9 +558,9 @@ class TestIgnoredPaths:
     ):
         """The same ``--show-prefix`` map the two routes use, or the walk prunes
         on names the tree never had."""
-        (ws / ".gitignore").write_text("*.log\n", encoding="utf-8")
-        (ws / "pkg" / "inner.log").write_text("x\n", encoding="utf-8")
-        (ws / "notes.log").write_text("x\n", encoding="utf-8")
+        (ws / ".gitignore").write_text("*.log\n", encoding="utf-8", newline="")
+        (ws / "pkg" / "inner.log").write_text("x\n", encoding="utf-8", newline="")
+        (ws / "notes.log").write_text("x\n", encoding="utf-8", newline="")
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(ws / "pkg"))
         assert editorfs.gitstatus.ignored_paths("") == {"inner.log"}
 
@@ -566,7 +571,7 @@ class TestIgnoredPaths:
         """
         plain = tmp_path / "no-repo-ignores"
         plain.mkdir()
-        (plain / "file.txt").write_text("x\n", encoding="utf-8")
+        (plain / "file.txt").write_text("x\n", encoding="utf-8", newline="")
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(plain))
         monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         assert editorfs.gitstatus.ignored_paths("") is None

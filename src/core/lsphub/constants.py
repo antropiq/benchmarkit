@@ -9,6 +9,11 @@ through this module, so pointing the whole hub at another
 
 from pathlib import Path
 
+# The one reach-capability seam, re-exported through *this* module so both hubs
+# answer the question with the same function and a test forces it the same way
+# it redirects any other hub constant (win-07 / A-D4).
+from src.core.mcphub.process import guardrails_speak_here  # noqa: F401 — hub attr
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LSP_CONNECTORS_DIR = PROJECT_ROOT / "lsp_connectors"
 LSP_LOGS_DIR = PROJECT_ROOT / "logs" / "lsp"
@@ -74,3 +79,73 @@ PROJECT_CONFIG_NAMES = ("tsconfig.json", "jsconfig.json")
 LSP_MISSING_HINT = (
     'The "pygls" package is not installed — run: pip install -e ".[lsp]"'
 )
+
+# win-07 / A-D4: every declared language server is a stdio child whose path
+# reach is bounded by ``restricted-paths.txt`` below plus the connector
+# deny-prefixes. Both lists speak both platforms' path forms (B1 for the
+# connector lists, B-D1 for this one, entries expanded from the environment at
+# read time), and the child's process *tree* — tsserver, Volar's workers — is
+# bounded on either platform too: the spawn puts it in a Job Object where there
+# are no process groups, and the teardown is the one shared entry point (B-D5,
+# ``proctree`` / ``proctree_jobs``). So the only thing left to refuse on is a
+# list that matches nothing: where no entry can name this filesystem's paths,
+# the app has a bound in words only and says so instead of claiming it
+# (lspfinal-04 — that seam's platform half is gone, because the job wiring
+# above is what replaced it). The wording is *the same string* as
+# ``mcphub.constants``' copy (a test asserts it): the two hubs refuse local
+# processes in one voice, and now for one reason.
+#
+# lspfinal-06 dropped the ``(see target B)`` pointer from the wording, in both
+# hubs together: the target it named is finished, so it pointed a reader at a
+# closed plan instead of at the thing to change. What the sentence says now is
+# the cause itself — a guardrail list with no entry in this filesystem's path
+# form — which is a file the operator edits.
+LOCAL_REACH_REFUSAL = (
+    "its reach cannot be bounded on this filesystem: no guardrail entry speaks "
+    "this working location's path form"
+)
+
+# lspfinal-03 / B-D6: the sentences a declared command can end a start with.
+#
+# A language server declared the way a POSIX user writes it — the extensionless
+# shim npm/volta put on PATH — is not an executable image on Windows: that file
+# is a ``#!/bin/bash`` script, and CreateProcess answers ``[WinError 193] %1 is
+# not a valid Win32 application``. So the hub resolves the declared command
+# through ``shutil.which`` (which honours ``PATHEXT``) before asking pygls to
+# spawn it, and what an operator reads when a start does not work is one of the
+# sentences below — never a bare OS code, and never a ``shell=True`` fallback
+# that would turn a declared command into a command line.
+#
+# Every one carries the same lead and names *both* the command and the folders
+# that were searched, because that is the half the operator can act on.
+SPAWN_FAILURE_LEAD = "Could not spawn language server: "
+
+# The command and the folders are quoted rather than ``repr``-ed: they are paths
+# an operator reads and pastes, and an escaped ``\\`` is not what to paste.
+COMMAND_NOT_RESOLVED_NOTE = (
+    "the declared command '{command}' is not a file and it resolves to nothing "
+    "on the path that was searched ({searched}). Name it as that path sees it — "
+    "an executable image, or a shim whose extension is in PATHEXT — or give the "
+    "entry an ``env.PATH`` that carries it."
+)
+
+COMMAND_UNUSABLE_NOTE = (
+    "the declared command '{command}' is a file, but the file found there "
+    "(searched in {searched}) is not a program this OS can start: an "
+    "extensionless script — the ``#!/bin/bash`` shim npm and volta install — "
+    "carries no executable image. Point the declaration at the program itself, "
+    "usually the PATHEXT shim beside it (e.g. ``pyright-langserver.cmd``)."
+)
+
+COMMAND_OS_ERROR_NOTE = (
+    "the OS refused to start the declared command '{command}' ({exc}); the "
+    "program it handed over was '{program}', searched in ({searched})."
+)
+
+# The OS answers a file that is a script rather than an executable image with
+# these two codes, on the two Windows flavours of it (a text script answers 193,
+# a file with a stale or 16-bit header answers 216). A bare code is not
+# actionable, so it is translated into ``COMMAND_UNUSABLE_NOTE`` above; any
+# other OS answer at the spawn keeps its own words, because those *are* the
+# diagnosis for it.
+UNEXECUTABLE_IMAGE_WINERRORS = (193, 216)

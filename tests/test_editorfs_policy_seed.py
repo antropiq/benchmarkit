@@ -66,6 +66,11 @@ class TestTheSeedLands:
         assert isinstance(document["policies"], list) and document["policies"]
         assert isinstance(document["readme"], list) and document["readme"]
 
+    @pytest.mark.posix_behaviour(
+        "the readable-file half is the 0o644 the seeder asks for: mode bits and "
+        "the uid that may ignore them are POSIX facts (the folder-is-one-level "
+        "half above is platform-free and still runs)"
+    )
     def test_the_folder_is_one_level_and_the_file_is_readable(self, workspace: Path):
         """``0o644`` — the user is meant to open this file and edit it by hand."""
         policy_seed.ensure_policy_file(str(workspace))
@@ -204,6 +209,10 @@ class TestTheSeedRoundTripsThroughTheLoader:
 
 
 class TestAFailureIsANote:
+    @pytest.mark.posix_behaviour(
+        "an unwritable root is made with ``mkdir(mode=0o500)``: without POSIX "
+        "mode bits there is no root the seeder refuses to write into"
+    )
     def test_an_unwritable_root_answers_failed_and_raises_nothing(self, tmp_path: Path):
         """``chmod 0o500`` — a read-only mount or a foreign-owned root."""
         if os.geteuid() == 0:
@@ -331,6 +340,11 @@ class TestTheEndpoints:
         second = client.post("/api/path-location", json={"path": str(target)})
         assert second.json()["policy"]["state"] == "existing"
 
+    @pytest.mark.posix_behaviour(
+        "the unwritable root this POST is switched to is made with "
+        "``mkdir(mode=0o500)``, a POSIX fact: the switch and the note it carries "
+        "are only observable once a root can be made unwritable"
+    )
     def test_post_to_an_unwritable_root_still_switches_and_says_so(
         self, client: TestClient, tmp_path: Path
     ):

@@ -99,9 +99,17 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
     monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
     (tmp_path / "src" / "core").mkdir(parents=True)
-    (tmp_path / "src" / "config.py").write_text("x = 1\n", encoding="utf-8")
-    (tmp_path / "src" / "core" / "job.py").write_text("y = 2\n", encoding="utf-8")
-    (tmp_path / "README.md").write_text("# hi\n", encoding="utf-8")
+    # ``newline=""``: the planted bytes are the bytes the assertions name. The
+    # default text mode rewrites ``\n`` to the host's line ending on Windows,
+    # so the mtime/size guards and every read-back would compare against a
+    # file that is not the one the test wrote.
+    (tmp_path / "src" / "config.py").write_text(
+        "x = 1\n", encoding="utf-8", newline=""
+    )
+    (tmp_path / "src" / "core" / "job.py").write_text(
+        "y = 2\n", encoding="utf-8", newline=""
+    )
+    (tmp_path / "README.md").write_text("# hi\n", encoding="utf-8", newline="")
     (tmp_path / ".git").mkdir()
     (tmp_path / "node_modules" / "left-pad").mkdir(parents=True)
     policy_seed.ensure_policy_file(str(tmp_path))
@@ -164,6 +172,11 @@ class TestSaveWrites:
         assert response.status_code == 200
         assert (workspace / "crlf.py").read_bytes() == before
 
+    @pytest.mark.posix_behaviour(
+        "the invariant is that the atomic replace copies st_mode & 0o7777: "
+        "chmod and the 0755 bit it asserts are POSIX facts (the byte-for-byte "
+        "round-trip around it is platform-free and still runs)"
+    )
     def test_a_save_keeps_the_file_mode(self, workspace: Path, client, backups: Path):
         """An atomic replace must not turn a 0755 script into 0600."""
         script = workspace / "run.sh"
@@ -269,7 +282,7 @@ class TestWriteGate:
             write_policy(workspace, rules)
         target = workspace / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("original\n", encoding="utf-8")
+        target.write_text("original\n", encoding="utf-8", newline="")
 
         response = save(client, rel, "overwritten\n")
         assert response.status_code == 422
@@ -281,6 +294,9 @@ class TestWriteGate:
         read_response = client.get("/api/fs/file", params={"path": rel})
         if readable:
             assert read_response.status_code == 200
+            # The route answers the file's own bytes, which is why the planted
+            # file is written with ``newline=""``: text mode would have left
+            # CRLF on Windows and this would compare against other bytes.
             assert read_response.json()["text"] == "original\n"
         else:
             assert read_response.status_code == 404
@@ -321,6 +337,10 @@ class TestWriteGate:
         assert '".env.local"' in detail
         assert (hidden / "notes.txt").read_text(encoding="utf-8") == "original\n"
 
+    @pytest.mark.requires_symlink(
+        "a link inside the working location whose target is outside must be "
+        "refused on the write side too: the bytes would land outside"
+    )
     def test_a_symlink_inside_the_workspace_pointing_outside_is_422(
         self, workspace: Path, client, tmp_path: Path
     ):
@@ -531,6 +551,58 @@ class TestGateHelpers:
             "src", "src/core", "src/core/job.py",
         ]
 
+    # win-04 §6 test 2 — the proof A-D1 landed. Before the ancestor walk went
+    # through ``path_norm.path_parts``, a ``\``-shaped path normalised to a form
+    # whose ``split("/")`` was *empty*: the strict gate degraded to the leaf, so
+    # a folder rule stopped protecting what is inside it (roadmap §2.2) and the
+    # silently-permissive answer was ``rw``. It passes on Linux precisely because
+    # the lock now accepts ``\`` — which is what makes it a guard on both boxes.
+    def test_a_backslash_shaped_path_is_still_gated_by_its_ancestor_rules(
+        self, workspace: Path
+    ):
+        write_policy(workspace, [{"path": "secrets", "mode": "ro"}])
+        (workspace / "secrets" / "nested").mkdir(parents=True)
+
+        with pytest.raises(editorfs.WorkspacePathError) as caught:
+            editorfs.resolve_write_target("secrets\\nested\\k.txt")
+        assert caught.value.status_code == 422
+        # The ancestor's rule, not the leaf's innocence.
+        assert '"secrets"' in caught.value.detail
+
+        # The walk and the matcher split the same way, so the chain a ``/``-shaped
+        # path reports is the chain the same ``\``-shaped one means.
+        assert [rel for rel, _ in editorfs.resolve_write_target("a/b/c.md")] == [
+            "a", "a/b", "a/b/c.md",
+        ]
+        assert [rel for rel, _ in editorfs.resolve_write_target("a\\b\\c.md")] == [
+            "a", "a/b", "a/b/c.md",
+        ]
+
+    def test_the_create_shape_splits_a_backslash_shaped_name_the_same_way(
+        self, workspace: Path
+    ):
+        """win-04 §2: the parent of a create is its real folder, not the root.
+
+        An ``rpartition("/")`` of a ``\\``-shaped name answered an empty parent,
+        which is a create *at the workspace root* wearing a deeper name
+        (roadmap §2.4) — the folder rule above it never entered the chain.
+        """
+        (workspace / "notes" / "sub").mkdir(parents=True)
+        write_policy(workspace, [{"path": "notes/sub", "mode": "ro"}])
+
+        with pytest.raises(editorfs.WorkspacePathError) as caught:
+            editorfs.resolve_parent_in_workspace("notes\\sub\\x.md")
+        assert caught.value.status_code == 422
+        assert '"notes/sub"' in caught.value.detail
+
+        # And with the folder writable, the create resolves the *parent folder*
+        # and the leaf name, not the root plus a name containing a backslash.
+        normalised, parent, name = editorfs.resolve_parent_in_workspace(
+            "notes\\x.md"
+        )
+        assert (normalised, name) == ("notes/x.md", "x.md")
+        assert parent == workspace / "notes"
+
     def test_a_content_write_and_a_listing_write_are_two_different_questions(
         self, workspace: Path
     ):
@@ -627,6 +699,10 @@ class TestCreate:
             assert response.json()["detail"]["dir"] is True
         assert (workspace / "src").is_dir()
 
+    @pytest.mark.requires_symlink(
+        "a dangling link is a taken name: create must answer 409 and must not "
+        "open or overwrite through it"
+    )
     def test_creating_over_a_dangling_symlink_is_409(
         self, workspace: Path, client
     ):
@@ -647,6 +723,24 @@ class TestCreate:
         assert "Parent folder does not exist" in detail
         assert "nope" in detail
         assert not (workspace / "nope").exists()
+
+    def test_a_backslash_shaped_create_names_its_missing_parent_not_the_root(
+        self, workspace: Path, client
+    ):
+        """win-04 §2: the depth in the name is real depth at this route too.
+
+        With the old split the parent was empty, so the 409 could only ever be
+        about the root (which exists) and the create landed *there* under a name
+        containing a backslash — the deep typo was never reported.
+        """
+        response = create(client, "notes\\sub\\x.md")
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert "Parent folder does not exist" in detail
+        assert "notes/sub" in detail
+        # No chain was created on the way to that answer, and no stray name.
+        assert not (workspace / "notes").exists()
+        assert not any("\\" in p.name for p in workspace.iterdir())
 
     def test_a_parent_that_is_a_file_is_400(self, workspace: Path, client):
         response = create(client, "README.md/new.py")
@@ -925,6 +1019,10 @@ class TestRename:
         assert (workspace / "src" / "config.py").is_file()
         assert (workspace / "empty").is_dir()
 
+    @pytest.mark.requires_symlink(
+        "a rename may not silently replace a dangling link that already holds "
+        "the target name"
+    )
     def test_an_occupied_target_dangling_symlink_is_409(self, workspace: Path, client):
         (workspace / "gone").symlink_to(workspace / "never-existed")
         response = rename(client, "README.md", "gone")
@@ -954,6 +1052,11 @@ class TestRename:
             assert "same path" in response.json()["detail"]
         assert (workspace / "src" / "config.py").is_file()
 
+    @pytest.mark.case_sensitive_volume(
+        "``README.md`` → ``README.MD`` is a rename only where the volume keeps "
+        "the two names apart; on one that folds case the target name is the "
+        "source itself, which the route refuses as occupied"
+    )
     def test_a_case_only_rename_succeeds(self, workspace: Path, client):
         """Not the same normalised path here, so it is a real rename."""
         assert rename(client, "README.md", "README.MD").status_code == 200
@@ -986,6 +1089,10 @@ class TestRename:
             assert "working location itself cannot be renamed" in response.json()["detail"]
         assert (workspace / "README.md").is_file()
 
+    @pytest.mark.requires_symlink(
+        "a symlink is never moved as if it were its target: the rename is "
+        "refused and the link itself is untouched"
+    )
     def test_renaming_a_symlink_is_refused_and_the_link_is_untouched(
         self, workspace: Path, client
     ):
@@ -998,6 +1105,10 @@ class TestRename:
         assert (workspace / "shortcut.py").is_symlink()
         assert not (workspace / "shortcut2.py").exists()
 
+    @pytest.mark.requires_symlink(
+        "the gate judges a rename by where the link points, so a link to an "
+        "outside target is refused and stays in place"
+    )
     def test_a_link_pointing_outside_is_refused_by_the_gate(
         self, workspace: Path, client, tmp_path: Path
     ):
@@ -1187,6 +1298,9 @@ class TestMoveBatch:
         assert (workspace / "src" / "config.py").is_file()
         assert (workspace / "archive" / "config.py").is_dir()
 
+    @pytest.mark.requires_symlink(
+        "the occupied target this move aims at is a dangling link"
+    )
     def test_an_occupied_target_dangling_symlink_is_409(self, workspace: Path, client):
         (workspace / "archive").mkdir()
         (workspace / "archive" / "README.md").symlink_to(workspace / "never-existed")
@@ -1300,6 +1414,10 @@ class TestMoveBatch:
         assert (workspace / "README.md").is_file()
         assert not (workspace / "archive" / "README.md").exists()
 
+    @pytest.mark.requires_symlink(
+        "the batch's second entry is a link, and the promise is that the link "
+        "itself stays where it was"
+    )
     def test_a_symlink_in_the_batch_is_400_and_the_link_is_untouched(
         self, workspace: Path, client
     ):
@@ -1477,6 +1595,47 @@ class TestDeleteToTrash:
         # Nothing at all was moved.
         assert not trash.exists()
 
+    def test_a_folder_holding_nothing_locked_is_deleted_with_the_rules_present(
+        self, workspace: Path, client, trash: Path
+    ):
+        r"""§6 behaviour test 5, first half (win-06): folder delete **works**.
+
+        The subtree walk hands every path it sees — the root first — through
+        :func:`editorfs.mutate._rel_in_workspace`, and a ``None`` from there is a
+        refusal. Before the containment rule was shared, that ``None`` was the
+        answer for every path on a Windows root, so no folder could be deleted at
+        all: loud, and right only by accident (roadmap §2's "one good news", the
+        A-D5 row that says *works*).
+
+        So the rules have to be present while this succeeds — an empty policy
+        would let the delete pass even with a broken walk. ``vendor`` is ``ro``
+        and ``.env`` is hidden, exactly the two rules of the row below, and the
+        deleted folder is locked by neither: every descendant is judged, each
+        lands inside the workspace and comes back ``rw``, and the batch moves.
+        """
+        write_policy(workspace, [
+            {"path": "**/.env**", "mode": "hidden"},
+            {"path": "**/vendor", "mode": "ro"},
+        ])
+        vendor = workspace / "vendor"
+        vendor.mkdir()
+        (vendor / "left-pad.js").write_text("# vendored\n", encoding="utf-8")
+
+        response = trash_path(client, "src")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["dir"] is True and body["entries"] == 3
+        # The batch is named back workspace-relative and ``/``-joined (A §7's
+        # payload form), never with a separator of the host's own.
+        assert "\\" not in body["trashedTo"]
+        assert not Path(body["trashedTo"]).is_absolute()
+        batch = trash / Path(body["trashedTo"]).name
+        assert (batch / "src" / "config.py").is_file()
+        assert (batch / "src" / "core" / "job.py").is_file()
+        assert not (workspace / "src").exists()
+        # And the locked folder elsewhere was never in question.
+        assert (vendor / "left-pad.js").is_file()
+
     def test_a_folder_holding_a_read_only_subtree_is_refused(
         self, workspace: Path, client, trash: Path
     ):
@@ -1525,6 +1684,10 @@ class TestDeleteToTrash:
         assert (workspace / "README.md").is_file()
         assert not trash.exists()
 
+    @pytest.mark.requires_symlink(
+        "a symlink is never moved into the trash as if it were its target: "
+        "the delete is refused and the link itself is untouched"
+    )
     def test_deleting_a_symlink_is_refused_and_the_link_is_untouched(
         self, workspace: Path, client, trash: Path
     ):
@@ -1541,6 +1704,10 @@ class TestDeleteToTrash:
         assert (workspace / "link-target.py").read_text(encoding="utf-8") == "the real file\n"
         assert not trash.exists()
 
+    @pytest.mark.requires_symlink(
+        "the delete gate judges a link by where it points, so a link to an "
+        "outside target is refused and stays in place"
+    )
     def test_a_link_pointing_outside_is_refused_by_the_gate(
         self, workspace: Path, client, trash: Path, tmp_path: Path
     ):
@@ -1557,6 +1724,10 @@ class TestDeleteToTrash:
         assert (outside / "hosts").read_text(encoding="utf-8") == "127.0.0.1\n"
         assert not trash.exists()
 
+    @pytest.mark.requires_symlink(
+        "the subtree walk does not follow a link but does judge it: a link to "
+        "a locked path inside an innocent folder is a route to it"
+    )
     def test_a_folder_holding_a_link_to_a_locked_target_is_refused(
         self, workspace: Path, client, trash: Path
     ):
@@ -1571,6 +1742,10 @@ class TestDeleteToTrash:
         assert (workspace / "deploy" / "key").is_symlink()
         assert not trash.exists()
 
+    @pytest.mark.requires_symlink(
+        "no policy of this workspace reaches a link that points outside it, so "
+        "the folder holding it must not be moved"
+    )
     def test_a_link_pointing_outside_the_workspace_is_refused_by_the_subtree_walk(
         self, workspace: Path, client, trash: Path, tmp_path: Path
     ):
@@ -1584,6 +1759,76 @@ class TestDeleteToTrash:
         assert response.status_code == 422
         assert "outside the working location" in response.json()["detail"]
         assert not trash.exists()
+
+    @pytest.mark.requires_symlink(
+        "a link whose target is spelled in another case is one folder with it "
+        "on a volume that folds case, so the subtree walk must judge it by that "
+        "identity rather than refuse the whole delete"
+    )
+    def test_a_link_to_another_spelling_of_a_path_inside_stays_inside_when_folded(
+        self, workspace: Path, client, trash: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        r"""§6 test 5's other half: the fold decides *containment*, not just names.
+
+        ``folder/link`` targets a path that names this workspace's **own folder**
+        in another case (``TMPX/notes/note.txt`` for a workspace at ``tmpx``). On
+        a volume that folds case that is a folder *inside* the workspace, and the
+        walk has to say so — the A-D5 row that made every folder delete on
+        Windows fail on exactly this shape (roadmap §2's "one good news": loud,
+        and correct only by accident).
+
+        The target does not exist on this case-sensitive runner, so its
+        ``realpath`` keeps the spelling it was handed (a resolved path never
+        re-writes the components it could not reach) — which is what makes the
+        pair assertable here without pretending to another platform:
+
+        * ``fold=False`` — the two spellings are two locations, no policy of this
+          workspace reaches the target, and the whole delete is refused (the
+          row above, unchanged);
+        * ``fold=True`` — the containment compare folds, the target becomes the
+          workspace-relative ``notes/note.txt``, and the *verdict* is then asked
+          of it: with a rule for ``notes`` it is refused as a descendant of the
+          folder that was named, and with no rule the folder moves.
+
+        So the fold turns a refusal into a *judged* path, never into permission:
+        the locked case still refuses, and it names the descendant.
+        """
+        from src.core.editorfs import fscase
+
+        (workspace / "folder").mkdir()
+        (workspace / "folder" / "keep.txt").write_text("y\n", encoding="utf-8")
+        # The same workspace folder, spelled in its other case, plus the name
+        # below it. One folder on a folded volume; here, a name that resolves to
+        # nothing and is therefore kept as written.
+        other_spelling = workspace.parent / workspace.name.upper()
+        (workspace / "folder" / "link").symlink_to(other_spelling / "notes" / "note.txt")
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        exact = trash_path(client, "folder")
+        assert exact.status_code == 422
+        assert "outside the working location" in exact.json()["detail"], exact.text
+        assert (workspace / "folder" / "keep.txt").is_file()
+        assert not trash.exists()
+
+        write_policy(workspace, [{"path": "notes", "mode": "ro"}])
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        judged = trash_path(client, "folder")
+        assert judged.status_code == 422
+        detail = judged.json()["detail"]
+        assert '"notes"' in detail and "inside folder" in detail, detail
+        assert (workspace / "folder" / "keep.txt").is_file()
+        assert not trash.exists()
+
+        write_policy(workspace, [])
+        with_no_rule = trash_path(client, "folder")
+        assert with_no_rule.status_code == 200
+        body = with_no_rule.json()
+        assert body["dir"] is True and body["entries"] == 2
+        batch = trash / Path(body["trashedTo"]).name
+        assert (batch / "folder" / "keep.txt").read_text(encoding="utf-8") == "y\n"
+        assert (batch / "folder" / "link").is_symlink()
+        assert not (workspace / "folder").exists()
+
 
     @pytest.mark.parametrize(
         "raw", ["../etc/hosts", "/etc/hosts", "~/x", "src/../../etc"]
@@ -1979,7 +2224,18 @@ class TestWritesStayBrowserOnly:
 # slot into — a rule only one route asserts is a rule the next one forgets.
 # ---------------------------------------------------------------------------
 
-ESCAPES = ["../etc/hosts", "/etc/hosts", "~/x", "a/../../b", "src/../../etc", "a\0b"]
+ESCAPES = [
+    "../etc/hosts",
+    "/etc/hosts",
+    "~/x",
+    "a/../../b",
+    "src/../../etc",
+    "a\0b",
+    # The shapes ``os.path.isabs`` misses on Windows (A-D2.1): each is refused by
+    # the inbound lock at every write route too, not caught by containment.
+    "//srv/share",
+    "C:x",
+]
 
 # ``(path, a fragment of the rule the refusal quotes)``. The seeded file carries
 # the ``.git`` and ``**/node_modules`` rows; the test writes the rest. Every
@@ -2313,6 +2569,61 @@ class TestTrashIsNotASideDoor:
         assert (repo_like / ".nojae" / "trash" / self.PLANTED / ".env").is_file()
         batch = repo_like / response.json()["trashedTo"]
         assert (batch / "src" / "app.py").is_file()
+
+    @pytest.mark.case_sensitive_volume(
+        "the pair plants ``.NOJAE`` as a second folder beside the reserved one "
+        "and asks the fold probe each way; on a volume that folds case they are "
+        "one folder, so the un-folded half — a delete of an innocent folder "
+        "whose walk reaches the trash — cannot be staged"
+    )
+    def test_a_folded_spelling_of_the_trash_is_no_way_in(
+        self, repo_client, repo_like: Path, planted_batch: Path,
+        monkeypatch: pytest.MonkeyPatch
+    ):
+        r"""win-06: the fold the containment compares gained cannot open the trash.
+
+        ``.NOJAE`` here is a second, ordinary folder this case-sensitive volume
+        allows — and *one* folder with ``.nojae`` on a volume that folds case, so
+        the subtree walk of a delete of it reaches the trash path and the batch
+        inside it. That is the direction A-D3 warns about: folding may only ever
+        *narrow* an answer. So the delete is refused on both answers of the probe,
+        and only the sentence differs —
+
+        * folded: the reservation matches the other spelling too (win-05), so the
+          gate refuses before the walk, naming ``.nojae``;
+        * not folded: the folder is innocent by name, and what stops the delete is
+          the walk — the hidden ``.env`` in the batch below it, named as a
+          descendant of the folder that was asked for.
+
+        Either way nothing moves, which is the all-or-nothing rule of A §7.
+        """
+        from src.core.editorfs import fscase
+
+        other = repo_like / ".NOJAE" / "trash" / "111111111111_other-batch"
+        other.mkdir(parents=True)
+        (other / ".env").write_text("SECRET=other\n", encoding="utf-8")
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: False)
+        response = repo_client.request(
+            "DELETE", "/api/fs/file", params={"path": ".NOJAE"}
+        )
+        assert response.status_code == 422
+        exact_detail = response.json()["detail"]
+        assert '"**/.env**"' in exact_detail
+        assert "inside .NOJAE" in exact_detail
+
+        monkeypatch.setattr(fscase, "case_folded", lambda _root: True)
+        folded = repo_client.request(
+            "DELETE", "/api/fs/file", params={"path": ".NOJAE"}
+        )
+        assert folded.status_code == 422
+        assert editorfs.constants.POLICY_DIRNAME in folded.json()["detail"]
+
+        # Both halves of the pair moved nothing, batch and all.
+        assert (other / ".env").read_text(encoding="utf-8") == "SECRET=other\n"
+        assert (planted_batch / ".env").is_file()
+        assert (repo_like / ".NOJAE").is_dir()
+        assert editorfs.trash_batches() == [planted_batch]
 
 
 class TestPolicyFileIsBroken:

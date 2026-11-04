@@ -17,16 +17,17 @@ so discovery and the settings panel keep working without the ``[lsp]`` extra.
 import asyncio
 import logging
 import os
+import shutil
 import threading
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.core import proctree
+from src.core import proctree, proctree_jobs
 from src.core.mcphub import connector_environment
 
 from . import actions, constants
-from .discovery import lsp_installed
+from .discovery import lsp_installed, lsp_reach_is_refused
 from .features import client_capabilities, register_features
 from .session import ServerSession
 from .tsserver import find_project_config
@@ -70,12 +71,28 @@ class LspManager:
 
     @staticmethod
     def _index(servers: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        """Definition list -> id-keyed live records (also used by :meth:`restart`)."""
+        """Definition list -> id-keyed live records (also used by :meth:`restart`).
+
+        A refused reach (win-07 / A-D4) is applied *here* rather than only at
+        start time, because a declared-but-never-started server is not merely
+        idle: a ``stopped`` entry with ``enable: true`` has its tools published
+        to chat from its declared list, and its first call would spawn it. Naming
+        it ``error`` at the moment the declaration file is read — boot and every
+        hub reload — takes it out by the two documented exclusions instead
+        (``enable: false`` and ``error``), for lazy servers as well as eager ones.
+        A disabled entry is the user's own switch, so it stays ``stopped``
+        whatever the guardrails can bound — the same shape the MCP hub keeps.
+        """
+        refused = lsp_reach_is_refused()
         return {
             server["id"]: {
                 **server,
-                "status": "stopped",
-                "error": None,
+                "status": "error" if refused and server["enable"] else "stopped",
+                "error": (
+                    constants.LOCAL_REACH_REFUSAL
+                    if refused and server["enable"]
+                    else None
+                ),
                 "last_used": 0.0,
                 "startingSince": 0.0,
             }
@@ -187,8 +204,123 @@ class LspManager:
             f"language server exited with code {process.returncode}"
             + (f": {tail}" if tail else "")
         )
-        self._sessions.pop(server_id, None)
+        # Dropping the session means dropping the child's job handle too: a
+        # ctypes handle is a plain integer, so nothing else closes it (B-D5).
+        # With kill-on-close that release is also the kill of whatever the dead
+        # server left running — the ghost this teardown exists for — and where
+        # the platform's jobs are inert it costs nothing. The full teardown is
+        # deliberately not run here: the leader's own exit is what this watcher
+        # is reacting to.
+        dropped = self._sessions.pop(server_id, None)
+        if dropped is not None:
+            self._release_job(dropped)
         self._defs.pop(server_id, None)
+
+    # -- the declared command, resolved before it is spawned (B-D6) -----------
+
+    @staticmethod
+    def _searched_paths(command: str, env: Dict[str, str]) -> str:
+        r"""The folders a lookup of ``command`` in ``env`` walks, as one string.
+
+        The *search* path, not the variable: ``shutil.which`` consults ``PATH``
+        only for a bare name, and for a command that already spells a path
+        (``C:\tools\langserver``, ``./x``) the directory it spells is the whole
+        search. Naming ``PATH`` there would report folders the lookup never
+        opened — a refusal has to say what was actually looked in.
+        """
+        directory, _name = os.path.split(command)
+        if directory:
+            return directory
+        # The child's ``PATH`` and nothing else — see :meth:`_resolve_command`
+        # for why the app's own PATH is never the one searched.
+        return env.get("PATH") or "nothing: the child environment has no PATH"
+
+    def _resolve_command(
+        self, command: str, env: Dict[str, str]
+    ) -> Optional[str]:
+        """The program the declaration names, or ``None`` when nothing answers it.
+
+        ``shutil.which`` honours ``PATHEXT``, so the extensionless shim a POSIX
+        user would write (npm/volta's ``pyright-langserver``, a ``#!/bin/bash``
+        script Windows cannot exec) resolves to the ``.cmd`` beside it — and
+        skips the script when there is no shim beside it. It is asked with **the
+        environment the child actually gets** (see :meth:`_environment`, which
+        replaces ``PATH`` wholesale with the declaration's own ``env.PATH``):
+        resolving with the app's PATH and spawning with the child's is two
+        different searches, and a declaration can make the second one fail. One
+        search, one verdict — the same rule the shared path policy runs on.
+
+        No platform branch: on POSIX an absolute command that exists resolves to
+        itself, so the answer there is the unchanged path.
+        """
+        resolved = shutil.which(command, path=env.get("PATH", ""))
+        if resolved is not None:
+            return resolved
+        # A file the search refused — no ``PATHEXT`` entry matches it on Windows,
+        # no executable bit on POSIX — is still handed to the OS: its own error
+        # (``[WinError 193]``, ``PermissionError``) is the accurate answer to
+        # *why that file cannot run*, and :meth:`_spawn_failure_sentence` puts it
+        # in a sentence. Refusing it here would replace a fact with a guess.
+        if os.path.isfile(command):
+            return command
+        return None
+
+    def _resolve_spawn(
+        self, server_id: str, info: Dict[str, Any]
+    ) -> Optional[Tuple[str, Dict[str, str]]]:
+        """``(program, child environment)`` for one start attempt, or ``None``.
+
+        Only ``argv[0]`` is resolved: the rest of the declaration's argv is
+        arguments, not program names. The answer and the environment it was
+        answered from are handed to :meth:`_start_session` together, so the
+        search and the spawn are one search — nothing can drift between the two
+        environments. A refusal leaves the server at ``error`` with a sentence
+        naming the command and the folders it was looked up in — the way a failed
+        spawn does, on the same card — and nothing is spawned.
+        """
+        declared = str(info["command"][0])
+        child_env = self._environment(info)
+        program = self._resolve_command(declared, child_env)
+        if program is None:
+            searched = self._searched_paths(declared, child_env)
+            info["status"] = "error"
+            info["error"] = constants.SPAWN_FAILURE_LEAD + (
+                constants.COMMAND_NOT_RESOLVED_NOTE.format(
+                    command=declared, searched=searched
+                )
+            )
+            # The log is what the settings panel shows, and on a fresh install
+            # the logs folder does not exist until a session is made — without
+            # it the refusal would be half a report.
+            self._logs_dir.mkdir(parents=True, exist_ok=True)
+            self._append_log(
+                self._logs_dir / f"{server_id}.log",
+                f"[hub] {server_id} refused: {info['error']}",
+            )
+            return None
+        return program, child_env
+
+    def _spawn_failure_sentence(
+        self, exc: OSError, command: str, program: str, searched: str
+    ) -> str:
+        """One sentence for one spawn the OS refused, naming what was searched.
+
+        A Windows unexecutable-image code is translated, because ``[WinError
+        193] %1 is not a valid Win32 application`` names nothing the operator can
+        act on and no search can rule that file out (it *is* a file). Every other
+        OS answer keeps its own words — a denied execute bit or an unresolvable
+        working directory is already the diagnosis — with the declared command,
+        the program it was resolved to and the searched folders beside it.
+        """
+        if getattr(exc, "winerror", None) in constants.UNEXECUTABLE_IMAGE_WINERRORS:
+            note = constants.COMMAND_UNUSABLE_NOTE.format(
+                command=command, searched=searched
+            )
+        else:
+            note = constants.COMMAND_OS_ERROR_NOTE.format(
+                command=command, program=program, exc=exc, searched=searched
+            )
+        return constants.SPAWN_FAILURE_LEAD + note
 
     def _environment(self, info: Dict[str, Any]) -> Dict[str, str]:
         """Spawn environment: ``connector_environment`` pins a valid TMPDIR
@@ -198,6 +330,26 @@ class LspManager:
         env = connector_environment(self._project_root)
         env.update(info.get("env") or {})
         return env
+
+    def _refuse_reach(self, server_id: str, info: Dict[str, Any]) -> None:
+        """Mark one server refused: its reach cannot be bounded here (A-D4).
+
+        A language server is a stdio child process, so what confines it is
+        ``restricted-paths.txt`` plus the connector deny-prefixes — lists that
+        speak both platforms' path forms — and the process-tree teardown that
+        kills what the server spawns of its own, one escalation on either
+        platform's mechanism (``proctree``). Where no entry in those lists can
+        name this filesystem's paths, the bound is a claim this hub must not
+        make, and there is no partial start worth having: the status carries the
+        sentence the declaration scan carries, in the same place a failed
+        connection carries its error.
+        """
+        info["status"] = "error"
+        info["error"] = constants.LOCAL_REACH_REFUSAL
+        self._append_log(
+            self._logs_dir / f"{server_id}.log",
+            f"[hub] {server_id} refused: {info['error']}",
+        )
 
     async def _start_one(self, server_id: str) -> None:
         """Bring one server up, handshake included. Never raises.
@@ -209,15 +361,36 @@ class LspManager:
         forever — no process, no tools, and no status the settings toggle can
         retry. "Already up" is a live session; "an attempt is already running"
         is membership in :attr:`_starting`.
+
+        The reach refusal (win-07) is checked here as well as in
+        :meth:`_index`, because this is the one gate every attempt passes — the
+        settings toggle, the lazy path and a restart of a hub whose entries were
+        indexed before the seam changed — so a refused server is spawned by none
+        of them. It runs *before* the bookkeeping below, so a refusal leaves no
+        half-started session and no ``starting`` marker behind.
+
+        The declared command is resolved at this same gate for the same reason
+        (B-D6): a name nothing on the child's path answers is refused with a
+        sentence rather than handed to the OS to reject with a code, and the
+        program it does answer is what :meth:`_start_session` execs — the
+        resolution and the spawn are handed the same child environment, so there
+        is one search and one verdict.
         """
         info = self._servers.get(server_id)
         if info is None or server_id in self._sessions or server_id in self._starting:
             return
+        if lsp_reach_is_refused():
+            self._refuse_reach(server_id, info)
+            return
+        spawn = self._resolve_spawn(server_id, info)
+        if spawn is None:
+            return
+        program, child_env = spawn
         self._starting.add(server_id)
         self._stop_requested.discard(server_id)
         try:
             try:
-                await self._start_session(server_id, info)
+                await self._start_session(server_id, info, program, child_env)
             except Exception as exc:  # noqa: BLE001 — startup errors land in status
                 info["status"] = "error"
                 info["error"] = str(exc) or exc.__class__.__name__
@@ -235,7 +408,13 @@ class LspManager:
                 info["status"] = "stopped"
                 info["error"] = None
 
-    async def _start_session(self, server_id: str, info: Dict[str, Any]) -> None:
+    async def _start_session(
+        self,
+        server_id: str,
+        info: Dict[str, Any],
+        program: str,
+        child_env: Dict[str, str],
+    ) -> None:
         from lsprotocol import types as lsp
         from pygls import uris as lsp_uris
         from pygls.lsp.client import LanguageClient
@@ -246,6 +425,10 @@ class LspManager:
         self._logs_dir.mkdir(parents=True, exist_ok=True)
         log_path = self._logs_dir / f"{server_id}.log"
         argv = list(info["command"])
+        # ``program``/``child_env`` are what the start gate resolved ``argv[0]``
+        # to and the environment it resolved it in (B-D6): the spawn execs the
+        # program the *child's* PATH answered, never the declared name, and a
+        # spawn failure below names the folders that same search walked.
 
         client = LanguageClient("benchmarkit", "1.0")
         register_features(
@@ -262,33 +445,77 @@ class LspManager:
         # pygls spawns the child itself and owns its stdio pipes — the hub
         # must not create its own subprocess, or the protocol has no
         # transport to write to. stderr is captured and pumped to the log.
+        #
+        # The child's process-tree boundary is opened *before* the spawn
+        # (B-D5): containment in a job is decided when a process is created, so
+        # the handle has to exist before pygls creates anything. The hub does
+        # not spawn the child (``start_io`` calls ``create_subprocess_exec``
+        # itself and offers no hook), so the earliest the pid can be assigned is
+        # the first statement after ``start_io`` returns. That window was
+        # measured here rather than assumed: with the fake server and with a
+        # real ``typescript-language-server``, assigning the leader there still
+        # contained every descendant — the job listed the wrapper plus five Node
+        # children (tsserver among them) and none of them survived its teardown
+        # — because a server creates its children only once its own runtime is
+        # up, far later than one event-loop turn. Measured the other way too: a
+        # process that already exists when the assignment happens is never
+        # migrated into the job, so a child that spawned before its own runtime
+        # started would not be covered — and the teardown says so rather than
+        # claiming a tree it does not hold.
+        job = proctree_jobs.ProcessJob(f"lsp-{server_id}")
         try:
             await client.start_io(
-                argv[0],
+                program,
                 *argv[1:],
                 cwd=info["workspaceRoot"],
-                env=self._environment(info),
+                env=child_env,
                 # pygls forwards these to create_subprocess_exec. Leading its
                 # own process group is what lets the teardown signal the whole
                 # tree rather than only the wrapper (see proctree.kill_process_tree).
+                # Not dead on Windows and not to be removed: there it is
+                # accepted and ignored, and the job above is what bounds the
+                # tree instead — one call site, one shape, both platforms.
                 start_new_session=True,
             )
         except OSError as exc:
+            # Nothing was spawned, so this is an empty handle and the session
+            # that would have owned it does not exist.
+            job.close()
             info["status"] = "error"
-            info["error"] = f"Could not spawn language server: {exc}"
+            # Never the bare OS code: a Windows unexecutable-image answer is
+            # translated and every answer names the command and the folders the
+            # search walked (see :meth:`_spawn_failure_sentence`).
+            info["error"] = self._spawn_failure_sentence(
+                exc, argv[0], program, self._searched_paths(argv[0], child_env)
+            )
             return
+        except BaseException:
+            # A spawn that failed after creating the process but before storing
+            # it (pygls raises on a missing pipe) must still not leave the
+            # handle behind — nothing else owns the job. The child was never
+            # assigned, so this releases the handle and claims nothing more.
+            job.close()
+            raise
         process = client._server  # noqa: SLF001 — pygls keeps it private
         if process is None:
+            job.close()
             info["status"] = "error"
             info["error"] = "Language server started but exposes no process handle"
             with suppress(Exception):
                 await client.stop()
             return
-        session = ServerSession(info, client, process, log_path)
+        session = ServerSession(info, client, process, log_path, job)
+        # Registered before anything else is asked of it — the containment
+        # below included: from here on the session owns the job, so a failure
+        # anywhere between the spawn and ``running`` reaches
+        # ``_close_session`` and releases the handle. Registering late is what
+        # would strand it. No await sits between the spawn and the assignment,
+        # so this is still the first moment the pid exists to be contained.
+        self._sessions[server_id] = session
+        self._contain_tree(job, process, info, log_path)
         session.stderr_task = asyncio.ensure_future(
             self._pump_stderr(client, log_path)
         )
-        self._sessions[server_id] = session
         session.exit_task = asyncio.ensure_future(
             self._watch_exit(server_id, process)
         )
@@ -348,6 +575,35 @@ class LspManager:
             + ")",
         )
 
+    def _contain_tree(self, job: Any, process: Any, info: Dict[str, Any],
+                      log_path: Path) -> None:
+        """Register the spawned child as the leader of its job (B-D5).
+
+        ``assign`` answers ``None`` where the platform has no jobs — the POSIX
+        answer, where the child's own process group is the boundary — so the
+        spawn site is written once for both platforms and the Linux path is
+        exactly what it was. ``True`` means the tree is contained.
+
+        A ``False`` is not a reason to fail the spawn: that is the stated
+        contract of ``ProcessJob.assign`` (the caller keeps its process either
+        way). It *is* a claim this hub must not make silently, so it is named in
+        the server's own log — the file the settings panel shows — and the
+        teardown's "was never assigned to a job" line is the second place it
+        appears. Ignoring a ``False`` is the "spawn site that forgot the call"
+        that message exists to find.
+        """
+        if job.assign(getattr(process, "pid", None), leader=True) is not False:
+            return
+        pid = getattr(process, "pid", None)
+        sentence = (
+            f"pid {pid} is not contained in a job, so its descendants are "
+            "not bounded"
+        )
+        logger.warning(
+            "%s: %s", info["id"], sentence,
+        )
+        self._append_log(log_path, f"[hub] warning: {sentence}")
+
     # -- hot toggles ---------------------------------------------------------
 
     def start_server(self, server_id: str) -> None:
@@ -357,11 +613,18 @@ class LspManager:
         alone, so a second click cannot tear down a handshake the first one
         started. A ``starting`` with nothing in flight behind it (a start that
         died before recording anything) is exactly what this call can repair.
+
+        The reach refusal (win-07 / A-D4) is answered *here* as well as in
+        :meth:`_start_one`, so a refused server is never briefly shown as
+        ``starting`` by the toggle that just asked for it.
         """
         info = self._servers.get(server_id)
         if info is None or self._loop is None or self._stopped:
             return
         if server_id in self._starting:
+            return
+        if info["enable"] and lsp_reach_is_refused():
+            self._refuse_reach(server_id, info)
             return
         info["status"] = "starting"
         info["startingSince"] = self._loop.time()
@@ -617,7 +880,13 @@ class LspManager:
     # -- teardown -------------------------------------------------------------
 
     async def _close_session(self, server_id: str) -> None:
-        """shutdown/exit, then SIGTERM the whole process group, then SIGKILL."""
+        """shutdown/exit, then the one shared process-tree teardown.
+
+        The graceful step is the hub's own LSP ``shutdown``/``exit``, and it runs
+        *before* any teardown is asked: inside the job half the first step of the
+        escalation terminates the leader alone, so the grace window is the tree's
+        chance to leave with it.
+        """
         session = self._sessions.pop(server_id, None)
         self._defs.pop(server_id, None)
         if session is None:
@@ -639,34 +908,45 @@ class LspManager:
                 client.exit(None)
             with suppress(Exception):
                 await asyncio.wait_for(client.stop(), timeout=constants.STOP_GRACE_SECONDS)
-        process = session.process
-        if process is not None:
-            # Signalling only the wrapper is not enough: typescript-language-server
-            # spawns tsserver, and Volar spawns workers. A SIGTERM aimed at the
-            # wrapper leaves those alive, reparented to init, holding a project
-            # index no later hub will ever know about. The server leads its own
-            # process group (``start_new_session``), so ``killpg`` reaches every
-            # descendant — the same teardown the MCP hub applies. This runs even
-            # when the graceful shutdown/exit already stopped the leader: what
-            # has to be empty is the *group*, and the leader's pid names it
-            # whether or not the leader is still running.
-            pid = getattr(process, "pid", None)
-            if os.name == "posix" and isinstance(pid, int):
-                await proctree.kill_process_tree(
-                    pid, self._reap_leader(process), constants.STOP_GRACE_SECONDS
-                )
-            elif process.returncode is None:
-                with suppress(ProcessLookupError):
-                    process.terminate()
-                try:
-                    await asyncio.wait_for(
-                        process.wait(), timeout=constants.STOP_GRACE_SECONDS
+        try:
+            process = session.process
+            if process is not None:
+                # Signalling only the wrapper is not enough: typescript-language-server
+                # spawns tsserver, and Volar spawns workers. A SIGTERM aimed at the
+                # wrapper leaves those alive, reparented to init, holding a project
+                # index no later hub will ever know about. The server leads its own
+                # process group (``start_new_session``), so ``killpg`` reaches every
+                # descendant — the same teardown the MCP hub applies. This runs even
+                # when the graceful shutdown/exit already stopped the leader: what
+                # has to be empty is the *group*, and the leader's pid names it
+                # whether or not the leader is still running.
+                #
+                # One entry point, both platforms (B-D5): ``proctree`` picks the
+                # mechanism by capability, and on the platform with no process
+                # groups it lands in the job this hub put the child in at the
+                # spawn, which reaches the same descendants. There is no second
+                # escalation here and no platform branch — a hub calling the job
+                # primitives itself is how the hubs and the terminal drift.
+                pid = getattr(process, "pid", None)
+                if isinstance(pid, int):
+                    await proctree.kill_process_tree(
+                        pid, self._reap_leader(process), constants.STOP_GRACE_SECONDS
                     )
-                except (asyncio.TimeoutError, TimeoutError):
-                    with suppress(ProcessLookupError):
-                        process.kill()
-                    with suppress(Exception):
-                        await process.wait()
+        finally:
+            # The job belongs to this child, so this is where its handle goes.
+            # The teardown closes the job it found (kill-on-close is its last
+            # guarantee); ``close`` is idempotent, and this covers the path where
+            # the assignment failed and the teardown therefore had no job to
+            # close — a ctypes handle is a plain integer and nothing closes it
+            # for the hub.
+            self._release_job(session)
+
+    @staticmethod
+    def _release_job(session: ServerSession) -> None:
+        """Release one child's job handle — with kill-on-close, the last
+        guarantee. Idempotent, and inert where the platform has no jobs."""
+        if session.job is not None:
+            session.job.close()
 
     @staticmethod
     def _reap_leader(process: Any):
@@ -786,6 +1066,11 @@ class LspManager:
         """
         await self.stop_all()
         self._servers = self._index(servers)
+        # A teardown that ran out of its wait can leave a session behind, and
+        # this replaces every session: a job handle must not be dropped with
+        # the dict (close is a kill, so the old tree goes with it).
+        for session in self._sessions.values():
+            self._release_job(session)
         self._sessions.clear()
         self._defs.clear()
         self._starting.clear()

@@ -55,10 +55,16 @@ def paths(rel: str = "") -> List[str]:
 
 
 def write(root: Path, rel: str, body: str) -> None:
-    """One file of the throw-away workspace, with its folders."""
+    """One file of the throw-away workspace, with its folders.
+
+    ``newline=""``: the bytes planted are the bytes the assertions name. Text
+    mode would rewrite every ``\n`` to the host's line ending on Windows, so a
+    supplied line, a byte count and the byte cap would all be about a file the
+    test did not write.
+    """
     target = root / rel
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(body, encoding="utf-8")
+    target.write_text(body, encoding="utf-8", newline="")
 
 
 @pytest.fixture
@@ -325,6 +331,10 @@ class TestPolicyIsTheTreesPolicy:
 class TestSymlinksStayOutOfTheSupply:
     """*Traps* 1 — the security-relevant rows: the walk never resolves a link."""
 
+    @pytest.mark.requires_symlink(
+        "a symlinked directory inside the workspace is not followed, so no "
+        "byte from outside the working location enters the supply"
+    )
     def test_symlinked_directory_is_not_followed(
         self, workspace: Path, tmp_path: Path
     ):
@@ -336,6 +346,10 @@ class TestSymlinksStayOutOfTheSupply:
         assert supplied == []
         assert counts == ScanCounts()
 
+    @pytest.mark.requires_symlink(
+        "a symlinked file is never opened and never counted: open() on it "
+        "would read outside bytes with nothing in the way"
+    )
     def test_symlinked_file_is_never_opened_and_never_counted(
         self, workspace: Path, tmp_path: Path
     ):
@@ -355,6 +369,10 @@ class TestSymlinksStayOutOfTheSupply:
         assert supplied == []
         assert counts == ScanCounts()
 
+    @pytest.mark.requires_symlink(
+        "the rule is one shape — no symlink is opened — not a per-target "
+        "judgement, so a link to an allowed file is skipped with the others"
+    )
     def test_a_symlink_to_a_file_inside_the_root_is_skipped_with_the_others(
         self, workspace: Path
     ):
@@ -368,6 +386,11 @@ class TestSymlinksStayOutOfTheSupply:
 
 
 class TestWalkOrder:
+    @pytest.mark.case_sensitive_volume(
+        "the tree planted is ``B/`` and ``b/``, and ``A.py`` and ``a.py`` — two "
+        "pairs the walk can only order case-insensitively with an exact-name "
+        "tie-break where the volume keeps the two spellings apart"
+    )
     def test_dirs_first_then_files_each_sorted_case_insensitively(
         self, workspace: Path
     ):
@@ -697,6 +720,39 @@ class TestGitignoreIsTheSecondFilter:
         # rule file is not excluded by its own rules.
         assert [path for path, _ in supplied] == ["src/mod.js", ".gitignore"]
         assert counts == ScanCounts(files_scanned=2)
+
+    # win-04 §6 test 6 — the ancestor half of the ignore prune, now derived from
+    # ``path_norm.path_parts`` so it cannot disagree with the matcher about what a
+    # component is. git collapses a whole ignored folder to its one name, so the
+    # answer for a deeper path comes only from walking its ancestors.
+    def test__ignored_hit_matches_a_name_and_every_ancestor_of_it(self):
+        hit = search_module._ignored_hit
+        assert hit("build/output/x.js", {"build"}) is True
+        assert hit("build/output/x.js", {"build/output"}) is True
+        assert hit("build/output/x.js", {"build/output/x.js"}) is True
+        # Only whole components: a rule that speaks one folder never takes a
+        # similarly-spelled sibling, and an empty set is no filter at all.
+        assert hit("builds/output/x.js", {"build"}) is False
+        assert hit("build/output/x.js", {"output"}) is False
+        assert hit("build/output/x.js", set()) is False
+
+    def test_a_scope_inside_an_ignored_folder_answers_empty_not_404(
+        self, repo: Path
+    ):
+        """The ancestor check is what lets a *scope* below a collapsed name be empty.
+
+        git names ``build``, never ``build/output``; the search is raised on the
+        deeper folder, which is a row the tree shows. So the answer is the empty
+        one — the same distinction the ignored-scope row makes, one level down.
+        """
+        write(repo, "build/output/gen.js", "needle\n")
+        (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+        assert paths("build/output") == []
+        payload = search_workspace("build/output", query="needle")
+        assert payload["matches"] == []
+        assert payload["matchCount"] == 0
+        assert payload["truncated"] is False
+        assert payload["footerNote"] == ""
 
     def test_an_ignored_folder_costs_no_scandir_below_it(self, repo: Path,
                                                         monkeypatch):

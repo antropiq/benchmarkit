@@ -621,8 +621,12 @@ def _unreachable_message(
     if not suggestion:
         return None
 
+    # ``/``-joined: a suggestion is a **policy path**, and the policy file's
+    # form is ``/``-joined on every platform (roadmap §9 rule 1). ``os.path.join``
+    # would hand a Windows user a ``web\src`` they cannot paste into their own
+    # file as a rule that matches.
     names = ", ".join(
-        f"`{os.path.join(parent_rel, near) if parent_rel else near}`"
+        f"`{parent_rel + '/' + near if parent_rel else near}`"
         for near in suggestion
     )
     return _rule_error(
