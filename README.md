@@ -458,6 +458,8 @@ how far the agent may reach.
 
 ### WorkBench — where the work happens 💬
 
+![The WorkBench tab](docs/workbench-tab.png)
+
 A streaming chat with your configured model, in an **agent mode** you pick from
 the composer: **Chat** (no tools at all), **Code** (file tools and language
 servers — the mode that implements, and leaves the tree compiling and tested),
@@ -487,6 +489,8 @@ highlighted code and Mermaid diagrams, always through the sanitizer.
 
 ### Editor — the same tree, in your hands 🗂
 
+![The Editor tab](docs/editor-tab.png)
+
 The working location as a file tree and a Monaco pane: create, rename, move and
 delete, save with a diff against the last commit, git status badges on the rows,
 a search that answers for the same set of files the tree lists, and **one
@@ -505,6 +509,8 @@ connector, a tool or a chat path — and they are refused while a reply streams.
 That is asserted by a test rather than trusted.
 
 ### Benchmark — the original tool ⏱
+
+![The Benchmark tab](docs/benchmark-tab.png)
 
 Run a question set against the configured model and watch answers, scores,
 timings and token/s arrive live. Sets are JSON files in `resources/` —
