@@ -30,23 +30,65 @@ async function currentRoot(request) {
   return (await (await request.get('/api/path-location')).json()).path
 }
 
+// Windows: the unlink of a folder that existed for seconds can fail EPERM
+// while a handle to it is still closing — anything the app (or the OS) ran
+// inside the switched-in root holds its current-directory handle until it is
+// reaped: the `git` of a status query (`editorfs/gitstatus.py`), the indexer,
+// the scan of the freshly seeded files. `maxRetries`/`retryDelay` is Node's
+// bound for exactly this on a directory (EPERM/EBUSY/ENOTEMPTY). A folder
+// that still will not go is not this spec's failure: it is gitignored, the
+// next `beforeEach` tries again, and one genuinely in the way then fails
+// loudly at that spec's own `create` (409) — which names the real problem.
 function removeScratch(root) {
-  fs.rmSync(path.join(root, SCRATCH), { recursive: true, force: true })
+  try {
+    fs.rmSync(path.join(root, SCRATCH), {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 300,
+    })
+  } catch {
+    // Leftover; the next `beforeEach` retries, or `create` reports it.
+  }
 }
+
+// The scratch root as a switch target: the boot root (`GET /api/path-location`,
+// the app's own witness, so already canonical) plus the folder's name. Folded
+// to `/` because the app normalises a `\`-shaped input anyway (win-03) — the
+// value only has to *reach* the root, its spelling is the host's.
+function expectedPath(root, rel) {
+  return path.join(root, rel).replaceAll(path.sep, '/')
+}
+
+// The app's own spelling of a path — `os.path.realpath`'s answer, which spells
+// the host separator (win-01: the shape is the OS's, never a name check). A
+// comparison with a `/`-shaped value folds both sides, which is what lets one
+// assertion work whatever the host.
+const fold = (p) => p.replaceAll('\\', '/')
 
 // The switch as a user performs it: Settings → Working directory → type → Set.
 // The dialog stays open after `Set` (it is an apply, not a save), so the spec
 // closes it the same way a user would before going back to the tree.
-async function setRoot(page, path) {
+//
+// `target` is always absolute: the route refuses anything else with 422, so a
+// relative one would leave the location exactly where it was while the page
+// looked like it had moved. The appbar assertion folds the separators on both
+// sides — the sentence these lines are here for is "the appbar moved to the
+// root this switch asked for", the app's behaviour, and the host's spelling of
+// a path may not decide it.
+async function setRoot(page, target) {
   await page.getByRole('button', { name: 'Open settings' }).click()
   const dialog = page.locator('.settings-dialog')
   await expect(dialog).toBeVisible()
   await dialog.getByRole('button', { name: 'Working directory' }).click()
   const field = dialog.locator('.path-location-row input')
-  await field.fill(path)
+  await field.fill(target)
   await expect(dialog.locator('.path-location-set')).toBeEnabled()
   await dialog.locator('.path-location-set').click()
-  await expect(page.locator('.appbar-workspace-path')).toHaveText(path)
+  const appbar = page.locator('.appbar-workspace-path')
+  await expect
+    .poll(async () => fold((await appbar.textContent()) ?? ''))
+    .toContain(fold(target))
   await dialog.getByRole('button', { name: 'Cancel' }).click()
   await expect(dialog).not.toBeVisible()
 }
@@ -61,8 +103,14 @@ let bootRoot = null
 
 test.afterEach(async ({ request }) => {
   if (bootRoot === null) return
-  const res = await request.post('/api/path-location', { data: { path: bootRoot } })
-  expect(res.ok(), `could not restore the working location: ${await res.text()}`).toBe(true)
+  // The *live* location decides, not a remembered flag: a spec that ended its
+  // own switch back owes nothing, and one that died mid-way owes exactly one
+  // restore. A switch restarts both hubs and costs seconds, so the check keeps
+  // that one free — and it cannot drift out of sync the way a flag can.
+  if ((await currentRoot(request)) !== bootRoot) {
+    const res = await request.post('/api/path-location', { data: { path: bootRoot } })
+    expect(res.ok(), `could not restore the working location: ${await res.text()}`).toBe(true)
+  }
   removeScratch(bootRoot)
 })
 
@@ -73,7 +121,7 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   // The same relative name on both sides of the switch, so a surviving tab
   // cannot be mistaken for a correctly re-opened one.
   expect((await create(request, `${SCRATCH}/README.md`)).ok()).toBe(true)
-  const scratchAbs = `${original}/${SCRATCH}`
+  const scratchAbs = expectedPath(original, SCRATCH)
 
   await page.goto('/')
   await page.getByRole('tab', { name: 'Editor' }).click()
@@ -98,7 +146,8 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   // The tree re-rooted: the root row names the new folder and lists its own
   // README.md, and nothing of the previous root's listing is on screen.
   const rootRow = page.locator('.tree-row--root')
-  await expect(rootRow).toHaveAttribute('title', new RegExp(scratchAbs))
+  // The name only, so the match cannot depend on how the host spells a path.
+  await expect(rootRow).toHaveAttribute('title', new RegExp(SCRATCH))
   await page.locator('.tree-row[data-path="README.md"]').first().click()
   const tabs = page.locator('.editor-tab')
   await expect(tabs).toHaveCount(1)
@@ -112,7 +161,8 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   await expect(page.locator('.editor-body .stream-empty-title')).toHaveText('Open a file')
   // The old root is re-rooted too, and listed for real — the forget is not a
   // blank tree.
-  await expect(rootRow).toHaveAttribute('title', new RegExp(original))
+  await expect(rootRow).toHaveAttribute('title', new RegExp(path.basename(original)))
+
   // The scratch folder the spec created is back in the listing (it is a
   // top-level folder of this workspace, and no policy rule names it). What the
   // root can *not* list is `.nojae` — reserved, and holding this workspace's
@@ -142,7 +192,7 @@ test('a switch replaces the prompt-helper bullets the composer offers', async ({
   const original = await currentRoot(request)
   bootRoot = original
   expect((await create(request, SCRATCH, true)).ok()).toBe(true)
-  const scratchAbs = `${original}/${SCRATCH}`
+  const scratchAbs = expectedPath(original, SCRATCH)
   const bootHelpers = path.join(original, '.nojae', 'prompt-helpers.json')
   // Read from outside the app, because the folder is reserved: no Editor route
   // can see it, which is the point of mbl-06.
@@ -220,7 +270,7 @@ test('a delete in a switched-in workspace trashes under that workspace', async (
   bootRoot = original
   expect((await create(request, SCRATCH, true)).ok()).toBe(true)
   expect((await create(request, `${SCRATCH}/gone.txt`)).ok()).toBe(true)
-  const scratchAbs = `${original}/${SCRATCH}`
+  const scratchAbs = expectedPath(original, SCRATCH)
 
   await page.goto('/')
   await setRoot(page, scratchAbs)
@@ -230,6 +280,7 @@ test('a delete in a switched-in workspace trashes under that workspace', async (
   const body = await res.json()
   // Working-location-relative, the digest-and-stamp batch name the delete
   // invents — and this time the location it is relative to is the new root.
+  // `/`-joined on every host (A §7): a payload field never carries `\`.
   expect(body.trashedTo).toMatch(/^\.nojae\/trash\/[0-9a-f]{12}_/)
   // The batch lives under the *switched-in* root, layout and all, and the
   // install directory gained nothing.
@@ -242,7 +293,7 @@ test('unsaved edits are reported when the switch closes their tab', async ({ pag
   bootRoot = original
   expect((await create(request, SCRATCH, true)).ok()).toBe(true)
   expect((await create(request, `${SCRATCH}/note.txt`)).ok()).toBe(true)
-  const scratchAbs = `${original}/${SCRATCH}`
+  const scratchAbs = expectedPath(original, SCRATCH)
 
   await page.goto('/')
   await page.getByRole('tab', { name: 'Editor' }).click()
