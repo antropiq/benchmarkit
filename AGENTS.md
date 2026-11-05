@@ -184,9 +184,11 @@ These rules tie them together:
 ## Key patterns
 
 - **One LLM layer.** Every model call — benchmark answer, verifier, chat — goes
-  through the same client against an OpenAI-compatible endpoint, so adding a model
-  is configuration, never new code. Without a verifier endpoint an answer cannot
-  be graded, and is failed rather than guessed.
+  through `core/llmkit`, the only seam that speaks HTTP to an OpenAI-compatible
+  endpoint, so adding a model is configuration, never new code. It sends the
+  sampling parameters **verbatim** (no whitelist), so an unknown sampler name is
+  invisible rather than an error (`tests/test_llmkit_contract.py`). Without a
+  verifier endpoint an answer cannot be graded, and is failed rather than guessed.
 - **Core owns logic, the API owns transport.** Blocking work runs in a worker
   thread publishing to the event bus; the streaming endpoint consumes it. Run and
   chat share that worker-plus-cancellation pattern, and nothing under `core` may
@@ -234,9 +236,6 @@ These rules tie them together:
 - **Token counts can look server-reported when they are not**: a stream that dies
   before any usage chunk gets a re-counted back-fill, so a reported figure is not
   evidence of where it came from. Keep the estimated flag honest.
-- **Local model names cannot be priced** by the client, which logs that swallowed
-  error on every call when client debugging is on; each configured model is
-  registered at zero cost to keep the log clean.
 - **Adding a connector is never a module under `src/`** — a local connector is a
   script next to its declaration file plus an entry naming it. Both halves are
   needed.

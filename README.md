@@ -431,6 +431,7 @@ ENDPOINT=my-model
 #TEMPERATURE=0.2
 #REASONING=off|low|medium|high|xhigh
 #MAX_TOOL_ITERATION=25              # tool-loop cap for one WorkBench reply
+#LLM_DEBUG=1                        # logs every request payload to the console
 #VERIFIER_AGENT_SERVERURL=http://127.0.0.1:8080/v1   # second model, Benchmark tab
 #VERIFIER_AGENT_ENDPOINT=verifier-model
 ```

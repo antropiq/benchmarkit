@@ -30,7 +30,7 @@ class VerifierAgent(BaseModel):
 
 
 class SamplingParams(BaseModel):
-    """Sampling parameters mapped to litellm/OpenAI-compatible names.
+    """Sampling parameters as an OpenAI-compatible server's request-body parameters.
 
     Config keys (``temp``, ``top-p``, ...) are accepted as aliases; values
     may be strings or numbers and are coerced by pydantic.
@@ -56,7 +56,7 @@ class SamplingParams(BaseModel):
         return value
 
     def to_kwargs(self) -> Dict[str, Any]:
-        """Return only the sampling parameters as litellm kwargs."""
+        """Return only the sampling parameters as request-body kwargs."""
         return self.model_dump(include=set(SAMPLING_FIELDS), exclude_none=True)
 
 

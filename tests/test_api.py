@@ -418,7 +418,7 @@ class TestSettingsEndpoint:
         assert os.environ["SUPPORTS_VISION"] == "1"
         assert dotenv_values(config_module.ENV_PATH)["SUPPORTS_VISION"] == "1"
 
-    def test_save_normalizes_litellm_debug_and_applies_it(self, client, monkeypatch):
+    def test_save_normalizes_llm_debug_and_applies_it(self, client, monkeypatch):
         """The debug switch round-trips and is pushed onto the live process."""
         import os
 
@@ -428,19 +428,43 @@ class TestSettingsEndpoint:
 
         applied = []
         monkeypatch.setattr(
-            config_module, "apply_litellm_debug", lambda: applied.append(True)
+            config_module, "apply_llm_debug", lambda: applied.append(True)
         )
         response = client.post(
-            "/api/settings", json=self._payload(litellmDebug="true")
+            "/api/settings", json=self._payload(llmDebug="true")
         )
         assert response.status_code == 200
         # "true" from a hand-written client becomes the canonical .env form.
-        assert response.json()["litellmDebug"] == "1"
-        assert os.environ["LITELLM_DEBUG"] == "1"
-        assert dotenv_values(config_module.ENV_PATH)["LITELLM_DEBUG"] == "1"
+        assert response.json()["llmDebug"] == "1"
+        assert os.environ["LLM_DEBUG"] == "1"
+        assert dotenv_values(config_module.ENV_PATH)["LLM_DEBUG"] == "1"
+        # Reloading the dialog reads the same field back, so the box is still
+        # ticked after a save.
+        assert client.get("/api/settings").json()["llmDebug"] == "1"
         # Saving re-applies the switch, so no restart is needed to get debug
         # output on the console.
         assert applied == [True]
+
+    def test_save_unticked_debug_clears_the_legacy_key_too(self, client, monkeypatch):
+        """A save ends the fallback, because the file it writes no longer holds it.
+
+        Boot loaded the legacy key from a hand-written .env; unticking the box
+        must switch the logging off *now*, not only after a restart that never
+        reads that key again.
+        """
+        import os
+
+        from src import config as config_module
+
+        monkeypatch.setenv(config_module.LEGACY_LLM_DEBUG_KEY, "1")
+        response = client.post("/api/settings", json=self._payload(llmDebug=""))
+        assert response.status_code == 200
+        assert config_module.LEGACY_LLM_DEBUG_KEY not in os.environ
+        assert "LLM_DEBUG" not in os.environ
+        assert config_module.llm_debug_enabled() is False
+        text = config_module.ENV_PATH.read_text(encoding="utf-8")
+        assert "#LLM_DEBUG=" in text
+        assert config_module.LEGACY_LLM_DEBUG_KEY not in text
 
     def test_save_unsets_blank_supports_vision(self, client, monkeypatch):
         import os

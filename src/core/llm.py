@@ -3,7 +3,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
-from litellm import completion
+from src.core.llmkit import chat_completion, stream_completion
 
 from src.core.models import DEFAULT_LLM_SYSPROMPT, VerifierAgent
 from src.core.utils import LLMResult, estimate_completion_tokens
@@ -15,20 +15,36 @@ class RunCancelled(Exception):
     """Raised inside the streaming loop when a stop has been requested."""
 
 
+# --- chunk reading ------------------------------------------------------------
+#
+# One read path, one protocol: a chunk is read as a mapping (``.get``), never
+# partly as the attribute shape (``chunk.choices[0].delta.content``). ``llmkit``
+# hands over plain chunk dicts, which read as mappings, and a stub that answers
+# ``.get`` without being a dict reads the same way — so a chunk of any shape
+# either yields its fields or reads as absent, and a read never raises out of
+# the streaming loop. Anything else (a string, ``None``, a drained stream) reads
+# as absent rather than raising.
+
+
+def _field(container: Any, name: str) -> Any:
+    """One mapping read, ``None`` when ``container`` carries no such field."""
+    get = getattr(container, "get", None)
+    if not callable(get):
+        return None
+    return get(name)
+
+
+def _delta(chunk: Any) -> Any:
+    """The chunk's generation delta, ``None`` when it carries none."""
+    choices = _field(chunk, "choices")
+    if not choices:
+        return None
+    return _field(choices[0], "delta")
+
+
 def safe_get_choice_content(chunk: Any) -> str:
-    """Safely extract content from various response types."""
-    if isinstance(chunk, dict):
-        return (
-            (chunk.get("choices") or [{}])[0]
-            .get("delta", {})
-            .get("content", "")
-        )
-    elif hasattr(chunk, "choices"):
-        try:
-            return chunk.choices[0].delta.content
-        except (AttributeError, IndexError):
-            return ""
-    return ""
+    """Safely extract content from a streamed chunk."""
+    return str(_field(_delta(chunk), "content") or "")
 
 
 def _extract_reasoning(chunk: Any) -> str:
@@ -39,20 +55,10 @@ def _extract_reasoning(chunk: Any) -> str:
     so they must anchor the decode-window timing even though they are not
     part of the answer text.
     """
-    if isinstance(chunk, dict):
-        delta = (chunk.get("choices") or [{}])[0].get("delta", {})
-        if not isinstance(delta, dict):
-            return ""
-        return str(delta.get("reasoning_content") or delta.get("reasoning") or "")
-    if hasattr(chunk, "choices") and chunk.choices:
-        delta = getattr(chunk.choices[0], "delta", None)
-        if delta is None:
-            return ""
-        for attr in ("reasoning_content", "reasoning"):
-            value = getattr(delta, attr, None)
-            if value:
-                return str(value)
-    return ""
+    delta = _delta(chunk)
+    return str(
+        _field(delta, "reasoning_content") or _field(delta, "reasoning") or ""
+    )
 
 
 def _extract_usage(chunk: Any) -> Optional[Dict[str, Optional[int]]]:
@@ -62,16 +68,12 @@ def _extract_usage(chunk: Any) -> Optional[Dict[str, Optional[int]]]:
     ``None`` for missing/zero fields, ``None`` overall when the chunk
     carries no usage.
     """
-    usage = (
-        chunk.get("usage") if isinstance(chunk, dict) else getattr(chunk, "usage", None)
-    )
+    usage = _field(chunk, "usage")
     if not usage:
         return None
 
     def field(name: str) -> Optional[int]:
-        value = (
-            usage.get(name) if isinstance(usage, dict) else getattr(usage, name, None)
-        )
+        value = _field(usage, name)
         return int(value) if value else None
 
     return {
@@ -101,57 +103,31 @@ TRUNCATION_MESSAGE = (
 # showing a transient error line (which the next send clears).
 TRUNCATION_EVENT_FLAG = "truncated"
 
-# Sentinel for "this litellm version does not expose the attribute at all".
-_ATTR_MISSING = object()
-
 
 def saw_finish_reason(response_generator: Any) -> bool:
-    """Whether the provider really ended the stream with a finish reason.
+    """Whether the stream ended with a chunk that carried a finish reason.
 
-    This is the only reliable truncation signal, and it is *not* on the chunks:
-    when a stream ends without a ``finish_reason`` chunk — which is what
-    llama.cpp does when its own upstream disconnects mid-generation — litellm
-    **fabricates** ``finish_reason: "stop"`` on the final chunk it hands the
-    caller (``CustomStreamWrapper.finish_reason_handler``). So the chunks cannot
-    tell a cut answer from a finished one; they say ``stop`` either way.
+    A stream records this while it is iterated, so the answer is only
+    meaningful once the loop has drained it. A stream that ends with no chunk
+    ever carrying a reason is a generation the server cut short, and nothing
+    downstream would notice otherwise: the chunks of a cut answer and of a
+    finished one look the same.
 
-    The truth survives on the wrapper object: ``received_finish_reason`` (and
-    ``intermittent_finish_reason``, for servers that send it out of band) stay
-    ``None`` when no chunk ever carried one.
-
-    Fails open: if the wrapper exposes neither attribute (another litellm
-    version), this returns ``True`` so detection never raises a false alarm on
-    a complete answer. It is only meaningful once the stream has been fully
-    drained — the attributes are set while iterating.
+    Fails open: a stream without the attribute (``None``, or a stub) returns
+    ``True``, so detection never raises a false alarm on a complete answer.
     """
-    received = getattr(response_generator, "received_finish_reason", _ATTR_MISSING)
-    if received is _ATTR_MISSING:
-        return True
-    if received:
-        return True
-    return bool(getattr(response_generator, "intermittent_finish_reason", None))
+    return bool(getattr(response_generator, "saw_finish_reason", True))
 
 
 def close_llm_stream(response_generator: Any) -> None:
-    """Close a streamed litellm response so the server aborts generation.
+    """Close a streamed response so the server aborts generation.
 
-    litellm's ``CustomStreamWrapper`` (>= some 1.x releases) has no sync
-    ``close()`` — only an async ``aclose()`` — so ``getattr(gen, "close")``
-    is a silent no-op and the underlying HTTP connection stays open, letting
-    the LLM server keep streaming into a socket nobody reads. The raw
-    provider stream (openai's sync ``Stream``) lives on ``.completion_stream``
-    and does expose ``close()``, which closes the httpx connection; servers
-    like llama.cpp then abort the generation slot on their next failed write.
-    Best-effort: cleanup must never raise out of a cancel path.
+    Best-effort: the socket teardown must never raise out of a cancel path, and
+    a stream without a ``close()`` has nothing to close.
     """
     if response_generator is None:
         return
-    target = getattr(response_generator, "completion_stream", None)
-    if target is None:
-        target = response_generator
-    close = getattr(target, "close", None)
-    if not callable(close):
-        close = getattr(response_generator, "close", None)
+    close = getattr(response_generator, "close", None)
     if not callable(close):
         return
     try:
@@ -189,21 +165,12 @@ def call_llm_and_stream(
 
     try:
         sampling_kwargs: Dict[str, Any] = dict(sampling or {})
-        # litellm gates reasoning_effort to OpenAI reasoning models only;
-        # allow it through so custom servers (llama.cpp) receive it.
-        allowed: Optional[list] = (
-            ["reasoning_effort"] if "reasoning_effort" in sampling_kwargs else None
-        )
-        response_generator = completion(
-            model=f"openai/{model_name}",
-            api_key=api_key,
+        response_generator = stream_completion(
+            model=model_name,
+            server_url=server_url,
             messages=messages,
-            api_base=server_url,
-            stream=True,
-            # Ask the server to report token usage in the final stream chunk.
-            stream_options={"include_usage": True},
-            allowed_openai_params=allowed,
-            **sampling_kwargs,
+            api_key=api_key,
+            sampling=sampling_kwargs,
         )
     except Exception as exc:
         emit({"event": "run_error", "message": f"LLM call failed: {exc}"})
@@ -256,14 +223,14 @@ def call_llm_and_stream(
         buffer = ""
 
     # A stream that ends with no chunk ever carrying a finish_reason is a cut
-    # generation, not a finished answer. litellm labels such a stream "stop"
-    # (see saw_finish_reason), so nothing downstream would notice: the fragment
-    # would be scored as if it were a final answer and its timing and token
-    # rate would enter the run aggregates. Checked after the loop because the
-    # wrapper records the reason while iterating. Only judged when something
-    # was actually generated: an empty stream (or a stream that died before any
-    # chunk) has nothing to call incomplete, and a hard transport error already
-    # went down the ``except`` path above.
+    # generation, not a finished answer, and nothing downstream would notice:
+    # the fragment would be scored as if it were a final answer and its timing
+    # and token rate would enter the run aggregates. Checked after the loop
+    # because the stream records the reason while iterating (see
+    # ``saw_finish_reason``). Only judged when something was actually generated:
+    # an empty stream (or a stream that died before any chunk) has nothing to
+    # call incomplete, and a hard transport error already went down the
+    # ``except`` path above.
     truncated = generated_any and not saw_finish_reason(response_generator)
     if truncated:
         emit({"event": "run_error", "message": TRUNCATION_MESSAGE})
@@ -318,11 +285,11 @@ def warmup_model(
     if cancel_event is not None and cancel_event.is_set():
         return
     try:
-        completion(
-            model=f"openai/{model_name}",
-            api_key=api_key,
+        chat_completion(
+            model=model_name,
+            server_url=server_url,
             messages=[{"role": "user", "content": "ping"}],
-            api_base=server_url,
+            api_key=api_key,
             max_tokens=1,
         )
     except Exception:  # noqa: BLE001 — warm-up is best-effort
@@ -356,28 +323,25 @@ def verify_response(
                 }),
             },
         ]
-        v_resp = completion(
-            model=f"openai/{verifier.endpoint}",
-            api_key=verifier.apiKey or "none",
+        v_resp = chat_completion(
+            model=verifier.endpoint,
+            server_url=verifier.serverUrl,
             messages=messages,
-            api_base=verifier.serverUrl,
+            api_key=verifier.apiKey or "none",
         )
 
-        # Handle different response types safely
-        content = ""
-        if isinstance(v_resp, dict):
-            content = (
-                v_resp.get("choices", [{}])[0]  # type: ignore
-                .get("message", {})
-                .get("content", "")
-            )
-        elif hasattr(v_resp, "choices") and v_resp.choices:  # type: ignore
-            try:
-                content = v_resp.choices[0].message.content  # type: ignore
-            except (AttributeError, IndexError):
-                pass
+        # ``choices[0].message.content`` can be ``null`` — a reasoning-only
+        # judge answer cut by ``max_tokens`` really does come back that way —
+        # so the verdict of a judge that says nothing is ``False``, never a
+        # crash. Normalised to "" rather than relied on as falsy.
+        content = (
+            (v_resp.get("choices") or [{}])[0]
+            .get("message", {})
+            .get("content")
+            or ""
+        )
 
-        return content.strip().lower() == "true" if content else False
+        return content.strip().lower() == "true"
     except Exception as exc:
         emit({"event": "run_error", "message": f"Verifier failed: {exc}"})
         return False

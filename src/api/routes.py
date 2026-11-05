@@ -49,6 +49,7 @@ from src.core import batch as batch_core
 from src.core.chat import stream_chat
 from src.core.job import RunJob
 from src.core.llm import RunCancelled
+from src.core.llmkit.client import models_url
 from src.core.models import EndpointsConfig
 from src.core.utils import RESULTS_PATH
 
@@ -98,7 +99,7 @@ class SettingsIn(SettingsFieldsMixin):
     presencePenalty: str = ""
     reasoning: str = ""
     supportsVision: str = ""
-    litellmDebug: str = ""
+    llmDebug: str = ""
     questionSet: str = ""
     verifier: VerifierSettingsIn = VerifierSettingsIn()
 
@@ -313,7 +314,7 @@ class ChatMessage(BaseModel):
 
     ``content`` is a plain string or a list of multimodal parts (user
     messages only) so images travel as base64 data URLs in the standard
-    OpenAI format, passed through litellm to the OpenAI-compatible server.
+    OpenAI format on the way to the OpenAI-compatible server.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -338,7 +339,7 @@ class ChatMessage(BaseModel):
         return self
 
     def payload(self) -> Dict[str, Any]:
-        """Shape the message for litellm (parts dumped to plain dicts)."""
+        """Shape the message for the LLM client (parts dumped to plain dicts)."""
         if isinstance(self.content, str):
             return {"role": self.role, "content": self.content}
         return {
@@ -501,7 +502,7 @@ SETTINGS_ENV_KEYS: Dict[str, str] = {
     "presencePenalty": "PRESENCE_PENALTY",
     "reasoning": "REASONING",
     "supportsVision": "SUPPORTS_VISION",
-    "litellmDebug": "LITELLM_DEBUG",
+    "llmDebug": "LLM_DEBUG",
 }
 VERIFIER_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "VERIFIER_AGENT_SERVERURL",
@@ -521,18 +522,6 @@ def _settings_json(values: Dict[str, str]) -> Dict[str, Any]:
         field: values.get(key, "") for field, key in VERIFIER_ENV_KEYS.items()
     }
     return data
-
-
-def _models_url(server_url: str) -> str:
-    """Build the OpenAI-compatible models listing URL for a server URL.
-
-    ``SERVER_URL`` usually already ends with ``/v1`` (it is used as the
-    litellm ``api_base``), so only ``/models`` is appended in that case.
-    """
-    url = server_url.strip().rstrip("/")
-    if url.endswith("/v1"):
-        return f"{url}/models"
-    return f"{url}/v1/models"
 
 
 def _model_ids(payload: Any) -> List[str]:
@@ -561,7 +550,7 @@ def _context_window(server_url: str, api_key: str, model: str) -> Optional[int]:
     """
     if not server_url.strip():
         return None
-    url = _models_url(server_url)
+    url = models_url(server_url)
     key = (url, model)
     try:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -596,7 +585,7 @@ def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
     # Boolean-ish keys: the dialog sends "1"/"" from a checkbox but hand-written
     # clients may send "true"/"on", so both are normalised to the .env form.
     values["SUPPORTS_VISION"] = normalize_env_flag(values.get("SUPPORTS_VISION"))
-    values["LITELLM_DEBUG"] = normalize_env_flag(values.get("LITELLM_DEBUG"))
+    values["LLM_DEBUG"] = normalize_env_flag(values.get("LLM_DEBUG"))
     verifier = payload.get("verifier") or {}
     for field, key in VERIFIER_ENV_KEYS.items():
         values[key] = (verifier.get(field) or "").strip()
@@ -1843,19 +1832,19 @@ def build_router(state: RunState) -> APIRouter:
             raise HTTPException(
                 status_code=422, detail="Server URL must start with http:// or https://"
             )
-        models_url = _models_url(url)
+        url = models_url(url)
         headers = {}
         if apiKey.strip():
             headers["Authorization"] = f"Bearer {apiKey.strip()}"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(models_url, headers=headers)
+                response = await client.get(url, headers=headers)
                 response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError) as exc:
             raise HTTPException(
                 status_code=502,
-                detail=f"Could not fetch models from {models_url}: {exc}",
+                detail=f"Could not fetch models from {url}: {exc}",
             ) from exc
         return {"models": _model_ids(payload)}
 
@@ -1928,8 +1917,8 @@ def build_router(state: RunState) -> APIRouter:
     async def post_chat(body: ChatIn, request: Request) -> StreamingResponse:
         """Stream one chat reply from the benchmark-configured LLM as SSE.
 
-        Sync litellm runs in a worker thread feeding an ``asyncio.Queue``
-        (project convention: sync litellm in a thread + ``emit``); the SSE
+        The sync LLM client runs in a worker thread feeding an ``asyncio.Queue``
+        (project convention: sync client in a thread + ``emit``); the SSE
         generator polls the queue and disconnect, closing the upstream
         stream via ``cancel_event`` when the client goes away.
 
@@ -2063,7 +2052,7 @@ def build_router(state: RunState) -> APIRouter:
                         return
             finally:
                 # Client gone (or terminal event): stop the worker thread,
-                # which closes the upstream litellm stream.
+                # which closes the upstream LLM stream.
                 cancel_event.set()
                 _clear_chat_handle(cancel_event)
 

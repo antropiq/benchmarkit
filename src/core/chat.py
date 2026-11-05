@@ -20,8 +20,6 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from litellm import completion
-
 from src.core.llm import (
     Emit,
     TRUNCATION_EVENT_FLAG,
@@ -32,6 +30,7 @@ from src.core.llm import (
     safe_get_choice_content,
     saw_finish_reason,
 )
+from src.core.llmkit import stream_completion
 from src.core.models import DEFAULT_LLM_SYSPROMPT
 from src.core.utils import estimate_completion_tokens
 
@@ -71,12 +70,10 @@ def _collect_tool_call_deltas(chunk: Any, acc: Dict[int, Dict[str, Any]]) -> str
     last-resort char-based token estimate.
     """
     arg_text = ""
+    deltas = None
     if isinstance(chunk, dict):
         delta = (chunk.get("choices") or [{}])[0].get("delta") or {}
         deltas = delta.get("tool_calls") if isinstance(delta, dict) else None
-    else:
-        delta = getattr(chunk.choices[0], "delta", None) if getattr(chunk, "choices", None) else None
-        deltas = getattr(delta, "tool_calls", None) if delta is not None else None
     for call in deltas or []:
         is_dict = isinstance(call, dict)
         index = (call.get("index") if is_dict else getattr(call, "index", None)) or 0
@@ -161,7 +158,7 @@ def stream_chat(
 
     Message ``content`` may be a plain string or a list of OpenAI-style
     multimodal parts (``text`` / ``image_url`` data URLs); parts are passed
-    through to litellm untouched.
+    through to the LLM client untouched.
 
     Thinking streams as ``reasoning_delta`` (``text``) frames, preceded by
     the one-shot ``reasoning`` flag frame.
@@ -256,11 +253,6 @@ def stream_chat(
             + batch_instructions_block(batch_instructions),
         }
     sampling_kwargs: Dict[str, Any] = dict(sampling or {})
-    # litellm gates reasoning_effort to OpenAI reasoning models only;
-    # allow it through so custom servers (llama.cpp) receive it.
-    allowed: Optional[list] = (
-        ["reasoning_effort"] if "reasoning_effort" in sampling_kwargs else None
-    )
 
     t0 = time.monotonic()
     answer_buffer = ""
@@ -293,23 +285,17 @@ def stream_chat(
         # usable usage for the round (floor: invisible server-side template
         # tokens are not in it, hence the estimated flag).
         round_prompt_est = _prompt_estimate(messages)
-        kwargs: Dict[str, Any] = {
-            "model": f"openai/{model_name}",
-            "api_key": api_key,
-            "messages": messages,
-            "api_base": server_url,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "allowed_openai_params": allowed,
-            **sampling_kwargs,
-        }
-        if use_tools:
-            kwargs["tools"] = tools
         try:
-            # litellm's overloads type the `**kwargs` form as the union of the
-            # streaming and non-streaming shapes; with stream=True it is always
-            # the iterable stream.
-            response_generator: Any = completion(**kwargs)
+            response_generator: Any = stream_completion(
+                model=model_name,
+                server_url=server_url,
+                messages=messages,
+                api_key=api_key,
+                sampling=sampling_kwargs,
+                # The client omits an empty/``None`` ``tools``, so a tool-less
+                # request still carries no ``tools`` key rather than ``[]``.
+                tools=tools if use_tools else None,
+            )
         except Exception as exc:
             emit({"event": "error", "message": f"LLM call failed: {exc}"})
             return
@@ -376,14 +362,14 @@ def stream_chat(
 
         # The stream ended with no chunk ever carrying a finish_reason: the
         # server cut this round short (a disconnecting upstream behind
-        # llama.cpp does exactly this), and litellm labels the result "stop"
-        # as if the answer were complete. Stop here rather than falling
+        # llama.cpp does exactly this) and the chunks of a cut answer look
+        # like the chunks of a finished one. Stop here rather than falling
         # through: a half-streamed tool call would otherwise be executed with
         # truncated arguments — and the model would be told *its* JSON was
         # invalid, blaming it for a transport cut — while the fragment would
         # be re-posted as a finished assistant turn on the next send.
-        # Checked after the loop: the wrapper only records the reason while
-        # iterating.
+        # Checked after the loop: the stream only records the reason while it
+        # is iterated.
         #
         # A pause disqualifies that reading: the interrupt itself closed the
         # stream, so no finish_reason was ever expected — and a flag armed a

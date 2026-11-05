@@ -1,21 +1,22 @@
 import json
+import logging
 import os
 from pathlib import Path
 
 import pytest
 
+from src.core.llmkit import client as llmkit_client
+from src.core.llmkit import constants as llmkit_constants
 from src.config import (
-    LITELLM_MODEL_PREFIX,
-    LITELLM_LOGGER_NAMES,
+    LLM_DEBUG_KEY,
+    LEGACY_LLM_DEBUG_KEY,
     PATH_LOCATION_KEY,
-    ZERO_COST_MODEL_INFO,
+    _DebugStreamHandler,
     agent_instructions_block,
-    apply_litellm_debug,
-    litellm_debug_enabled,
+    apply_llm_debug,
+    llm_debug_enabled,
     load_agent_instructions,
     normalize_env_flag,
-    register_configured_models,
-    register_unmapped_models,
     default_path_location,
     load_endpoints_config,
     load_questions,
@@ -177,20 +178,65 @@ class TestAgentInstructions:
         assert load_agent_instructions() == ""
 
 
-class TestLiteLLMDebugFlag:
-    """The LITELLM_DEBUG switch: how it is read, what it does to litellm."""
+def _llm_logger() -> logging.Logger:
+    """The logger ``core/llmkit`` writes its request payloads to."""
+    return logging.getLogger(llmkit_constants.DEBUG_LOGGER_NAME)
+
+
+def _switch_handlers(logger: logging.Logger) -> list:
+    """Only the handlers the debug switch itself attaches.
+
+    Asked by class, because the logger legitimately carries others: the one an
+    app boot attached when the developer's ``.env`` turns the switch on, and
+    pytest's own capture handlers. A total over ``logger.handlers`` would make an
+    assertion here depend on the machine and on the tests that ran before it.
+    """
+    return [h for h in logger.handlers if isinstance(h, _DebugStreamHandler)]
+
+
+class TestLLMDebugFlag:
+    """The LLM_DEBUG switch: how it is read, what it does to ``benchmarkit.llm``.
+
+    Both keys are unset, and the logger and the client's payload hook restored,
+    around every test of the suite (``conftest._no_debug_switch_leak``), so each
+    case states only the key it cares about and the switch's writes to
+    process-wide state stay inside the test that made them.
+    """
 
     def test_truthy_spellings_enable_it(self, monkeypatch):
         for raw in ("1", "true", "TRUE", " on "):
-            monkeypatch.setenv("LITELLM_DEBUG", raw)
-            assert litellm_debug_enabled() is True
+            monkeypatch.setenv(LLM_DEBUG_KEY, raw)
+            assert llm_debug_enabled() is True
         for raw in ("", "0", "false", "off", "yes please"):
-            monkeypatch.setenv("LITELLM_DEBUG", raw)
-            assert litellm_debug_enabled() is False
+            monkeypatch.setenv(LLM_DEBUG_KEY, raw)
+            assert llm_debug_enabled() is False
 
-    def test_unset_means_off(self, monkeypatch):
-        monkeypatch.delenv("LITELLM_DEBUG", raising=False)
-        assert litellm_debug_enabled() is False
+    def test_unset_means_off(self):
+        assert llm_debug_enabled() is False
+
+    def test_the_fallback_key_is_the_pre_rename_name(self):
+        """The one place the old name is spelled outside ``config`` itself.
+
+        The whole D6 fallback hangs on this exact string, so renaming the
+        constant would be a behaviour change and not a tidy-up — which is what
+        makes it worth pinning by value, not by the constant's own name.
+        """
+        assert LEGACY_LLM_DEBUG_KEY == "LITELLM_DEBUG"
+        assert LLM_DEBUG_KEY == "LLM_DEBUG"
+
+    def test_the_legacy_key_alone_still_enables_it(self, monkeypatch):
+        # A .env written by hand before the rename keeps working until the
+        # settings dialog regenerates that file from its template.
+        monkeypatch.setenv(LEGACY_LLM_DEBUG_KEY, "1")
+        assert llm_debug_enabled() is True
+
+    def test_the_new_key_wins_when_both_are_set(self, monkeypatch):
+        monkeypatch.setenv(LLM_DEBUG_KEY, "0")
+        monkeypatch.setenv(LEGACY_LLM_DEBUG_KEY, "1")
+        assert llm_debug_enabled() is False
+        monkeypatch.setenv(LLM_DEBUG_KEY, "1")
+        monkeypatch.setenv(LEGACY_LLM_DEBUG_KEY, "off")
+        assert llm_debug_enabled() is True
 
     def test_normalising_a_submitted_flag(self):
         assert normalize_env_flag("true") == "1"
@@ -198,164 +244,41 @@ class TestLiteLLMDebugFlag:
         assert normalize_env_flag("off") == ""
         assert normalize_env_flag(None) == ""
 
-    def test_apply_on_raises_litellm_loggers_and_hides_its_hint(self, monkeypatch):
-        import litellm
+    def test_apply_on_raises_the_clients_logger_and_owns_its_hook(self, monkeypatch):
+        monkeypatch.setenv(LLM_DEBUG_KEY, "1")
+        logger = _llm_logger()
 
-        calls = []
-        monkeypatch.setattr(litellm, "_turn_on_debug", lambda: calls.append("on"))
-        monkeypatch.setattr(litellm, "suppress_debug_info", False, raising=False)
-        monkeypatch.setenv("LITELLM_DEBUG", "1")
+        assert apply_llm_debug() is True
+        assert logger.level == logging.DEBUG
+        # Exactly one handler *of ours*, counted as such rather than as a total:
+        # an app that booted with the switch on, and pytest's own capture, also
+        # put handlers on this logger and the switch must not disturb them. The
+        # handler is what makes the flag observable at all — a level alone would
+        # print nothing, since uvicorn attaches handlers to its own loggers only.
+        assert len(_switch_handlers(logger)) == 1
+        assert logger.propagate is False
+        # The payload hook follows the switch (the payload half of D8).
+        assert llmkit_client.debug_enabled is llm_debug_enabled
+        assert llmkit_client.debug_enabled() is True
 
-        assert apply_litellm_debug() is True
-        assert calls == ["on"]
-        # litellm's own "use litellm._turn_on_debug()" banner would only repeat
-        # advice this function already followed, and it buries tracebacks.
-        assert litellm.suppress_debug_info is True
+    def test_apply_off_leaves_the_logger_as_it_was_found(self, monkeypatch):
+        monkeypatch.setenv(LLM_DEBUG_KEY, "1")
+        logger = _llm_logger()
 
-    def test_apply_off_restores_logger_levels(self, monkeypatch):
-        import logging
-        import litellm
+        apply_llm_debug()
+        # Boot plus one call per settings save: a second must not stack another,
+        # or every payload is printed once per save.
+        apply_llm_debug()
+        assert len(_switch_handlers(logger)) == 1
 
-        monkeypatch.setattr(litellm, "suppress_debug_info", True, raising=False)
-        monkeypatch.delenv("LITELLM_DEBUG", raising=False)
-        for name in LITELLM_LOGGER_NAMES:
-            logging.getLogger(name).setLevel(logging.DEBUG)
-
-        assert apply_litellm_debug() is False
-        for name in LITELLM_LOGGER_NAMES:
-            assert logging.getLogger(name).level == logging.NOTSET
-        assert litellm.suppress_debug_info is False
-
-
-class TestUnmappedModelCostRegistration:
-    """Zero-cost litellm entries for model names it cannot price.
-
-    Without them the per-call cost calculator raises ModelNotMappedError, and
-    with LITELLM_DEBUG=1 that lands on the console as a full traceback per
-    call — noise that buries the failure debug mode exists to reveal.
-    """
-
-    PREFIX = "zz-benchmarkit-unmapped"
-
-    def fresh_name(self, request: pytest.FixtureRequest) -> str:
-        """A model name no other test has registered yet.
-
-        Registration mutates litellm's process-wide cost map, so a name shared
-        between tests would be mapped for whichever test runs second and the
-        guard would (correctly) skip it — making the assertions order-dependent.
-        """
-        return f"{self.PREFIX}-{request.node.name}"
-
-    def test_unmapped_name_becomes_priceable_at_zero(self, request):
-        import litellm
-
-        name = self.fresh_name(request)
-        assert register_unmapped_models([name]) == [name]
-        info = litellm.get_model_info(
-            model=f"openai/{name}", custom_llm_provider="openai"
-        )
-        assert info["input_cost_per_token"] == 0
-        assert info["output_cost_per_token"] == 0
-        cost = litellm.completion_cost(
-            completion_response={
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "total_tokens": 15,
-                }
-            },
-            model=f"openai/{name}",
-        )
-        assert cost == 0.0
-
-    def test_entry_is_registered_in_the_provider_qualified_form(self, request, capsys):
-        """The key/value shape litellm's own cost map uses for an entry.
-
-        Keying by the bare model name makes ``register_model`` resolve the
-        provider from the key — with none in it, ``get_llm_provider`` fails and
-        litellm prints its red "Provider List: https://docs.litellm.ai/…"
-        banner to stdout on every boot (twice per model), and the stored entry
-        ends up with ``mode: None`` / no provider-list membership.
-        """
-        import litellm
-
-        name = self.fresh_name(request)
-        register_unmapped_models([name])
-
-        out = capsys.readouterr().out
-        assert "Provider List" not in out
-        assert f"{LITELLM_MODEL_PREFIX}{name}" in litellm.model_cost
-
-        info = litellm.get_model_info(model=f"openai/{name}")
-        assert info["litellm_provider"] == "openai"
-        assert info["mode"] == "chat"
-        assert (
-            f"{LITELLM_MODEL_PREFIX}{name}" in litellm.open_ai_chat_completion_models
-        )
-
-    def test_template_carries_provider_and_mode(self):
-        # The two non-price fields are what tell litellm the entry is an
-        # OpenAI-compatible chat model; a template without them silently
-        # regresses to the banner + mode-less entry above.
-        assert ZERO_COST_MODEL_INFO["litellm_provider"] == "openai"
-        assert ZERO_COST_MODEL_INFO["mode"] == "chat"
-        assert LITELLM_MODEL_PREFIX == "openai/"
-
-    def test_registered_prefix_matches_the_one_calls_use(self, request):
-        """The entry must be found by the lookup ``completion()`` performs.
-
-        ``core/llm.py`` / ``core/chat.py`` call litellm with
-        ``model=f"openai/{ENDPOINT}"``, so a cost entry keyed any other way is
-        dead weight — the cost calculator would keep raising.
-        """
-        import litellm
-
-        name = self.fresh_name(request)
-        register_unmapped_models([name])
-        # No custom_llm_provider: the prefix alone has to route it, exactly as
-        # inside a completion() call.
-        cost = litellm.completion_cost(
-            completion_response={
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "total_tokens": 15,
-                }
-            },
-            model=f"openai/{name}",
-        )
-        assert cost == 0.0
-
-    def test_already_mapped_models_keep_their_real_pricing(self):
-        # A model litellm knows must not be re-registered at zero cost: the
-        # guard has to agree with the lookup the cost calculator performs.
-        assert register_unmapped_models(["gpt-4o"]) == []
-
-    def test_blank_names_are_skipped(self):
-        assert register_unmapped_models(["", "   ", None]) == []
-
-    def test_reregistration_is_a_no_op(self, request):
-        # Passing the same name twice registers it once, and a second call over
-        # an already-known name stays quiet — so a repeated settings save adds
-        # nothing.
-        name = self.fresh_name(request)
-        assert register_unmapped_models([name, name]) == [name]
-        assert register_unmapped_models([name]) == []
-
-    def test_registration_failures_never_propagate(self, request, monkeypatch):
-        # Log hygiene must not be able to break app startup.
-        import litellm
-
-        monkeypatch.setattr(litellm, "register_model", lambda *a, **k: 1 / 0)
-        assert register_unmapped_models([self.fresh_name(request)]) == []
-
-    def test_reads_the_configured_endpoints_from_the_env(self, request, monkeypatch):
-        target = self.fresh_name(request)
-        monkeypatch.setenv("ENDPOINT", f"{target}-a")
-        monkeypatch.setenv("VERIFIER_AGENT_ENDPOINT", f"{target}-b")
-        assert register_configured_models() == [f"{target}-a", f"{target}-b"]
-
-    def test_unset_endpoints_register_nothing(self, monkeypatch):
-        monkeypatch.delenv("ENDPOINT", raising=False)
-        monkeypatch.delenv("VERIFIER_AGENT_ENDPOINT", raising=False)
-        assert register_configured_models() == []
+        monkeypatch.setenv(LLM_DEBUG_KEY, "")
+        assert apply_llm_debug() is False
+        # Ours gone (whichever of them the boot had attached), the level back to
+        # NOTSET — inherited from the root logger, as it stood before the switch
+        # existed — and propagation restored, so a process is never left chatty
+        # (nor silent) after the flag is cleared.
+        assert _switch_handlers(logger) == []
+        assert logger.level == logging.NOTSET
+        assert logger.propagate is True
+        assert llmkit_client.debug_enabled is llm_debug_enabled
+        assert llmkit_client.debug_enabled() is False

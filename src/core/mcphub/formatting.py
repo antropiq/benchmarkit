@@ -1,7 +1,7 @@
 """MCP tool/result objects -> the shapes the chat tool loop expects.
 
 Pure text-level conversion, no client and no I/O: the OpenAI function-calling
-definitions handed to litellm, and the plain-text rendering of a
+definitions handed to the LLM client, and the plain-text rendering of a
 ``CallToolResult`` fed back as the tool turn.
 """
 

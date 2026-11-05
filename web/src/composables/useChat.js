@@ -431,7 +431,7 @@ export function conversationMarkdown(messages) {
 }
 
 // OpenAI content shape for one message: plain string when text-only (the
-// backend and litellm keep the classic form), multimodal parts once an
+// backend and the LLM client keep the classic form), multimodal parts once an
 // image is attached (image-only messages omit the text part entirely).
 function messagePayload(message) {
   const images = message.images ?? []

@@ -869,10 +869,10 @@ class TestTheReaderIsAlone:
         assert offenders == []
 
     def test_the_loader_imports_no_transport_no_model_and_no_hub(self):
-        """Pure core: FastAPI, litellm and the hubs belong to other tasks."""
+        """Pure core: FastAPI, the LLM transport and the hubs belong elsewhere."""
         tree = ast.parse(Path(agent_modes.__file__).read_text(encoding="utf-8"))
         forbidden = ("fastapi", "litellm", "src.api", "mcphub", "lsphub", "termhub",
-                     "editorfs", "chat", "bench", "batch")
+                     "editorfs", "chat", "bench", "batch", "llmkit")
         offenders: List[str] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -1332,7 +1332,7 @@ class TestDefaultsModuleIsStillCoreOnly:
                 imported.add(node.module)
         assert imported == {"json", "typing", "src.core", "src.core.agent_modes"}
         forbidden = ("fastapi", "litellm", "src.api", "mcphub", "lsphub",
-                     "termhub", "editorfs", "config")
+                     "termhub", "editorfs", "config", "llmkit")
         assert not any(any(part in name for part in forbidden) for name in imported)
 
     def test_the_loader_is_the_only_thing_that_builds_the_shapes(self):
@@ -1471,9 +1471,9 @@ def swept_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     The last promises of this lot are about the request that leaves the process,
     so this wires the three things separately-tested suites only ever wired one
     at a time: an HTTP client, an ``AGENTS.md`` at the working location, and the
-    **real** ``core.chat.stream_chat`` with only ``completion`` stubbed — so what
-    is asserted is the assembled system message and the assembled litellm
-    kwargs, not the arguments one module handed the next.
+    **real** ``core.chat.stream_chat`` with only the ``stream_completion`` seam
+    stubbed — so what is asserted is the assembled system message and the
+    assembled LLM-client kwargs, not the arguments one module handed the next.
 
     The modes file comes from :func:`agent_modes.ensure_agent_modes_file`
     (am-03's seeder), never from a document this test writes: a sweep that
@@ -1512,7 +1512,7 @@ def swept_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     captured: Dict[str, Any] = {}
     monkeypatch.setattr(routes, "stream_chat", chat_core.stream_chat)
     monkeypatch.setattr(
-        "src.core.chat.completion",
+        "src.core.chat.stream_completion",
         lambda **kwargs: captured.clear() or captured.update(kwargs) or iter([]),
     )
 
@@ -1575,10 +1575,13 @@ class TestTheWholeFeatureInOneRequest:
         # The other flagship of am-00, in the same request shape: a mode whose
         # flags are both false, on a workspace where **Settings** has both hubs
         # active. The mode narrows and never grants, and it narrows by taking
-        # the schema away — no ``tools`` key at all — while AGENTS.md survives.
+        # the schema away — no tool reaches the request — while AGENTS.md
+        # survives. ``stream_chat`` hands the client ``tools=None``, and the
+        # client turns that into a body with no ``tools`` key at all (pinned in
+        # ``tests/test_llmkit_client.py``).
         client, root, captured, post = swept_client
         assert post("chat").status_code == 200
-        assert "tools" not in captured
+        assert not captured.get("tools")
         assert "tool_executor" not in captured
         mcp_hub, lsp_hub = client.app.state.mcp, client.app.state.lsp
         assert mcp_hub.requested_ids == [[]]
@@ -1586,7 +1589,7 @@ class TestTheWholeFeatureInOneRequest:
         content = captured["messages"][0]["content"]
         assert "# swept rules" in content
         assert f"project root is {root}" in content
-        # No tool schema reached litellm, so ``stream_chat`` appends no
+        # No tool schema reached the LLM client, so ``stream_chat`` appends no
         # TOOL_NOTICE either: the prompt and the affordance stay in step (D3).
         assert chat_core.TOOL_NOTICE.strip() not in content
 
@@ -1594,14 +1597,14 @@ class TestTheWholeFeatureInOneRequest:
         self, swept_client
     ):
         # Two turns, one thread, no second cache: the gate is decided per
-        # request, so the mode of *this* turn is what litellm sees this turn.
+        # request, so the mode of *this* turn is what the client sees this turn.
         client, _root, captured, post = swept_client
         assert post("code").status_code == 200
-        assert "tools" in captured
+        assert captured.get("tools")
         assert client.app.state.mcp.requested_ids == [["console"]]
         captured.clear()
         assert post("chat").status_code == 200
-        assert "tools" not in captured
+        assert not captured.get("tools")
         assert client.app.state.mcp.requested_ids == [["console"], []]
 
     def test_an_extra_mode_in_the_file_is_listed_and_selectable(

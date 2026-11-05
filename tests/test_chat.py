@@ -16,25 +16,15 @@ from src.core import agent_modes
 from src.core import agent_modes_defaults as modes_defaults
 from src.core import chat as chat_core
 from src.core.models import DEFAULT_LLM_SYSPROMPT, EndpointsConfig
-
-
-def content_chunk(text):
-    return {"choices": [{"delta": {"content": text}}]}
-
-
-def reasoning_chunk(text):
-    return {"choices": [{"delta": {"reasoning_content": text}}]}
-
-
-def usage_chunk(prompt=None, completion=None, total=None):
-    usage = {}
-    if prompt is not None:
-        usage["prompt_tokens"] = prompt
-    if completion is not None:
-        usage["completion_tokens"] = completion
-    if total is not None:
-        usage["total_tokens"] = total
-    return {"choices": [], "usage": usage}
+# The chunk builders and the stream double come from ``tests/llmkit_fakes`` so
+# the stubs and ``llmkit.client.ChatStream`` are held to one interface.
+from tests.llmkit_fakes import (
+    FakeStream,
+    content_chunk,
+    finish_chunk,
+    reasoning_chunk,
+    usage_chunk,
+)
 
 
 class TestStreamChatTruncation:
@@ -46,16 +36,8 @@ class TestStreamChatTruncation:
     half-streamed tool call would be executed with truncated arguments.
     """
 
-    class Wrapper:
-        def __init__(self, chunks, received=None):
-            self._chunks = chunks
-            self.received_finish_reason = received
-
-        def __iter__(self):
-            return iter(self._chunks)
-
     def _run(self, monkeypatch, generator, **kwargs):
-        monkeypatch.setattr("src.core.chat.completion", lambda **kw: generator)
+        monkeypatch.setattr("src.core.chat.stream_completion", lambda **kw: generator)
         events = []
         chat_core.stream_chat(
             [{"role": "user", "content": "hi?"}],
@@ -69,7 +51,7 @@ class TestStreamChatTruncation:
     def test_cut_reply_ends_on_error_not_done(self, monkeypatch):
         events = self._run(
             monkeypatch,
-            self.Wrapper([content_chunk("half an "), content_chunk("answer")]),
+            FakeStream([content_chunk("half an "), content_chunk("answer")]),
         )
         assert [e["event"] for e in events][-1] == "error"
         assert events[-1]["message"] == chat_core.TRUNCATION_MESSAGE
@@ -77,7 +59,8 @@ class TestStreamChatTruncation:
 
     def test_completed_reply_still_ends_on_done(self, monkeypatch):
         events = self._run(
-            monkeypatch, self.Wrapper([content_chunk("hi")], received="stop")
+            monkeypatch,
+            FakeStream([content_chunk("hi"), finish_chunk("stop")]),
         )
         assert events[-1]["event"] == "done"
 
@@ -111,7 +94,7 @@ class TestStreamChatTruncation:
         }
         events = self._run(
             monkeypatch,
-            self.Wrapper([chunk]),
+            FakeStream([chunk]),
             tools=[{"type": "function", "function": {"name": "execute_command"}}],
             tool_executor=lambda name, args: executed.append(name) or "ok",
         )
@@ -121,18 +104,20 @@ class TestStreamChatTruncation:
 
     def test_reasoning_only_cut_ends_on_error(self, monkeypatch):
         events = self._run(
-            monkeypatch, self.Wrapper([reasoning_chunk("thinking…")])
+            monkeypatch, FakeStream([reasoning_chunk("thinking…")])
         )
         assert events[-1]["event"] == "error"
 
     def test_empty_stream_is_not_flagged(self, monkeypatch):
-        events = self._run(monkeypatch, self.Wrapper([]))
+        events = self._run(monkeypatch, FakeStream([]))
         assert events[-1]["event"] == "done"
 
 
 class TestStreamChat:
     def _run(self, monkeypatch, chunks, cancel_event=None):
-        monkeypatch.setattr("src.core.chat.completion", lambda **kwargs: iter(chunks))
+        monkeypatch.setattr(
+            "src.core.chat.stream_completion", lambda **kwargs: iter(chunks)
+        )
         events = []
         chat_core.stream_chat(
             [{"role": "user", "content": "hi?"}],
@@ -246,7 +231,7 @@ class TestStreamChat:
             captured.update(kwargs)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None
         )
@@ -262,7 +247,7 @@ class TestStreamChat:
             captured.update(kwargs)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
             sysprompt="Answer concisely.",
@@ -279,7 +264,7 @@ class TestStreamChat:
             captured.update(kwargs)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         chat_core.stream_chat(
             [{"role": "system", "content": "be nice"}, {"role": "user", "content": "hi"}],
             "m",
@@ -295,7 +280,7 @@ class TestStreamChat:
             captured.update(kwargs)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
             sysprompt="Answer concisely.",
@@ -313,7 +298,7 @@ class TestStreamChat:
             captured.update(kwargs)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
             sysprompt="Answer concisely.", agent_instructions="",
@@ -330,7 +315,7 @@ class TestStreamChat:
             captured.update(kwargs)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
             sysprompt="Answer concisely.",
@@ -351,7 +336,7 @@ class TestStreamChat:
             captured.update(kw)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s/v1",
             lambda e: None, **kwargs,
@@ -448,7 +433,7 @@ class TestStreamChat:
         def boom(**kwargs):
             raise RuntimeError("down")
 
-        monkeypatch.setattr("src.core.chat.completion", boom)
+        monkeypatch.setattr("src.core.chat.stream_completion", boom)
         events = []
         chat_core.stream_chat([{"role": "user", "content": "hi"}], "m", "http://s", events.append)
         assert [e["event"] for e in events] == ["error"]
@@ -457,63 +442,33 @@ class TestStreamChat:
     def test_cancel_stops_without_done(self, monkeypatch):
         cancel = threading.Event()
         cancel.set()
-        closed = threading.Event()
-
-        class Gen:
-            def __iter__(self):
-                yield content_chunk("x")
-
-            def close(self):
-                closed.set()
-
-        monkeypatch.setattr("src.core.chat.completion", lambda **kwargs: Gen())
+        stream = FakeStream([content_chunk("x")])
+        monkeypatch.setattr(
+            "src.core.chat.stream_completion", lambda **kwargs: stream
+        )
         events = []
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s", events.append,
             cancel_event=cancel,
         )
         assert events == []
-        assert closed.is_set()
-
-    def test_cancel_closes_underlying_completion_stream(self, monkeypatch):
-        # litellm >= 1.105 CustomStreamWrapper has no sync close(): the raw
-        # provider stream on .completion_stream must be the one that closes,
-        # otherwise the server keeps generating into a dead connection.
-        cancel = threading.Event()
-        cancel.set()
-        closed = threading.Event()
-
-        class InnerStream:
-            def close(self):
-                closed.set()
-
-        class Wrapper:
-            completion_stream = InnerStream()
-
-            def __iter__(self):
-                yield content_chunk("x")
-
-        monkeypatch.setattr("src.core.chat.completion", lambda **kwargs: Wrapper())
-        events = []
-        chat_core.stream_chat(
-            [{"role": "user", "content": "hi"}], "m", "http://s", events.append,
-            cancel_event=cancel,
-        )
-        assert events == []
-        assert closed.is_set()
+        # The stream owns its own teardown now, so this is the assertion that
+        # the cancel path reaches it: one ``close()`` on the stream itself.
+        assert stream.close_calls == 1
 
     def test_cancel_close_errors_are_swallowed(self, monkeypatch):
         cancel = threading.Event()
         cancel.set()
-
-        class Gen:
-            def __iter__(self):
-                yield content_chunk("x")
-
-            def close(self):
-                raise RuntimeError("socket already gone")
-
-        monkeypatch.setattr("src.core.chat.completion", lambda **kwargs: Gen())
+        # The double is deliberately stricter than ``ChatStream.close()`` (which
+        # never raises): only a close that really fails exercises the
+        # best-effort wrapper on the cancel path.
+        monkeypatch.setattr(
+            "src.core.chat.stream_completion",
+            lambda **kwargs: FakeStream(
+                [content_chunk("x")],
+                close_error=RuntimeError("socket already gone"),
+            ),
+        )
         events = []
         chat_core.stream_chat(
             [{"role": "user", "content": "hi"}], "m", "http://s", events.append,
@@ -561,7 +516,7 @@ class TestStreamChat:
             captured.update(kwargs)
             return iter([])
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         parts = [
             {"type": "text", "text": "describe"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA="}},
@@ -570,7 +525,8 @@ class TestStreamChat:
             [{"role": "user", "content": parts}], "m", "http://s/v1", lambda e: None
         )
         # Only the system message is prepended; the multimodal parts are
-        # forwarded to litellm as-is.
+        # handed to the seam's ``messages`` as-is (the body they land in is
+        # asserted once in ``tests/test_llmkit_client.py``).
         assert captured["messages"][1] == {"role": "user", "content": parts}
 
 
@@ -966,20 +922,8 @@ class TestStreamChatPause:
     was ever expected), and it must carry the exact usage of the partial turn.
     """
 
-    class Wrapper:
-        def __init__(self, chunks, received=None):
-            self._chunks = chunks
-            self.received_finish_reason = received
-            self.closed = False
-
-        def __iter__(self):
-            return iter(self._chunks)
-
-        def close(self):
-            self.closed = True
-
     def _run(self, monkeypatch, generator, **kwargs):
-        monkeypatch.setattr("src.core.chat.completion", lambda **kw: generator)
+        monkeypatch.setattr("src.core.chat.stream_completion", lambda **kw: generator)
         events = []
         chat_core.stream_chat(
             [{"role": "user", "content": "hi?"}],
@@ -995,7 +939,7 @@ class TestStreamChatPause:
         pause.set()
         events = self._run(
             monkeypatch,
-            self.Wrapper([content_chunk("half an "), content_chunk("answer")]),
+            FakeStream([content_chunk("half an "), content_chunk("answer")]),
             pause_event=pause,
         )
         names = [e["event"] for e in events]
@@ -1010,7 +954,7 @@ class TestStreamChatPause:
         pause.set()
         events = self._run(
             monkeypatch,
-            self.Wrapper([content_chunk("partial")]),
+            FakeStream([content_chunk("partial")]),
             pause_event=pause,
         )
         assert not [e for e in events if e["event"] == "error"]
@@ -1019,25 +963,22 @@ class TestStreamChatPause:
     def test_pause_closes_the_upstream_stream(self, monkeypatch):
         pause = threading.Event()
         pause.set()
-        wrapper = self.Wrapper([content_chunk("x")])
-        self._run(monkeypatch, wrapper, pause_event=pause)
-        assert wrapper.closed
+        stream = FakeStream([content_chunk("x")])
+        self._run(monkeypatch, stream, pause_event=pause)
+        assert stream.closed
 
     def test_pause_mid_stream_keeps_only_the_tokens_so_far(self, monkeypatch):
         # The check is per chunk: a flag armed after N chunks must stop the
         # loop there, not at the end of the stream.
         pause = threading.Event()
 
-        class Gen:
-            received_finish_reason = None
+        def gen():
+            for i in range(10):
+                if i == 3:
+                    pause.set()
+                yield content_chunk(f"t{i}")
 
-            def __iter__(self):
-                for i in range(10):
-                    if i == 3:
-                        pause.set()
-                    yield content_chunk(f"t{i}")
-
-        events = self._run(monkeypatch, Gen(), pause_event=pause)
+        events = self._run(monkeypatch, gen(), pause_event=pause)
         tokens = [e["text"] for e in events if e["event"] == "token"]
         assert tokens == ["t0", "t1", "t2"]
         assert events[-1]["event"] == "pause_ack"
@@ -1048,16 +989,13 @@ class TestStreamChatPause:
         # and the ack terminates the reply (the chunk after the flag is gone).
         pause = threading.Event()
 
-        class Gen:
-            received_finish_reason = None
+        def gen():
+            yield content_chunk("par")
+            yield usage_chunk(prompt=40, completion=8, total=48)
+            pause.set()
+            yield content_chunk("tially-streamed-but-skipped")
 
-            def __iter__(self):
-                yield content_chunk("par")
-                yield usage_chunk(prompt=40, completion=8, total=48)
-                pause.set()
-                yield content_chunk("tially-streamed-but-skipped")
-
-        events = self._run(monkeypatch, Gen(), pause_event=pause)
+        events = self._run(monkeypatch, gen(), pause_event=pause)
         names = [e["event"] for e in events]
         assert names == ["token", "usage", "pause_ack"]
         usage = events[1]
@@ -1066,21 +1004,43 @@ class TestStreamChatPause:
         assert usage["contextEstimated"] is False
         assert not [e for e in events if e.get("text", "").startswith("tially")]
 
+    class DrainThenArm:
+        """A stream that arms ``event`` only once its chunks are all delivered.
+
+        ``saw_finish_reason`` is delegated to the double underneath, so the race
+        below is judged on what the stream really carried rather than on an
+        attribute a stub declared up front.
+        """
+
+        def __init__(self, stream, event):
+            self._stream = stream
+            self._event = event
+
+        def __iter__(self):
+            yield from self._stream
+            self._event.set()
+
+        @property
+        def saw_finish_reason(self):
+            return self._stream.saw_finish_reason
+
+        @property
+        def closed(self):
+            return self._stream.closed
+
+        def close(self):
+            self._stream.close()
+
     def test_flag_armed_after_the_last_chunk_still_ends_on_done(self, monkeypatch):
         # The race: the round streamed to its end with a real finish_reason and
         # the flag was armed only after that last chunk. The reply is complete,
         # so `done` wins — a round that carries its finish_reason was never
         # interrupted, whatever the flag says afterwards.
         pause = threading.Event()
-
-        class Gen:
-            received_finish_reason = "stop"
-
-            def __iter__(self):
-                yield content_chunk("whole answer")
-                pause.set()
-
-        events = self._run(monkeypatch, Gen(), pause_event=pause)
+        stream = self.DrainThenArm(
+            FakeStream([content_chunk("whole answer"), finish_chunk("stop")]), pause
+        )
+        events = self._run(monkeypatch, stream, pause_event=pause)
         names = [e["event"] for e in events]
         assert names == ["token", "done"]
 
@@ -1091,12 +1051,12 @@ class TestStreamChatPause:
         cancel.set()
         pause = threading.Event()
         pause.set()
-        wrapper = self.Wrapper([content_chunk("x")])
+        stream = FakeStream([content_chunk("x")])
         events = self._run(
-            monkeypatch, wrapper, cancel_event=cancel, pause_event=pause
+            monkeypatch, stream, cancel_event=cancel, pause_event=pause
         )
         assert events == []
-        assert wrapper.closed
+        assert stream.closed
 
     def test_pause_while_tool_calls_stream_never_runs_them(self, monkeypatch):
         # The dangerous shape: tool-call arguments only half-streamed, so
@@ -1104,34 +1064,31 @@ class TestStreamChatPause:
         executed = []
         pause = threading.Event()
 
-        class Gen:
-            received_finish_reason = None
-
-            def __iter__(self):
-                yield {
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "id": "call-1",
-                                        "function": {
-                                            "name": "execute_command",
-                                            "arguments": '{"command": "ls',
-                                        },
-                                    }
-                                ]
-                            }
+        def gen():
+            yield {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-1",
+                                    "function": {
+                                        "name": "execute_command",
+                                        "arguments": '{"command": "ls',
+                                    },
+                                }
+                            ]
                         }
-                    ]
-                }
-                pause.set()
-                yield content_chunk("must not stream")
+                    }
+                ]
+            }
+            pause.set()
+            yield content_chunk("must not stream")
 
         events = self._run(
             monkeypatch,
-            Gen(),
+            gen(),
             pause_event=pause,
             tools=[{"type": "function", "function": {"name": "execute_command"}}],
             tool_executor=lambda name, args: executed.append(name) or "ok",
@@ -1173,13 +1130,12 @@ class TestStreamChatPause:
             usage_chunk(prompt=10, completion=4, total=14),
         ]
 
-        class Wrapper:
-            received_finish_reason = "tool_calls"
-
-            def __iter__(self):
-                return iter(chunks_round_one)
-
-        monkeypatch.setattr("src.core.chat.completion", lambda **kw: Wrapper())
+        monkeypatch.setattr(
+            "src.core.chat.stream_completion",
+            lambda **kw: FakeStream(
+                chunks_round_one + [finish_chunk("tool_calls")]
+            ),
+        )
         events = []
         chat_core.stream_chat(
             [{"role": "user", "content": "hi?"}],
@@ -1397,9 +1353,9 @@ class TestAgentModePromptAssembly:
         """End to end: persona → notice → AGENTS.md → mode blocks → lot.
 
         The stub above only sees the kwargs; this lets the *real* ``stream_chat``
-        run (with litellm stubbed) so the assertion is on the system message that
-        would leave the process, with a persona, blocks and ``batchContext`` all
-        in play at once.
+        run (with the LLM client seam stubbed) so the assertion is on the system
+        message that would leave the process, with a persona, blocks and
+        ``batchContext`` all in play at once.
         """
         client, root, _seen = mode_client
         # A hub with one live connector, so tools really are passed and the
@@ -1421,7 +1377,7 @@ class TestAgentModePromptAssembly:
         captured: Dict[str, Any] = {}
         monkeypatch.setattr(routes, "stream_chat", chat_core.stream_chat)
         monkeypatch.setattr(
-            "src.core.chat.completion",
+            "src.core.chat.stream_completion",
             lambda **kwargs: captured.update(kwargs) or iter([]),
         )
         # A mode of the same shape as the reserved one — persona plus blocks —
@@ -1612,8 +1568,8 @@ class TestAgentModeToolGate:
         assert kwargs == {}
         assert mcp.requested_ids == [[]] and lsp.requested_ids == [[]]
         # The requirement, stated as the assertion: no ``tools`` **key**, never
-        # ``tools == []`` — litellm forwards what it is handed, and an empty
-        # array is a different request to an OpenAI-compatible server.
+        # ``tools == []`` — the LLM client forwards what it is handed, and an
+        # empty array is a different request to an OpenAI-compatible server.
         assert "tools" not in kwargs
         assert "tool_executor" not in kwargs
         assert "tool_servers" not in kwargs
@@ -1737,7 +1693,7 @@ class TestAgentModeToolGate:
 
     @pytest.fixture
     def route_client(self, client, tmp_path: Path, monkeypatch):
-        """Real ``stream_chat`` on a scratch workspace; litellm is the spy."""
+        """Real ``stream_chat`` on a scratch workspace; the seam is the spy."""
         (tmp_path / "AGENTS.md").write_text("# rules\n\nUse pytest.\n", encoding="utf-8")
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))
         agent_modes.invalidate_agent_modes_cache()
@@ -1747,7 +1703,7 @@ class TestAgentModeToolGate:
         captured: Dict[str, Any] = {}
         monkeypatch.setattr(routes, "stream_chat", chat_core.stream_chat)
         monkeypatch.setattr(
-            "src.core.chat.completion",
+            "src.core.chat.stream_completion",
             lambda **kwargs: captured.update(kwargs) or iter([]),
         )
         try:
@@ -1755,7 +1711,8 @@ class TestAgentModeToolGate:
         finally:
             agent_modes.invalidate_agent_modes_cache()
 
-    def test_a_tools_off_mode_reaches_litellm_with_no_tools(self, route_client):
+    def test_a_tools_off_mode_reaches_the_llm_client_with_no_tools(
+        self, route_client):
         client, root, hub, captured = route_client
         self._write_modes(root, {"builder": {
             "label": "Builder", "mcptools": False, "lsptools": False,
@@ -1768,7 +1725,11 @@ class TestAgentModeToolGate:
         )
         assert response.status_code == 200
         assert hub.requested_ids == [[]]
-        assert "tools" not in captured
+        # Nothing reaches the LLM client as tools. The client turns an absent/
+        # empty ``tools`` into a request body with no ``tools`` key at all
+        # (pinned in ``tests/test_llmkit_client.py``), so this is the same
+        # requirement, asserted at the seam the route now feeds.
+        assert not captured.get("tools")
         # D3: with no tools in play, the notice is not appended either — the
         # prompt and the affordance cannot disagree.
         assert chat_core.TOOL_NOTICE.strip() not in captured["messages"][0]["content"]
@@ -1812,7 +1773,9 @@ class TestAgentModeToolGate:
                   "mcpEnabled": ["console"], "lspEnabled": ["pyright"]},
         )
         assert response.status_code == 200
-        assert "tools" not in captured
+        # No tool definition reaches the seam in any shape, and no iteration
+        # cap reaches ``stream_chat`` at all.
+        assert not captured.get("tools")
         assert "max_tool_iterations" not in captured
         system = captured["messages"][0]["content"]
         assert chat_core.TOOL_NOTICE.strip() not in system

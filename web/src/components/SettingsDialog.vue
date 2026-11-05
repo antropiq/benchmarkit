@@ -324,17 +324,17 @@ function serverDetail(server) {
             <label class="settings-vision">
               <input
                 type="checkbox"
-                :checked="state.settings.litellmDebug === '1'"
-                @change="state.settings.litellmDebug = $event.target.checked ? '1' : ''"
+                :checked="state.settings.llmDebug === '1'"
+                @change="state.settings.llmDebug = $event.target.checked ? '1' : ''"
               />
-              Log LiteLLM internals (debug)
+              Log LLM request internals (debug)
             </label>
             <p class="caption">
-              Writes LiteLLM's own DEBUG output for every LLM call to the server
-              console, so a failed request shows the real upstream error instead
-              of a one-line summary. Applies to the next run or chat message —
-              it floods the console with request payloads, so switch it back off
-              once the failure is diagnosed.
+              Writes every LLM request's payload and the client's debug output to
+              the server console, so a failed request shows the real upstream
+              error instead of a one-line summary. Applies to the next run or
+              chat message — it floods the console with request payloads, so
+              switch it back off once the failure is diagnosed.
             </p>
           </section>
 

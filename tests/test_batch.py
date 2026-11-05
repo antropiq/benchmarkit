@@ -492,11 +492,11 @@ class TestSystemPromptOrdering:
     """sysprompt → TOOL_NOTICE → AGENTS.md → big picture (spec §1.4)."""
 
     def _system_message(self, monkeypatch, **kwargs) -> str:
-        # The stubbed completion receives the final message list, which is
+        # The stubbed LLM client receives the final message list, which is
         # exactly what would be sent upstream.
         captured: Dict[str, Any] = {}
         monkeypatch.setattr(
-            "src.core.chat.completion",
+            "src.core.chat.stream_completion",
             lambda **kwargs: captured.update(kwargs) or iter([]),
         )
         chat_core.stream_chat(

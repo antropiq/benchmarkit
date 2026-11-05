@@ -377,7 +377,7 @@ describe('a switch carries the prompt-helpers seed too', () => {
       endpoint: 'model-a',
       sysprompt: '',
       temp: '', topP: '', topK: '', minP: '', repeatPenalty: '', presencePenalty: '',
-      reasoning: '', supportsVision: '', litellmDebug: '', questionSet: 'legacy',
+      reasoning: '', supportsVision: '', llmDebug: '', questionSet: 'legacy',
       verifier: { serverUrl: '', apiKey: '', endpoint: '', sysprompt: '' },
     }
     state.pathLocationPromptHelpers = { state: 'created', path: HELPERS_PATH, error: null }
@@ -400,7 +400,7 @@ describe('a switch carries the prompt-helpers seed too', () => {
       endpoint: 'model-a',
       sysprompt: '',
       temp: '', topP: '', topK: '', minP: '', repeatPenalty: '', presencePenalty: '',
-      reasoning: '', supportsVision: '', litellmDebug: '', questionSet: 'legacy',
+      reasoning: '', supportsVision: '', llmDebug: '', questionSet: 'legacy',
       verifier: { serverUrl: '', apiKey: '', endpoint: '', sysprompt: '' },
     }
     state.pathLocationPromptHelpers = {

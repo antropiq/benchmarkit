@@ -23,7 +23,7 @@ function llmSettings() {
     endpoint: 'model-a',
     sysprompt: 'Answer concisely.',
     temp: '', topP: '', topK: '', minP: '', repeatPenalty: '', presencePenalty: '',
-    reasoning: '', supportsVision: '', litellmDebug: '', questionSet: 'legacy',
+    reasoning: '', supportsVision: '', llmDebug: '', questionSet: 'legacy',
     verifier: { serverUrl: '', apiKey: '', endpoint: '', sysprompt: '' },
   }
 }

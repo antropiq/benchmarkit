@@ -7,6 +7,7 @@ checked*, never weakened. On Linux neither marker ever fires, so the whole
 suite still runs there.
 """
 
+import logging
 import os
 import shutil
 import tempfile
@@ -415,6 +416,53 @@ def _no_legacy_tool_cap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MAX_MCP_ITERATION", raising=False)
     monkeypatch.delenv("LSP_ENABLED", raising=False)
     monkeypatch.delenv("MCP_ENABLED", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_debug_switch_leak(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Keep the LLM debug switch off, and process state clean, for every test.
+
+    Two leaks would make that switch machine-dependent otherwise:
+    ``create_app()`` loads the developer's own ``.env`` (which may carry
+    ``LLM_DEBUG``, or the legacy key it falls back to), and ``save_settings``
+    writes the key straight into ``os.environ``, which ``monkeypatch`` never
+    undoes. The switch itself also mutates what no fixture can undo on its own —
+    the level and handler of the ``benchmarkit.llm`` logger, and the payload
+    hook of ``core/llmkit/client``, which an app boot re-points at ``config``.
+
+    So both keys are cleared up front, and the logger and the hook are handed
+    back as they were found — except the handler the switch itself attaches,
+    which is the switch's own state to rebuild and must not come back bound to a
+    stream that has since gone (and never without the ``propagate`` off that
+    belongs to it). Without this, a test asserting the client's hook defaults to
+    off would pass or fail on the order the settings tests ran in.
+    """
+    from src import config as config_module
+    from src.core.llmkit import client as llmkit_client
+    from src.core.llmkit import constants as llmkit_constants
+
+    logger = logging.getLogger(llmkit_constants.DEBUG_LOGGER_NAME)
+    saved = (
+        logger.level,
+        list(logger.handlers),
+        logger.propagate,
+        llmkit_client.debug_enabled,
+    )
+    monkeypatch.delenv(config_module.LLM_DEBUG_KEY, raising=False)
+    monkeypatch.delenv(config_module.LEGACY_LLM_DEBUG_KEY, raising=False)
+    yield
+    level, handlers, propagate, hook = saved
+    kept = [
+        handler
+        for handler in handlers
+        if not isinstance(handler, config_module._DebugStreamHandler)
+    ]
+    logger.setLevel(level)
+    logger.handlers[:] = kept
+    # The handler being dropped takes its ``propagate = False`` with it: leaving
+    # that behind would silence a logger that now has nowhere to write.
+    logger.propagate = propagate or len(kept) != len(handlers)
+    llmkit_client.debug_enabled = hook
 
 
 @pytest.fixture(autouse=True)

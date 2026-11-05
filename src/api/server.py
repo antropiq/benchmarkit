@@ -11,13 +11,12 @@ from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import RunState, build_router
 from src.config import (
-    apply_litellm_debug,
+    apply_llm_debug,
     ENV_PATH,
     load_dotenv_once,
     PROJECT_ROOT,
     path_location,
     questions_path,
-    register_configured_models,
     setup_path_location,
 )
 from src.core.mcphub import McpManager, load_externals
@@ -130,18 +129,12 @@ def _sweep_trash() -> None:
 def create_app() -> FastAPI:
     """Build the FastAPI app: API routes first, static SPA fallback after."""
     load_dotenv_once()
-    # The LiteLLM debug switch is read from the environment, so it is applied
-    # right after the .env has been loaded (and again on every settings save).
+    # The debug switch is read from the environment, so it is applied right
+    # after the .env has been loaded (and again on every settings save).
     # Keeping it here rather than in the module's import side effects means the
-    # tests build an app without touching the litellm loggers of the whole
-    # process unless they ask for it.
-    apply_litellm_debug()
-    # And the same for the cost-table noise: a local quantised model name is
-    # unknown to litellm's pricing map, so its cost calculator raises — caught
-    # internally, but dumped in full once per call while LITELLM_DEBUG is on.
-    # Done here (and on every settings save) so no LLM call is ever preceded by
-    # a model litellm cannot price.
-    register_configured_models()
+    # tests build an app without touching the loggers of the whole process
+    # unless they ask for it.
+    apply_llm_debug()
     # The working location the MCP connectors and language servers point at
     # (``${BENCHMARKIT_PATH_LOCATION}`` in both declaration files) must exist
     # before the very first scan of those files — which happens below, in the

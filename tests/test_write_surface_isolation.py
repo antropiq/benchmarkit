@@ -2,7 +2,7 @@
 
 AGENTS.md promises *"Tools are read-only by design"*. That promise survived the
 guarded write surface only because something asserts it, so this file asserts it
-four ways, each one a different way the promise could rot:
+five ways, each one a different way the promise could rot:
 
 * **no advertised tool names a write route** — the MCP connectors' own tool
   listings and the LSP hub's tool catalogue, both built the way the hubs build
@@ -16,6 +16,11 @@ four ways, each one a different way the promise could rot:
   ``src/api/routes.py`` (the definition) and the Editor composables (the
   caller), and nowhere else. ``GET /api/fs`` is deliberately *not* a marker:
   the read surface's docstrings name their routes, and always will.
+* **the model client cannot spell an app route either** — ``core/llmkit`` is
+  the one core package that speaks HTTP, and *legally* so (the import scan
+  covers the connectors, not ``src/core``), so its share of the promise is the
+  *shape* of the URLs it builds: it appends two fixed suffixes under ``/v1``
+  and can never produce a path under ``/api/``.
 * **the terminal stays a human surface** — the shell is a WebSocket reached
   from the SPA, and neither hub mentions it, so it cannot become a tool by
   someone wiring the hub to ``app.state.terminal``.
@@ -36,10 +41,12 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any, Dict, List
+from urllib.parse import urlsplit
 
 import pytest
 
 from src.core import editorfs
+from src.core.llmkit.client import chat_completions_url, models_url
 from src.core.lsphub import tools as lsp_tools
 
 REPO_ROOT = Path(editorfs.constants.PROJECT_ROOT)
@@ -48,6 +55,10 @@ REPO_ROOT = Path(editorfs.constants.PROJECT_ROOT)
 # that a docstring naming a route *method* (``GET /api/fs/tree``) stays out of
 # the scan, and a comment or a string naming a write is caught.
 WRITE_MARKERS = ("PUT /api/fs", "POST /api/fs", "DELETE /api/fs")
+
+# The app's own route prefix: a URL whose path holds it could address a write
+# route. ``llmkit``'s URL builders are guarded on this below.
+APP_ROUTE_PREFIX = "/api/"
 
 # Where a write marker is legitimate.
 ALLOWED_HOMES = {
@@ -159,6 +170,15 @@ def route_registrations(source_text: str, path_prefix: str) -> List[Dict[str, An
                     {"verb": call.func.attr, "path": route_path, "handler": node}
                 )
     return found
+
+
+def builder_paths(builder, bases: List[str]) -> List[str]:
+    """The path of every URL ``builder`` produces from ``bases``.
+
+    One implementation, shared by the two ``llmkit`` URL guards below and by
+    their self-check — the same reason ``offenders_for`` is shared.
+    """
+    return [urlsplit(builder(base)).path for base in bases]
 
 
 def connector_tool_lists() -> Dict[str, List[Dict[str, Any]]]:
@@ -420,6 +440,95 @@ class TestTheSearchReaderStaysARead:
         registered = route_registrations(routes_source, "/fs/search")
         assert registered, "the search route has to exist for this to mean anything"
         assert [entry["verb"] for entry in registered] == ["get"]
+
+
+class TestTheModelClientCannotReachAWriteRoute:
+    """``core/llmkit`` is the one core package that speaks HTTP, and legally.
+
+    The import scan above covers ``mcp_connectors/`` only, so ``httpx`` under
+    ``llmkit`` is *legal* — widening that scan to ``src/core`` would condemn
+    the app's own model client, a different decision. And the passive marker
+    scan over ``src/core`` already means ``llmkit``'s sources never spell a
+    ``PUT /api/fs``. What neither scan answers is the URL *shape*: an HTTP
+    client that builds its own URLs could reach a route it never names in a
+    string. The answer pinned here is that the two builders append only their
+    two fixed suffixes, so no configured ``SERVER_URL`` turns the model client
+    into a caller of an app route.
+    """
+
+    # Every shape ``SERVER_URL`` actually takes (D9): with and without the
+    # ``/v1`` tail, with and without a trailing slash.
+    SERVER_URL_SHAPES = [
+        "http://host:8080/v1",
+        "http://host:8080/v1/",
+        "http://host:8080",
+        "http://host:8080/",
+    ]
+
+    # The two suffixes the client may ever append, keyed by the builder that
+    # owns each one.
+    BUILDER_SUFFIXES = {
+        chat_completions_url: "/v1/chat/completions",
+        models_url: "/v1/models",
+    }
+
+    def test_each_builder_appends_only_its_one_fixed_suffix(self):
+        for builder, suffix in self.BUILDER_SUFFIXES.items():
+            paths = builder_paths(builder, self.SERVER_URL_SHAPES)
+            assert paths and all(path.endswith(suffix) for path in paths), (
+                f"{builder.__name__} appends more than {suffix}: {paths}"
+            )
+
+    def test_no_builder_path_reaches_under_api(self):
+        """The invariant spec step 6 states: the model client cannot write-route.
+
+        ``/api/`` is the app's own route prefix, so a builder whose path holds
+        it could address a write route. It cannot: each appends its suffix to
+        the ``/v1`` root of ``SERVER_URL``. A hostile ``SERVER_URL`` that itself
+        embeds ``/api/fs`` still yields a chat-completions *POST* under that
+        path, never a ``PUT /api/fs`` — the suffix lock keeps the shape honest
+        even then, which is why this guard pins the builders rather than
+        policing ``SERVER_URL``, which is user config.
+        """
+        for builder in self.BUILDER_SUFFIXES:
+            paths = builder_paths(builder, self.SERVER_URL_SHAPES)
+            assert not any(APP_ROUTE_PREFIX in path for path in paths), (
+                f"{builder.__name__} reaches {APP_ROUTE_PREFIX}: {paths}"
+            )
+
+    def test_the_shape_guard_catches_a_builder_drifted_onto_an_app_route(self):
+        """Both halves trip on a builder that drifts onto an app route.
+
+        Fed to the same walker the guards use (a scratch builder, not an edit
+        to ``client.py``), so what is checked is that the *guard* sees the
+        drift — the ``TestTheGuardsActuallyFail`` pattern, applied to these.
+        """
+        def drifted(server_url: str) -> str:
+            return f"{server_url.rstrip('/')}/api/fs/file"
+
+        paths = builder_paths(drifted, ["http://host:8080/v1"])
+        with pytest.raises(AssertionError):
+            assert all(path.endswith("/v1/chat/completions") for path in paths), paths
+        with pytest.raises(AssertionError):
+            assert not any(APP_ROUTE_PREFIX in path for path in paths), paths
+
+    def test_the_marker_scan_still_catches_llmkit_spelling_a_write(self, tmp_path):
+        """The passive scan's own teeth, shown on a scratch copy of the package.
+
+        ``llmkit`` lives under the roots ``scan_roots()`` walks, so a source
+        file there naming a write route is an offender like any other, and no
+        allowed home excuses it; the poisoned module below proves the shared
+        walker sees it (reusing ``offenders_for`` — a second copy of the walk
+        is how a guard drifts).
+        """
+        fake = tmp_path / "llmkit" / "cheeky.py"
+        fake.parent.mkdir(parents=True)
+        fake.write_text(
+            'def leak(path, text):  # a model client wired to PUT /api/fs/file\n'
+            '    return client.put("/api/fs/file", json={"path": path, "text": text})\n',
+            encoding="utf-8",
+        )
+        assert offenders_for(WRITE_MARKERS, [fake.parent]) == [str(fake)]
 
 
 class TestTheGuardsActuallyFail:

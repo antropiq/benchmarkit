@@ -1115,7 +1115,7 @@ def usage_chunk(completion=None, prompt=None, total=None):
 
 
 class TestChatToolLoop:
-    # Declared here so the fake `completion` below can record the tool
+    # Declared here so the fake ``stream_completion`` below can record the tool
     # definitions it was handed (also satisfies the type checker).
     tools_arg: Optional[List[Dict[str, Any]]] = None
 
@@ -1128,7 +1128,7 @@ class TestChatToolLoop:
             self.tools_arg = call_kwargs.get("tools")
             return iter(next(generators))
 
-        monkeypatch.setattr("src.core.chat.completion", fake_completion)
+        monkeypatch.setattr("src.core.chat.stream_completion", fake_completion)
         events: List[Dict[str, Any]] = []
         chat_core.stream_chat(
             [{"role": "user", "content": "run it"}],
@@ -1494,10 +1494,13 @@ class TestChatToolLoop:
         assert calls[0][0]["content"] == "You may use your tools freely."
 
     def test_no_tools_keeps_single_shot_shape(self, monkeypatch):
+        # A tool-less request reaches the seam with no tools to send (the
+        # client turns that into a body with no ``tools`` key at all, pinned in
+        # ``tests/test_llmkit_client.py``); the loop still runs single-shot.
         monkeypatch.setattr(
-            "src.core.chat.completion",
+            "src.core.chat.stream_completion",
             lambda **kwargs: iter([content_chunk("hi")])
-            if "tools" not in kwargs
+            if not kwargs.get("tools")
             else iter([]),
         )
         events: List[Dict[str, Any]] = []
