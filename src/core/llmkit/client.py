@@ -8,14 +8,18 @@ imports no FastAPI, emits no events and never reads ``.env``: the caller
 passes ``model`` / ``server_url`` / ``api_key`` / ``sampling`` in, exactly as
 it passed them to the call this package replaces.
 
-Two invariants hold here and nowhere else may they bend (spec §2.1):
+Three invariants hold here and nowhere else may they bend (spec §2.1):
 
 * the ``sampling`` dict is merged into the request body **verbatim** --
   ``top_k``, ``min_p`` and ``repeat_penalty`` are llama.cpp sampler names,
   and a client that whitelisted OpenAI's own list would silently change the
   model's sampling, and every score of every run;
 * the model name travels **bare** -- no provider prefix is ever prepended,
-  because ``openai/qwen3.8-...`` reaches llama-swap as a 404.
+  because ``openai/qwen3.8-...`` reaches llama-swap as a 404;
+* the ``messages`` are **sanitized** on the way out
+  (:mod:`llmkit.sanitize`) -- a conversation can never smuggle a
+  delimiter-wrapped control-token run into the prompt, and no caller can
+  skip the pass because both call shapes make it here.
 
 One ``httpx.Client`` per call, owned and closed by the returned stream
 (D11): nothing in here holds a reference across requests.
@@ -28,6 +32,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from . import constants
+from .sanitize import sanitize_messages
 from .sse import iter_chunks
 
 logger = logging.getLogger(constants.DEBUG_LOGGER_NAME)
@@ -256,12 +261,15 @@ def stream_completion(
     ``stream_options.include_usage``, the ``sampling`` dict merged in
     verbatim (no whitelist, no rename, no drop), and ``tools`` added **only
     when non-empty** -- no ``tools`` key at all rather than ``tools: []``.
-    A non-2xx answer raises :class:`LLMRequestError` before any chunk is
-    handed over; the stream object owns the client and closes it.
+    The ``messages`` are sanitized first (:mod:`llmkit.sanitize`), so no
+    delimiter-wrapped control-token run reaches the prompt from any
+    conversation path. A non-2xx answer raises :class:`LLMRequestError`
+    before any chunk is handed over; the stream object owns the client and
+    closes it.
     """
     url = chat_completions_url(server_url)
     body: Dict[str, Any] = {
-        "messages": messages,
+        "messages": sanitize_messages(messages),
         "model": model,
         "stream": True,
         "stream_options": {"include_usage": True},
@@ -304,12 +312,13 @@ def chat_completion(
 ) -> Dict[str, Any]:
     """One non-streaming chat completion; returns the parsed body.
 
-    Used by warm-up (``max_tokens=1``) and the verifier call. Any non-2xx
-    raises :class:`LLMRequestError` naming the status and the upstream
-    message.
+    Used by warm-up (``max_tokens=1``) and the verifier call. The
+    ``messages`` are sanitized on the way out exactly as the streaming
+    shape does (:mod:`llmkit.sanitize`). Any non-2xx raises
+    :class:`LLMRequestError` naming the status and the upstream message.
     """
     url = chat_completions_url(server_url)
-    body: Dict[str, Any] = {"messages": messages, "model": model}
+    body: Dict[str, Any] = {"messages": sanitize_messages(messages), "model": model}
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
     if sampling:

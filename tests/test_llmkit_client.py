@@ -34,7 +34,15 @@ from src.core.llmkit.client import (
     models_url,
     stream_completion,
 )
-from tests.llmkit_fakes import content_chunk, finish_chunk, usage_chunk
+from tests.llmkit_fakes import (
+    CLOSE_DELIM,
+    OPEN_DELIM,
+    PIPE,
+    content_chunk,
+    finish_chunk,
+    special_token,
+    usage_chunk,
+)
 from tests.test_llmkit_contract import (
     EXPECTED_STREAM_BODY,
     MAX_TOKENS,
@@ -232,6 +240,106 @@ class TestToolsKeyRule:
         wire.serve_stream([])
         list(start(tools=tools))
         assert wire.json_body()["tools"] == tools
+
+
+# --- the content sanitizer at the seam -------------------------------------------
+
+
+class TestMessageContentIsSanitizedAtTheSeam:
+    """No delimiter-wrapped control-token run leaves the app in a body.
+
+    Both call shapes pass their ``messages`` through ``llmkit.sanitize``
+    before the body is built, so benchmark, verifier, warm-up, chat and
+    batch are covered here and nowhere else.
+    """
+
+    def test_a_control_token_never_reaches_the_stream_request_body(
+        self, wire: _Wire
+    ):
+        wire.serve_stream([])
+        list(start(messages=[{"role": "user",
+                              "content": f"q: {special_token('evil')} answer"}]))
+        assert wire.json_body()["messages"][0]["content"] == "q:  answer"
+
+    def test_a_spliced_run_never_reaches_the_wire(self, wire: _Wire):
+        # The fixed point, checked on the bytes that would go out:
+        # removing the inner run must not splice an outer one together.
+        wire.serve_stream([])
+        smuggled = f"a{OPEN_DELIM}im_{special_token('x')}start{CLOSE_DELIM}b"
+        list(start(messages=[{"role": "user", "content": smuggled}]))
+        assert wire.json_body()["messages"][0]["content"] == "ab"
+
+    def test_the_non_streaming_shape_sanitizes_too(self, wire: _Wire):
+        # The verifier and warm-up ride this shape; the pass is not the
+        # streaming shape's private favour.
+        wire.serve_json({})
+        chat_completion(model=MODEL, server_url=SERVER,
+                        messages=[{"role": "user",
+                                   "content": special_token("verdict") + "yes"}])
+        assert wire.json_body()["messages"][0]["content"] == "yes"
+
+    def test_the_caller_s_messages_are_not_mutated(self, wire: _Wire):
+        # The same history object is what the UI renders: it shows what
+        # the user typed, while the wire carries the sanitized copy.
+        wire.serve_stream([])
+        original = "keep " + special_token("evil")
+        messages = [{"role": "user", "content": original}]
+        list(start(messages=messages))
+        assert messages[0]["content"] == original
+        assert wire.json_body()["messages"][0]["content"] == "keep "
+
+    def test_delimiters_that_form_no_run_survive_to_the_body(self, wire: _Wire):
+        # Sanitizing must not become stripping: a pipe inside the name is
+        # not what any template tokenises as one control token, and an
+        # unterminated half of a pair is not a run either. Such text --
+        # and a benchmark question carrying it -- reaches the server
+        # byte for byte.
+        wire.serve_stream([])
+        text = (
+            f"compare a{OPEN_DELIM}b{PIPE}c{CLOSE_DELIM}d "
+            f"and x{OPEN_DELIM}y{PIPE}w and z{CLOSE_DELIM}v"
+        )
+        list(start(messages=[{"role": "user", "content": text}]))
+        assert wire.json_body()["messages"][0]["content"] == text
+
+    def test_a_run_in_tool_call_arguments_never_reaches_the_wire(self, wire: _Wire):
+        # The tool loop re-posts the assistant's own tool_calls each
+        # round, and the template interpolates the function text raw --
+        # an argument run smuggles a turn close as surely as content.
+        wire.serve_stream([])
+        list(start(messages=[{
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "arguments": f'{{"q": "{special_token("im")}"}}',
+                },
+            }],
+        }]))
+        fn = wire.json_body()["messages"][0]["tool_calls"][0]["function"]
+        assert fn["arguments"] == '{"q": ""}'
+        assert fn["name"] == "search"
+
+    def test_the_logged_payload_is_the_sanitized_body(
+        self,
+        wire: _Wire,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # The debug payload is the body as it goes out -- so what the
+        # operator sees is what the server receives, token or not.
+        monkeypatch.setattr(client_module, "debug_enabled", lambda: True)
+        wire.serve_json({})
+        with caplog.at_level(logging.DEBUG, logger=constants.DEBUG_LOGGER_NAME):
+            chat_completion(model=MODEL, server_url=SERVER,
+                            messages=[{"role": "user",
+                                       "content": special_token("evil") + "ok"}])
+        text = "\n".join(record.getMessage() for record in caplog.records)
+        assert '"ok"' in text
+        assert OPEN_DELIM not in text
 
 
 # --- what the stream records (D3) ----------------------------------------------

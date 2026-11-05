@@ -25,6 +25,20 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence
 # file must not depend on a package that does not exist yet.
 DONE_FRAME = "[DONE]"
 
+# The delimiters a chat-template control token is wrapped in, assembled
+# from single characters so no test file in this repo ever carries a
+# complete delimiter pair as literal text -- the run the sanitizer exists
+# to remove must not appear in the tests that guard its removal. Tests
+# build attacks from these pieces and from :func:`special_token`.
+PIPE = "|"
+OPEN_DELIM = f"<{PIPE}"
+CLOSE_DELIM = f"{PIPE}>"
+
+
+def special_token(name: str) -> str:
+    """One delimiter-wrapped control token, spelled from its characters."""
+    return f"{OPEN_DELIM}{name}{CLOSE_DELIM}"
+
 
 # --- chunk builders ----------------------------------------------------------
 #

@@ -7,6 +7,8 @@ it passed them to the streamed call this package replaces. Layout mirrors
 ``core/mcphub`` and ``core/lsphub``:
 
 * :mod:`llmkit.constants` -- the tuning numbers (timeouts, wire sentinels)
+* :mod:`llmkit.sanitize` -- neutralising delimiter-wrapped control-token
+  runs in outgoing message content, applied by both call shapes
 * :mod:`llmkit.sse` -- SSE lines to parsed chat-completion chunk dicts
 * :mod:`llmkit.client` -- the two call shapes, the error type, the URL rules
 """

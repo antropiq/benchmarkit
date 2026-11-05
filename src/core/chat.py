@@ -31,6 +31,7 @@ from src.core.llm import (
     saw_finish_reason,
 )
 from src.core.llmkit import stream_completion
+from src.core.llmkit.sanitize import StreamNeutralizer, neutralize
 from src.core.models import DEFAULT_LLM_SYSPROMPT
 from src.core.utils import estimate_completion_tokens
 
@@ -43,6 +44,32 @@ ToolExecutor = Callable[[str, Dict[str, Any]], str]
 TOOL_NOTICE = (
     "\n\nYou can call the provided tools (browser/console) when they help "
     "answer the user."
+)
+
+# The generation-side twin of llmkit's input sanitizer. Sanitizing the
+# prompt cannot help when the user asks *about* the control tokens: the
+# model generates a raw run, the serving runtime tokenizes it as a single
+# end-of-turn token, and the sampler cuts this very reply mid-sentence --
+# an EOG stop the app cannot even flag as truncation, because at the chunk
+# level it looks like a finished answer. The prevention that works is
+# telling the model to cite the tokens by name or with spaced-out
+# delimiter characters instead of reproducing one. A recorded break showed
+# where the model slips: prose follows the rule, then a fenced code block
+# "showing the real thing" emits one -- so the notice names code fences
+# and examples explicitly. Chat-only by design: the benchmark must keep
+# measuring the model's raw behaviour, and it builds its prompts in
+# core/llm.py, never here. The notice must never contain a raw run itself
+# -- a test guards that with the sanitizer.
+CONTROL_TOKEN_NOTICE = (
+    "\n\nWhen discussing chat-template control tokens (im_start, im_end "
+    "and their like), never write one in its raw delimiter-wrapped form: "
+    "the serving template reads it as a turn boundary and cuts this very "
+    "reply mid-sentence. This binds everywhere in the reply -- prose, code "
+    "blocks, fenced examples, template renderings -- with no exemption "
+    "for showing what the real thing looks like. Refer to them by name, "
+    "or separate the delimiter characters with spaces (e.g. '< | im_start "
+    "| >', and ' < | im_start | >user' inside a template example) so the "
+    "text describes the token without becoming one."
 )
 
 
@@ -204,11 +231,11 @@ def stream_chat(
 
     ``batch_instructions`` (batch mode's lot big picture) is appended *after*
     the project instructions and the mode blocks, so the system message reads
-    sysprompt → tool notice → AGENTS.md → mode blocks → big picture: the
-    project's rules stay the closest thing to the conversation, and the lot
-    description — framed as context below, not as a task — is the furthest. It
-    is re-sent on every task turn because the per-task context reset means
-    nothing else carries it.
+    sysprompt → tool notice → control-token notice → AGENTS.md → mode blocks
+    → big picture: the project's rules stay the closest thing to the
+    conversation, and the lot description — framed as context below, not as a
+    task — is the furthest. It is re-sent on every task turn because the
+    per-task context reset means nothing else carries it.
     """
     if not messages or messages[0].get("role") != "system":
         messages = [
@@ -223,6 +250,15 @@ def stream_chat(
             "role": "system",
             "content": _content_text(messages[0]) + TOOL_NOTICE,
         }
+    # Every chat turn carries the control-token notice (it is gated on
+    # nothing -- the danger is the model generating a raw run, not the
+    # conversation carrying one). Placed after the TOOL_NOTICE word check
+    # above so its wording never reaches that heuristic, and before the
+    # instruction blocks so it stays part of the base behaviour.
+    messages[0] = {
+        "role": "system",
+        "content": _content_text(messages[0]) + CONTROL_TOKEN_NOTICE,
+    }
     if agent_instructions:
         # Appended last, so the notice heuristic above never sees the
         # instructions' own wording.
@@ -309,6 +345,26 @@ def stream_chat(
         iter_first: Optional[float] = None
         iter_last: Optional[float] = None
         paused = False
+        # The display twin of the seam sanitizer: a token-shaped run can
+        # straddle chunk borders, so what reaches the panels (and the
+        # client's accumulated history) is filtered stream-by-stream,
+        # never frame-by-frame. Raw text still feeds the accumulators
+        # and the estimates -- those are measurement, not display -- and
+        # the re-posted message is cleaned again at the seam anyway.
+        answer_display = StreamNeutralizer()
+        reasoning_display = StreamNeutralizer()
+
+        def flush_display() -> None:
+            # Hand over what the filters held back, before any terminal
+            # frame of the round: a held benign partial (an unterminated
+            # delimiter) is the user's text and must not vanish silently.
+            left = reasoning_display.flush()
+            if left:
+                emit({"event": "reasoning_delta", "text": left})
+            left = answer_display.flush()
+            if left:
+                emit({"event": "token", "text": left})
+
         try:
             for chunk in response_generator:
                 if cancel_event is not None and cancel_event.is_set():
@@ -334,7 +390,9 @@ def stream_chat(
                     if not reasoning_emitted:
                         reasoning_emitted = True
                         emit({"event": "reasoning"})
-                    emit({"event": "reasoning_delta", "text": reasoning})
+                    shown = reasoning_display.feed(reasoning)
+                    if shown:
+                        emit({"event": "reasoning_delta", "text": shown})
                 # Content, reasoning and tool-call argument deltas all open
                 # and extend the decode window (like the benchmark loop in
                 # core/llm.py): they are all generated tokens counted in
@@ -355,10 +413,20 @@ def stream_chat(
                     continue
                 iteration_content += content
                 answer_buffer += content
-                emit({"event": "token", "text": content})
+                shown = answer_display.feed(content)
+                if shown:
+                    emit({"event": "token", "text": shown})
         except Exception as exc:
+            flush_display()
             emit({"event": "error", "message": f"Stream error: {exc}"})
             return
+
+        # The chunk loop is over for every path that reaches here (finish,
+        # pause break): hand the filters' held remainder over before any
+        # terminal or per-round frame -- truncation error, pause ack,
+        # pre-tool usage, done -- so the panels and the client's history
+        # see the full display text of the round.
+        flush_display()
 
         # The stream ended with no chunk ever carrying a finish_reason: the
         # server cut this round short (a disconnecting upstream behind
@@ -519,9 +587,13 @@ def stream_chat(
                 {
                     "event": "tool_call",
                     "id": call["id"],
-                    "tool": tool_name,
+                    # The display name and argument preview reach the chat
+                    # panel too: they are sanitized for the browser, while
+                    # the executor and the re-posted message keep the raw
+                    # text (the seam strips that path on the next round).
+                    "tool": neutralize(tool_name),
                     "server": (tool_servers or {}).get(tool_name, ""),
-                    "argsPreview": _preview(args_preview),
+                    "argsPreview": _preview(neutralize(args_preview)),
                     "iteration": iteration,
                     "maxIterations": max_tool_iterations,
                 }
@@ -548,7 +620,10 @@ def stream_chat(
                     "event": "tool_result",
                     "id": call["id"],
                     "ok": ok,
-                    "preview": _preview(result_text, 400),
+                    # Tool output is untrusted text rendered in the panel:
+                    # the preview is run-free for the browser, the message
+                    # re-posted to the model is stripped at the seam.
+                    "preview": _preview(neutralize(result_text), 400),
                 }
             )
         if cancel_event is not None and cancel_event.is_set():

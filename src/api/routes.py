@@ -50,6 +50,7 @@ from src.core.chat import stream_chat
 from src.core.job import RunJob
 from src.core.llm import RunCancelled
 from src.core.llmkit.client import models_url
+from src.core.llmkit.sanitize import sanitize_content
 from src.core.models import EndpointsConfig
 from src.core.utils import RESULTS_PATH
 
@@ -300,6 +301,18 @@ class ChatContentPart(BaseModel):
     text: Optional[str] = None
     image_url: Optional[ChatImageUrl] = None
 
+    @field_validator("text")
+    @classmethod
+    def _neutralise_control_tokens(cls, value: Optional[str]) -> Optional[str]:
+        # Runs are removed before any further shape check sees the text,
+        # so a part that was only a run reads as empty to the validators
+        # below and to ``ChatIn._require_turns`` -- an incoming message of
+        # nothing but control tokens is a 422, never a silent empty turn.
+        # The second half of the rule: the seam also sanitizes on the way
+        # out, so the run is removed at both doors and never lives inside
+        # the app's message objects at all.
+        return None if value is None else sanitize_content(value)
+
     @model_validator(mode="after")
     def _require_payload(self) -> "ChatContentPart":
         if self.type == "text" and self.text is None:
@@ -324,6 +337,11 @@ class ChatMessage(BaseModel):
 
     @model_validator(mode="after")
     def _require_payload(self) -> "ChatMessage":
+        if isinstance(self.content, str):
+            # Same incoming-door rule as the text parts: runs are gone
+            # before the shape checks, so history that only smuggled
+            # control tokens reads as empty and the message is refused.
+            self.content = sanitize_content(self.content)
         if not isinstance(self.content, str):
             if self.role == "assistant":
                 raise ValueError("assistant messages must use plain text content")
@@ -396,7 +414,17 @@ class ChatIn(BaseModel):
         if not value:
             raise ValueError("messages must not be empty")
         for message in value:
-            if isinstance(message.content, str) and not message.content.strip():
+            # Only a blank *user* turn is a client bug. A blank assistant
+            # turn is a legitimate artefact: the display sanitizer removes
+            # a run-only answer, and a round the server ended before any
+            # text leaves nothing to show. Refusing it would answer every
+            # later turn of that conversation with a 422 the user cannot
+            # clear from the UI -- the brick is worse than the empty turn.
+            if (
+                message.role == "user"
+                and isinstance(message.content, str)
+                and not message.content.strip()
+            ):
                 raise ValueError("message content must not be empty")
         return value
 

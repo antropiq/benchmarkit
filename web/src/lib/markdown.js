@@ -49,8 +49,31 @@ function toolLineIcons(raw) {
   return raw.split(TOOL_LINE_MARKER).join(TOOL_LINE_ICON)
 }
 
+// Chat-template control tokens (a name wrapped in the two-pipe
+// delimiters) are inert as data but lethal as markup: once a wrapped run
+// reaches innerHTML the browser parses it as a bogus element and swallows
+// the text that follows it into that element — the panel reads as if the
+// reply stopped. Removal runs on the SOURCE here, before marked or
+// DOMPurify can see the text, so every surface rendered through this one
+// seam (chat answer, tool previews, file preview) is covered; it mirrors
+// the fixed-point loop of src/core/llmkit/sanitize.py (deleting an inner
+// run can splice an outer one). The delimiters are written escaped, so
+// this file never carries a complete pair either.
+const CONTROL_TOKEN_RUN = /<\|[^<>|]*\|>/g
+
+function neutralizeControlTokenRuns(text) {
+  let out = text
+  for (;;) {
+    const next = out.replace(CONTROL_TOKEN_RUN, '')
+    if (next === out) return out
+    out = next
+  }
+}
+
 export function renderMarkdown(raw, { mermaid = false } = {}) {
-  const source = toolLineIcons(raw || '')
+  // Neutralize before the tool-line icon is expanded, so the guard never
+  // inspects markup the app itself injects.
+  const source = toolLineIcons(neutralizeControlTokenRuns(raw || ''))
   const text = mermaid ? mermaidPlaceholders(source) : source
   // `async: false` pins the synchronous overload: every extension registered
   // above (katex, highlight, brackets) renders strings, so `parse` returns a

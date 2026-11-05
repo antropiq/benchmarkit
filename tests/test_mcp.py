@@ -1491,7 +1491,13 @@ class TestChatToolLoop:
             [[content_chunk("hi")]],
             sysprompt="You may use your tools freely.",
         )
-        assert calls[0][0]["content"] == "You may use your tools freely."
+        # The tool notice is skipped (the prompt already says it); the
+        # control-token notice is not -- it rides every chat turn.
+        content = calls[0][0]["content"]
+        assert chat_core.TOOL_NOTICE.strip() not in content
+        assert content == "You may use your tools freely." + (
+            chat_core.CONTROL_TOKEN_NOTICE
+        )
 
     def test_no_tools_keeps_single_shot_shape(self, monkeypatch):
         # A tool-less request reaches the seam with no tools to send (the

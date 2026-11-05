@@ -19,10 +19,14 @@ from src.core.models import DEFAULT_LLM_SYSPROMPT, EndpointsConfig
 # The chunk builders and the stream double come from ``tests/llmkit_fakes`` so
 # the stubs and ``llmkit.client.ChatStream`` are held to one interface.
 from tests.llmkit_fakes import (
+    CLOSE_DELIM,
+    OPEN_DELIM,
     FakeStream,
     content_chunk,
     finish_chunk,
     reasoning_chunk,
+    special_token,
+    tool_call_chunk,
     usage_chunk,
 )
 
@@ -175,7 +179,9 @@ class TestStreamChat:
 
         events = self._run(monkeypatch, [content_chunk("Hello there")])
         done = events[-1]
-        prompt_est = estimate_completion_tokens(DEFAULT_LLM_SYSPROMPT + "hi?")
+        prompt_est = estimate_completion_tokens(
+            DEFAULT_LLM_SYSPROMPT + chat_core.CONTROL_TOKEN_NOTICE + "hi?"
+        )
         assert done["tokens"] == estimate_completion_tokens("Hello there")
         # Without usage the occupancy figure is the char-based round
         # estimate (prompt + estimated generation), flagged.
@@ -237,7 +243,8 @@ class TestStreamChat:
         )
         assert captured["messages"][0] == {
             "role": "system",
-            "content": DEFAULT_LLM_SYSPROMPT,
+            # The standing app-owned notice rides every chat turn.
+            "content": DEFAULT_LLM_SYSPROMPT + chat_core.CONTROL_TOKEN_NOTICE,
         }
 
     def test_configured_sysprompt_is_prepended(self, monkeypatch):
@@ -254,7 +261,7 @@ class TestStreamChat:
         )
         assert captured["messages"][0] == {
             "role": "system",
-            "content": "Answer concisely.",
+            "content": "Answer concisely." + chat_core.CONTROL_TOKEN_NOTICE,
         }
 
     def test_existing_system_prompt_kept(self, monkeypatch):
@@ -271,7 +278,11 @@ class TestStreamChat:
             "http://s/v1",
             lambda e: None,
         )
-        assert captured["messages"][0]["content"] == "be nice"
+        # Kept as the base of the system message; the standing notice
+        # still rides, appended after it.
+        assert captured["messages"][0]["content"] == (
+            "be nice" + chat_core.CONTROL_TOKEN_NOTICE
+        )
 
     def test_agent_instructions_appended_to_the_system_message(self, monkeypatch):
         captured = {}
@@ -303,7 +314,9 @@ class TestStreamChat:
             [{"role": "user", "content": "hi"}], "m", "http://s/v1", lambda e: None,
             sysprompt="Answer concisely.", agent_instructions="",
         )
-        assert captured["messages"][0]["content"] == "Answer concisely."
+        assert captured["messages"][0]["content"] == (
+            "Answer concisely." + chat_core.CONTROL_TOKEN_NOTICE
+        )
 
     def test_agent_instructions_do_not_suppress_the_tool_notice(self, monkeypatch):
         # Instruction files mention "tool" everywhere; the notice-skipping
@@ -353,7 +366,9 @@ class TestStreamChat:
             mode_instructions="the lot conventions",
         )
         assert content == (
-            "Answer concisely.\n\nproject root is /srv/proj\n\nthe lot conventions"
+            "Answer concisely."
+            + chat_core.CONTROL_TOKEN_NOTICE
+            + "\n\nproject root is /srv/proj\n\nthe lot conventions"
         )
 
     def test_mode_instructions_are_no_op_when_absent_or_blank(self, monkeypatch):
@@ -702,6 +717,292 @@ class TestChatEndpoint:
             ]},
         )
         assert response.status_code == 422
+
+
+class TestChatIncomingSanitization:
+    """The incoming door: no delimiter-wrapped control token gets *in*.
+
+    The seam also strips on the way out, but history is re-posted every
+    turn and a model asked about these tokens answers with them -- if the
+    runs lived inside the app's message objects, they would ride every
+    non-seam path (validation, UI state, logging) until the request was
+    built. Cleaning at the model boundary removes them once, at entry.
+    """
+
+    def _capture(self, monkeypatch) -> Dict[str, Any]:
+        seen: Dict[str, Any] = {}
+
+        def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
+                 pause_event=None, api_key="none", sysprompt=None, agent_instructions=None, mode_instructions=None):
+            seen["messages"] = messages
+            emit({"event": "done", "took": 0.0, "ttft": 0.0, "tokens": 0,
+                  "tokensEstimated": False})
+
+        monkeypatch.setattr(routes, "stream_chat", fake)
+        return seen
+
+    def test_reposted_history_arrives_clean_at_the_core(self, client, monkeypatch):
+        # The exact break in the field: an earlier answer *about* these
+        # tokens comes back as history and would re-close every later
+        # turn; at the boundary it is text again before anything reads it.
+        seen = self._capture(monkeypatch)
+        response = client.post(
+            "/api/chat",
+            json={"messages": [
+                {"role": "user",
+                 "content": f"what is {special_token('im_start')} ?"},
+                {"role": "assistant",
+                 "content": f"it is written {special_token('im_start')}"},
+                {"role": "user", "content": "thanks"},
+            ]},
+        )
+        assert response.status_code == 200
+        contents = [m["content"] for m in seen["messages"]]
+        assert contents == ["what is  ?", "it is written ", "thanks"]
+
+    def test_multimodal_text_parts_arrive_clean(self, client, monkeypatch):
+        seen = self._capture(monkeypatch)
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": f"a{special_token('evil')}b"},
+                    {"type": "image_url", "image_url": {"url": _PNG_DATA_URL}},
+                ],
+            }]},
+        )
+        assert response.status_code == 200
+        assert seen["messages"][0]["content"][0] == {"type": "text", "text": "ab"}
+
+    def test_a_message_of_only_control_tokens_is_refused_not_forwarded(
+        self, client, monkeypatch
+    ):
+        # The sanitized "" must hit the emptiness rule, not reach the
+        # model as a blank turn: refusing names the input as the problem.
+        self._capture(monkeypatch)
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": special_token("evil")}]},
+        )
+        assert response.status_code == 422
+
+    def test_a_blank_assistant_turn_does_not_brick_the_conversation(
+        self, client, monkeypatch
+    ):
+        # The stream filter removed a run-only answer, so the client's
+        # history legitimately carries an empty assistant turn. Refusing
+        # it would answer every later continuation with a 422 the user
+        # cannot clear from the UI -- the brick is worse than the artefact.
+        seen = self._capture(monkeypatch)
+        response = client.post(
+            "/api/chat",
+            json={"messages": [
+                {"role": "user", "content": f"what is {special_token('evil')} ?"},
+                {"role": "assistant", "content": ""},
+                {"role": "user", "content": "continue"},
+            ]},
+        )
+        assert response.status_code == 200
+        assert [m["content"] for m in seen["messages"]] == [
+            "what is  ?", "", "continue",
+        ]
+
+    def test_text_part_of_only_control_tokens_alone_is_refused(
+        self, client, monkeypatch
+    ):
+        self._capture(monkeypatch)
+        response = client.post(
+            "/api/chat",
+            json={"messages": [{
+                "role": "user",
+                "content": [{"type": "text", "text": special_token("evil")}],
+            }]},
+        )
+        assert response.status_code == 422
+
+
+class TestControlTokenNotice:
+    """The system message tells the model never to *generate* a raw run.
+
+    The input sanitizer cannot prevent the asked-about-the-tokens cut:
+    the model generates a raw run, the serving runtime tokenizes it as a
+    single end-of-turn token, and the reply dies mid-sentence reading as
+    a clean stop. The prevention that works is a standing chat-turn
+    instruction -- chat only: the benchmark measures raw behaviour and
+    builds its prompts in core/llm.py.
+    """
+
+    def _capture_system(self, monkeypatch, messages, **kwargs):
+        seen = {}
+
+        def capture(**kw):
+            seen["messages"] = kw["messages"]
+            return FakeStream([content_chunk("ok"), finish_chunk("stop")])
+
+        monkeypatch.setattr("src.core.chat.stream_completion", capture)
+        events = []
+        chat_core.stream_chat(
+            messages,
+            "model-a",
+            "http://server:8080/v1",
+            events.append,
+            **kwargs,
+        )
+        return seen["messages"][0]["content"]
+
+    def test_every_turn_carries_the_notice(self, monkeypatch):
+        system = self._capture_system(
+            monkeypatch, [{"role": "user", "content": "what is im_start ?"}]
+        )
+        assert "raw delimiter-wrapped form" in system
+
+    def test_a_caller_supplied_system_message_gets_the_notice_too(
+        self, monkeypatch
+    ):
+        system = self._capture_system(
+            monkeypatch,
+            [
+                {"role": "system", "content": "be terse"},
+                {"role": "user", "content": "what is im_start ?"},
+            ],
+        )
+        assert system.startswith("be terse")
+        assert "raw delimiter-wrapped form" in system
+
+    def test_the_notice_coexists_with_the_tool_notice(self, monkeypatch):
+        system = self._capture_system(
+            monkeypatch,
+            [{"role": "user", "content": "hi"}],
+            sysprompt="be terse",
+            tools=[{"type": "function", "function": {"name": "read_file"}}],
+            tool_executor=lambda name, args: "r",
+        )
+        assert "browser/console" in system  # TOOL_NOTICE still applied
+        assert "raw delimiter-wrapped form" in system
+
+    def test_the_notice_names_the_code_fence_loophole(self, monkeypatch):
+        # The recorded break: the model followed the rule in prose -- its
+        # reasoning even said so -- then reproduced the raw form inside a
+        # fenced template example and was EOG-cut mid-fence. The notice
+        # must close that exemption in words the model cannot re-read
+        # around.
+        system = self._capture_system(
+            monkeypatch, [{"role": "user", "content": "what is a chat template?"}]
+        )
+        assert "code blocks" in system
+        assert "no exemption" in system
+
+    def test_the_notice_itself_is_not_a_smuggled_run(self):
+        # The guard against the guard becoming the hole: the instruction
+        # survives the sanitizer byte for byte, so it never spells the
+        # very run it forbids the model from spelling.
+        from src.core.chat import CONTROL_TOKEN_NOTICE
+        from src.core.llmkit.sanitize import sanitize_content
+
+        assert sanitize_content(CONTROL_TOKEN_NOTICE) == CONTROL_TOKEN_NOTICE
+
+
+class TestStreamedDisplayIsSanitized:
+    """What the panels (and the client's history) see is run-free.
+
+    A token-shaped run arrives split across content deltas, so the
+    frames must be filtered as one stream, not per frame: a model asked
+    about these tokens must be able to answer without the raw sequence
+    ever being painted or stored by the browser.
+    """
+
+    def _run_chunks(self, monkeypatch, chunks, **kwargs):
+        monkeypatch.setattr(
+            "src.core.chat.stream_completion", lambda **kw: FakeStream(chunks)
+        )
+        events: List[Dict[str, Any]] = []
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            "m",
+            "http://s/v1",
+            events.append,
+            **kwargs,
+        )
+        return events
+
+    def test_a_run_split_across_answer_chunks_never_reaches_a_token_frame(
+        self, monkeypatch
+    ):
+        events = self._run_chunks(
+            monkeypatch,
+            [
+                content_chunk("It is written "),
+                content_chunk(OPEN_DELIM + "im_st"),
+                content_chunk("art" + CLOSE_DELIM),
+                content_chunk(" in ChatML"),
+                finish_chunk("stop"),
+            ],
+        )
+        streamed = "".join(e["text"] for e in events if e["event"] == "token")
+        assert streamed == "It is written  in ChatML"
+        assert [e for e in events if e["event"] == "done"]
+
+    def test_reasoning_frames_are_filtered_as_one_stream(self, monkeypatch):
+        events = self._run_chunks(
+            monkeypatch,
+            [
+                reasoning_chunk("think about "),
+                reasoning_chunk(special_token("q")[:4]),
+                reasoning_chunk(special_token("q")[4:]),
+                reasoning_chunk(" now"),
+                finish_chunk("stop"),
+            ],
+        )
+        thought = "".join(
+            e["text"] for e in events if e["event"] == "reasoning_delta"
+        )
+        assert thought == "think about  now"
+
+    def test_a_held_partial_survives_truncation_before_the_error(
+        self, monkeypatch
+    ):
+        # The fragment is kept as streamed AND the benign held partial is
+        # flushed before the terminal error frame -- nothing vanishes.
+        events = self._run_chunks(
+            monkeypatch, [content_chunk("x"), content_chunk(OPEN_DELIM)]
+        )
+        names = [e["event"] for e in events]
+        assert names == ["token", "token", "error"]
+        assert events[1]["text"] == OPEN_DELIM
+
+    def test_tool_result_and_call_previews_reach_the_panel_run_free(
+        self, monkeypatch
+    ):
+        streams = [
+            FakeStream([
+                tool_call_chunk(call_id="c1",
+                                name=f"ech{special_token('x')}o",
+                                arguments='{"x": 1}'),
+                finish_chunk("stop"),
+            ]),
+            FakeStream([content_chunk("ok"), finish_chunk("stop")]),
+        ]
+        calls = []
+
+        def fake(**kw):
+            calls.append(kw)
+            return streams[len(calls) - 1]
+
+        monkeypatch.setattr("src.core.chat.stream_completion", fake)
+        events: List[Dict[str, Any]] = []
+        chat_core.stream_chat(
+            [{"role": "user", "content": "hi"}],
+            "m",
+            "http://s/v1",
+            events.append,
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_executor=lambda name, args: f"result {special_token('s')} done",
+        )
+        call = next(e for e in events if e["event"] == "tool_call")
+        result = next(e for e in events if e["event"] == "tool_result")
+        assert call["tool"] == "echo"
+        assert result["preview"] == "result  done"
 
     def test_forwards_configured_api_key(self, monkeypatch, tmp_path):
         def fake(messages, model, server_url, emit, sampling=None, cancel_event=None,
