@@ -50,7 +50,8 @@ function rowTitle(connector) {
   return `Use ${connector.label} tools in this conversation`
 }
 
-// Restarting reconnects every connector from a fresh externals.json scan, so
+// Restarting reconnects every connector from a fresh .nojae/mcp-settings.json
+// scan, so
 // a hub thread blocked in a chat tool call would be killed mid-call: the
 // button is only usable on an idle conversation, and stays busy until the
 // awaited server-side restart comes back.
@@ -60,7 +61,7 @@ const canRestart = computed(
 const restartTitle = computed(() => {
   if (batch.active) return 'Unavailable while a batch runs'
   if (state.mcp.restarting) return 'Restarting MCP connectors…'
-  return 'Restart the MCP hub: reconnect every connector from externals.json'
+  return 'Restart the MCP hub: reconnect every connector from .nojae/mcp-settings.json'
 })
 </script>
 

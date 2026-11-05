@@ -59,7 +59,7 @@ const state = reactive({
   mcpLoading: false,
   mcpSaving: false,
   mcpError: null,
-  mcpExternalsError: null, // externals.json validation errors from the backend
+  mcpExternalsError: null, // .nojae/mcp-settings.json validation errors from the backend
   lspInstalled: false, // pygls/lsprotocol importable server-side
   lspServers: [],
   lspEnabled: [], // server ids ticked in the dialog, saved via saveLsp()
@@ -67,11 +67,11 @@ const state = reactive({
   lspLoading: false,
   lspSaving: false,
   lspError: null,
-  lspServersError: null, // lsp_servers.json validation errors from the backend
+  lspServersError: null, // .nojae/lsp-settings.json validation errors from the backend
   // Working location both hubs point at (${BENCHMARKIT_PATH_LOCATION} in
-  // externals.json and lsp_servers.json). ``pathLocation`` is what the input
-  // shows/edits, ``pathLocationCurrent`` the value the server confirmed — the
-  // Set button is enabled while the two differ.
+  // .nojae/mcp-settings.json and .nojae/lsp-settings.json). ``pathLocation`` is
+  // what the input shows/edits, ``pathLocationCurrent`` the value the server
+  // confirmed — the Set button is enabled while the two differ.
   pathLocation: '',
   pathLocationCurrent: '',
   pathLocationLoading: false,

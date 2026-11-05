@@ -185,7 +185,7 @@ def connector_tool_lists() -> Dict[str, List[Dict[str, Any]]]:
     """The tool listing each local MCP connector advertises, by connector id.
 
     These are the scripts referenced as ``local`` entries in
-    ``externals.json``, and ``list_tools`` is exactly what the hub asks them
+    ``mcp-settings.json``, and ``list_tools`` is exactly what the hub asks them
     for — so this is the live surface, without needing a connected session.
     """
     from mcp_connectors import console_mcp, fedit_mcp

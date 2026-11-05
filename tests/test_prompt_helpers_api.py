@@ -69,15 +69,15 @@ def client(
     monkeypatch.setattr(
         prompt_helpers, "LEGACY_PROMPT_HELPERS_PATH", tmp_path / "no-legacy.json"
     )
-    empty = tmp_path / "externals.json"
+    empty = tmp_path / "mcp-settings.json"
     empty.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH", empty)
+    monkeypatch.setattr(mcphub.constants, "MCP_SETTINGS_PATH", empty)
     servers_dir = tmp_path / "lsp_connectors"
     servers_dir.mkdir()
     (servers_dir / "restricted-paths.txt").write_text("/etc\n", encoding="utf-8")
     monkeypatch.setattr(lsphub.constants, "LSP_CONNECTORS_DIR", servers_dir)
     monkeypatch.setattr(
-        lsphub.constants, "LSP_SERVERS_PATH", servers_dir / "lsp_servers.json"
+        lsphub.constants, "LSP_SETTINGS_PATH", servers_dir / "lsp-settings.json"
     )
     monkeypatch.setattr(
         lsphub.constants, "LSP_RESTRICTED_PATHS",

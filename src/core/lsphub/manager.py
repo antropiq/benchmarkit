@@ -120,8 +120,8 @@ class LspManager:
         """Spawn only the servers whose id is in ``server_ids``. Never raises.
 
         The API passes the intersection of ``LSP_ENABLED`` and each entry's
-        ``enable`` flag: a prepared ``lsp_servers.json`` can stay entirely
-        dormant until the user asks for it.
+        ``enable`` flag: a prepared ``.nojae/lsp-settings.json`` can stay
+        entirely dormant until the user asks for it.
         """
         await self._start_all_matching(set(server_ids))
 
@@ -1049,7 +1049,7 @@ class LspManager:
         servers: List[Dict[str, Any]],
         enabled_ids: Optional[List[str]] = None,
     ) -> None:
-        """Re-read ``lsp_servers.json``: shut every server down and respawn.
+        """Re-read ``.nojae/lsp-settings.json``: shut every server down and respawn.
 
         Unlike :meth:`stop_all`, the manager stays usable afterwards: a fresh
         ``lsp-hub`` thread (and reaper) is created and *this same object* keeps

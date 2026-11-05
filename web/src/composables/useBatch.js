@@ -65,7 +65,8 @@ export const PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
 // The connectors the instruction depends on: reading and editing the task's
 // files, and moving them into done/. With either off, every task would fail the
 // same way, so Launch refuses rather than burning the whole lot to prove the
-// point. These are the connector ids declared in externals.json.
+// point. These are the connector ids declared in the workspace's
+// .nojae/mcp-settings.json.
 export const REQUIRED_MCP_CONNECTORS = [
   { id: 'fedit', what: 'read and edit the task files' },
   { id: 'console', what: 'run mv into todos/done' },

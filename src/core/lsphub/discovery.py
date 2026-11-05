@@ -1,9 +1,11 @@
 """Discovery and validation of the declared language servers.
 
-Reads ``lsp_connectors/lsp_servers.json`` into the dicts the rest of the
-package consumes. The two file paths are looked up through
-``lsphub.constants`` *inside* each function call, so redirecting the hub at
-another declaration file is one attribute patch, not an import dance.
+Reads the workspace's ``.nojae/lsp-settings.json`` into the dicts the rest
+of the package consumes. The declaration path is looked up through
+``lsphub.constants.lsp_settings_path()`` *inside* each function call, so a
+switched working location moves the read and a patched pin redirects it —
+one attribute, not an import dance. The deny-list is still an
+``lsphub.constants`` attribute read the same way.
 """
 
 import importlib.util
@@ -189,7 +191,7 @@ def lsp_reach_is_refused() -> bool:
 def load_lsp_servers(
     path: Optional[Path] = None, reserved_ids: Optional[Set[str]] = None
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Read ``lsp_servers.json`` into language-server dicts.
+    """Read the workspace's ``.nojae/lsp-settings.json`` into server dicts.
 
     A missing file yields ``([], [])``. Unreadable/invalid JSON yields one
     file-level error and no servers. A single malformed entry is skipped with
@@ -204,7 +206,7 @@ def load_lsp_servers(
     references an unset name is still loaded (subject to the usual checks)
     with a note saying so.
     """
-    root = path or constants.LSP_SERVERS_PATH
+    root = path or constants.lsp_settings_path()
     servers: List[Dict[str, Any]] = []
     errors: List[str] = []
     reserved = {str(entry) for entry in reserved_ids or ()}
@@ -380,13 +382,13 @@ def all_servers(
 def set_lsp_enabled(
     enabled: Dict[str, bool], path: Optional[Path] = None
 ) -> List[str]:
-    """Write ``enable`` flags back to ``lsp_servers.json``, keeping everything else.
+    """Write ``enable`` flags back to ``.nojae/lsp-settings.json``, keeping everything else.
 
     Only entries already present in the file are touched; other keys, entry
     order, and unknown ids are preserved. A missing file is a no-op; a file
     that cannot be parsed is left untouched and reported as an error list.
     """
-    root = path or constants.LSP_SERVERS_PATH
+    root = path or constants.lsp_settings_path()
     if not root.is_file():
         return []
     try:

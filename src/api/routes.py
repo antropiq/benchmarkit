@@ -34,8 +34,20 @@ from src.config import (
     save_settings,
     questions_path,
 )
-from src.core.mcphub import load_externals, set_externals_enabled
-from src.core.lsphub import all_servers, restricted_lsp_roots, set_lsp_enabled
+from src.core.mcphub import (
+    ensure_mcp_settings_file,
+    load_externals,
+    mcp_settings_file_state,
+    set_externals_enabled,
+)
+from src.core.lsphub import (
+    all_servers,
+    ensure_lsp_settings_template,
+    lsp_settings_file_state,
+    lsp_settings_template_state,
+    restricted_lsp_roots,
+    set_lsp_enabled,
+)
 from src.core import editorfs
 from src.core.editorfs import fscase, policy_seed
 from src.core.editorfs.policy import _is_within
@@ -644,9 +656,9 @@ class RunState:
 def _active_connector_ids() -> List[str]:
     """Connector ids whose tools chat may use.
 
-    Every connector is declared in ``mcp_connectors/externals.json`` and
-    activated by its ``enable`` flag there (single source of truth, no .env
-    key involved).
+    Every connector is declared in the workspace's
+    ``.nojae/mcp-settings.json`` and activated by its ``enable`` flag there
+    (single source of truth, no .env key involved).
     """
     connectors, _errors = load_externals()
     return [connector["id"] for connector in connectors if connector["enable"]]
@@ -657,8 +669,8 @@ def _active_server_ids() -> List[str]:
 
     Both gates must agree: the id is listed in ``LSP_ENABLED`` (the .env
     switch that lets a whole prepared config file stay dormant) *and* its
-    ``enable`` flag is true in ``lsp_servers.json`` (the MCP-externals
-    precedent for file-declared entries).
+    ``enable`` flag is true in ``.nojae/lsp-settings.json`` (the
+    MCP-externals precedent for file-declared entries).
     """
     enabled = set(lsp_enabled_ids())
     servers, _errors = all_servers()
@@ -977,7 +989,7 @@ def build_router(state: RunState) -> APIRouter:
     def _mcp_payload(
         request: Request, extra_errors: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Connector list (live ``externals.json`` scan) merged with manager status.
+        """Connector list (live ``.nojae/mcp-settings.json`` scan) merged with manager status.
 
         Connectors are active on their file ``enable`` flag — the single
         source of truth. Secret material (``headers``/``env``) is stripped.
@@ -1018,8 +1030,8 @@ def build_router(state: RunState) -> APIRouter:
     def post_mcp(body: McpIn, request: Request) -> Dict[str, Any]:
         """Activate MCP connectors for the Chat tab and set the iteration cap.
 
-        Toggles write the entry ``enable`` flag back to
-        ``mcp_connectors/externals.json`` (the only activation source) and
+        Toggles write the entry ``enable`` flag back to the workspace's
+        ``.nojae/mcp-settings.json`` (the only activation source) and
         start/stop the connector right away; only ``MAX_TOOL_ITERATION``
         persists to ``.env``.
         """
@@ -1090,7 +1102,7 @@ def build_router(state: RunState) -> APIRouter:
 
     @router.post("/mcp/restart")
     async def post_mcp_restart(request: Request) -> Dict[str, Any]:
-        """Restart the MCP hub: re-read ``externals.json`` and reconnect.
+        """Restart the MCP hub: re-read ``.nojae/mcp-settings.json`` and reconnect.
 
         Everything is torn down (client sessions and, with them, every local
         stdio child process) and rebuilt from a fresh scan of the declaration
@@ -1153,8 +1165,8 @@ def build_router(state: RunState) -> APIRouter:
 
         Activation writes both places: the ids persist to ``LSP_ENABLED`` in
         ``.env`` and the ``enable`` flag is written back to
-        ``lsp_servers.json`` (both must agree for a server to run, so a
-        prepared config file can stay entirely dormant). Running servers are
+        ``.nojae/lsp-settings.json`` (both must agree for a server to run, so
+        a prepared config file can stay entirely dormant). Running servers are
         hot-started/stopped right away; ``maxIterations`` updates the shared
         MCP+LSP tool-loop cap.
         """
@@ -1233,7 +1245,7 @@ def build_router(state: RunState) -> APIRouter:
 
     @router.post("/lsp/restart")
     async def post_lsp_restart(request: Request) -> Dict[str, Any]:
-        """Restart the LSP hub: re-read ``lsp_servers.json`` and respawn.
+        """Restart the LSP hub: re-read ``.nojae/lsp-settings.json`` and respawn.
 
         Every language server is shut down (``shutdown``/``exit``, then
         SIGTERM/SIGKILL) and respawned from a fresh scan of the declaration
@@ -1292,19 +1304,54 @@ def build_router(state: RunState) -> APIRouter:
         """
         return prompt_helpers.prompt_helpers_file_state(path_location())
 
+    def _mcp_settings_block() -> Dict[str, Any]:
+        """What the workspace's MCP declaration file looks like, **read-only**.
+
+        The fourth reserved-folder reader: the MCP seed runs at the two
+        moments a folder becomes the working location, so a GET reports the
+        file instead of leaving one behind. ``absent`` is a plain fact — a
+        workspace whose seed failed has no MCP connectors, and the Settings →
+        MCP panel says so.
+        """
+        return mcp_settings_file_state(path_location())
+
+    def _lsp_settings_block() -> Dict[str, Any]:
+        """What the workspace's LSP declaration file looks like, **read-only**.
+
+        The declaration is hand-written — only its *template* is seeded (its
+        entries are per-machine) — so this report is the panel's way to say
+        "no language servers declared yet" and point at the template below.
+        """
+        return lsp_settings_file_state(path_location())
+
+    def _lsp_template_block() -> Dict[str, Any]:
+        """What the workspace's LSP template file looks like, **read-only**.
+
+        The sixth reserved-folder reader: the LSP template seed runs at the
+        two moments a folder becomes the working location, so a GET reports
+        the file instead of leaving one behind. ``absent`` is a plain fact —
+        the example is still committed, the workspace just lost the copy-me
+        shortcut.
+        """
+        return lsp_settings_template_state(path_location())
+
     @router.get("/path-location")
     def get_path_location() -> Dict[str, Any]:
         """Effective working location of the MCP/LSP hubs.
 
-        The value ``${BENCHMARKIT_PATH_LOCATION}`` expands to in
-        ``mcp_connectors/externals.json`` and ``lsp_connectors/lsp_servers.json``
-        — read live from the environment, so it reflects a change made through
-        ``POST /path-location`` rather than a stale startup snapshot.
+        The value ``${BENCHMARKIT_PATH_LOCATION}`` expands to in the
+        workspace's ``.nojae/mcp-settings.json`` and in the workspace's
+        ``.nojae/lsp-settings.json`` — read live from the environment,
+        so it reflects a change made through ``POST /path-location`` rather
+        than a stale startup snapshot.
         """
         return _path_location_payload() | {
             "policy": _policy_block(),
             "agentModes": _agent_modes_block(),
             "promptHelpers": _prompt_helpers_block(),
+            "mcpSettings": _mcp_settings_block(),
+            "lspSettings": _lsp_settings_block(),
+            "lspSettingsTemplate": _lsp_template_block(),
         }
 
     @router.post("/path-location")
@@ -1378,6 +1425,17 @@ def build_router(state: RunState) -> APIRouter:
                 )
         previous = os.environ.get(PATH_LOCATION_KEY)
         os.environ[PATH_LOCATION_KEY] = expanded
+        # The workspace's MCP declaration file is seeded here — *before* the
+        # two restarts — for one reason: the declaration now lives inside the
+        # new root's ``.nojae``, so the MCP restart re-scans the very file
+        # this seeds. Seeding it after the restart would rebuild the hub over
+        # an unseeded folder and leave the new workspace on **zero**
+        # connectors until the next restart. This breaks the "all seeds after
+        # the restarts" rule the three below still follow only because it is
+        # safe: ``ensure_mcp_settings_file`` answers a dict and raises
+        # nothing, so a seeding hiccup cannot be mistaken for a hub failure
+        # and cannot trip the rollback below.
+        mcp_settings_block = ensure_mcp_settings_file(expanded)
         try:
             mcp = await _restart_mcp_hub(request)
             lsp = await _restart_lsp_hub(request)
@@ -1433,6 +1491,14 @@ def build_router(state: RunState) -> APIRouter:
         # It comes last of the three seeds for the reason the others share: a
         # seeding hiccup is a note in the payload, never a hub failure.
         helpers_block = prompt_helpers.ensure_prompt_helpers_file(expanded)
+        # The LSP template seed (the fifth of the reserved folder's files, and
+        # the sixth counting the LSP declaration itself, which is *not* seeded
+        # — its entries are per-machine, so the app only ever hands out the
+        # copy-me template). Same moment, same rule as the seeds above: after
+        # the restarts, so a seeding hiccup is a note in the payload and
+        # cannot be mistaken for a hub failure; and no scan reads the
+        # template, so nothing in the restart waits on this write.
+        lsp_template_block = ensure_lsp_settings_template(expanded)
         return (
             _path_location_payload()
             | {
@@ -1441,6 +1507,9 @@ def build_router(state: RunState) -> APIRouter:
                 "policy": policy_block,
                 "agentModes": modes_block,
                 "promptHelpers": helpers_block,
+                "mcpSettings": mcp_settings_block,
+                "lspSettings": lsp_settings_file_state(expanded),
+                "lspSettingsTemplate": lsp_template_block,
             }
         )
 

@@ -452,8 +452,8 @@ def _locate(lines: list[str], window: list[str], target: int) -> Optional[int]:
     return min(candidates, key=lambda i: abs(i - target))
 
 
-def apply_diff_to_text(before: str, diff_text: str,
-                       fuzz: Optional[int] = None) -> tuple[str, list[str]]:
+def apply_diff_to_text(before: str, diff_text: str, fuzz: Optional[int] = None,
+                       creating: bool = False) -> tuple[str, list[str]]:
     """Apply a unified diff to ``before``, returning (new_text, warnings).
 
     Each hunk must match exactly at its declared offset; failing that, and if
@@ -465,6 +465,10 @@ def apply_diff_to_text(before: str, diff_text: str,
     entirely: an empty window matches every position in the file, so a hunk
     trimmed that far is an edit dropped at an arbitrary line rather than a
     repositioned one.
+
+    ``creating`` says the target has no bytes because the file does not exist
+    (as opposed to existing and being empty), so a failed hunk can say that
+    instead of sending the model off to re-read a file that is not there.
     """
     hunks = parse_unified_diff(diff_text)
     requested = MAX_FUZZ if fuzz is None else max(0, int(fuzz))
@@ -498,7 +502,11 @@ def apply_diff_to_text(before: str, diff_text: str,
             # where it actually landed versus where it was declared (GNU patch
             # tracks the same), and how much it changed the file length.
             offset += (found - target) + (len(new_lines) - len(window))
-            if found != target or trim:
+            # A hunk that declares no old content has nothing to match on, so
+            # _locate only clamps its declared line into the file; that clamp is
+            # not a hunk that moved, and reporting it would accuse a creation of
+            # having been applied at the wrong place.
+            if (found != target and window) or trim:
                 detail = (f"hunk at diff line {hunk.header_line} was declared for "
                           f"line {hunk.old_start} but applied at line {found + 1}")
                 if trim:
@@ -507,7 +515,8 @@ def apply_diff_to_text(before: str, diff_text: str,
             applied = True
             break
         if not applied:
-            raise FeditError(_hunk_failure(hunk, lines, clamped_note=max_fuzz_note))
+            raise FeditError(_hunk_failure(hunk, lines, clamped_note=max_fuzz_note,
+                                           creating=creating))
 
     # "\\ No newline at end of file" on a '+' line of the last hunk asks for a
     # file that ends without a newline; on a '-' line it says the old file had
@@ -525,13 +534,17 @@ def apply_diff_to_text(before: str, diff_text: str,
 
 
 def _hunk_failure(hunk: Hunk, lines: list[str],
-                  clamped_note: str = "") -> str:
+                  clamped_note: str = "", creating: bool = False) -> str:
     """A correction-oriented error for a hunk that did not match.
 
     ``clamped_note`` is non-empty when the caller had to reduce the requested
     fuzz: "does not match anywhere, even with fuzzing" would be an invitation to
     raise ``fuzz`` again, when the real reason it did not match is that the fuzz
     asked for is above the ceiling and was not honoured.
+
+    ``creating`` names the one case where "re-read the file" is not a route
+    forward: the target does not exist, so there are no lines to copy verbatim,
+    and what the model needs is the creation shape -- a hunk that only adds.
     """
     window = [text for kind, text in hunk.lines if kind in " -"]
     start = max(0, hunk.old_start - 1)
@@ -541,6 +554,12 @@ def _hunk_failure(hunk: Hunk, lines: list[str],
     total = len(lines)
     fuzz_note = (f"  Note: {clamped_note}; raising it further cannot help -- "
                  f"fix the hunk's context instead.\n" if clamped_note else "")
+    creation_note = (
+        f"  This file does not exist yet, so there is nothing to match: a hunk "
+        f"cannot change or quote lines of a file that is absent. To create it, "
+        f"send a hunk that only adds lines (@@ -0,0 +1,N @@) with every line "
+        f"prefixed by '+', or a SEARCH/REPLACE block whose SEARCH is empty.\n"
+        if creating else "")
     return (
         f"Hunk at diff line {hunk.header_line} (declared old line {hunk.old_start}, "
         f"{hunk.old_count} line(s)) does not match anywhere in the file "
@@ -548,6 +567,7 @@ def _hunk_failure(hunk: Hunk, lines: list[str],
         f"  Expected context:\n{expected}\n"
         f"  Found there:\n{got}\n"
         f"{fuzz_note}"
+        f"{creation_note}"
         f"  Fix: re-read the file and copy those lines verbatim into the diff, or "
         f"change the hunk's @@ line number. No changes were written."
     )
@@ -698,12 +718,17 @@ def _shape_message(detail: str) -> str:
     )
 
 
-def apply_search_replace_to_text(before: str, edit_text: str) -> tuple[str, list[str]]:
+def apply_search_replace_to_text(before: str, edit_text: str,
+                                 creating: bool = False) -> tuple[str, list[str]]:
     """Apply SEARCH/REPLACE blocks sequentially. Raises FeditError on any problem.
 
     Each SEARCH must match exactly one place in the text as it stands at that
     step: zero matches is a bad copy, several matches is an under-specified
     block. An empty SEARCH only makes sense for an empty (new) file.
+
+    ``creating`` says the target has no bytes because the file does not exist,
+    so a SEARCH that matches nothing can name the creation shape instead of
+    telling the model to re-read a file that is not there.
     """
     blocks = parse_search_replace(edit_text)
     body, bom = strip_bom(before)
@@ -728,7 +753,7 @@ def apply_search_replace_to_text(before: str, edit_text: str) -> tuple[str, list
         occurrences = [i for i in range(len(lines) - len(block.search) + 1)
                        if lines[i:i + len(block.search)] == block.search]
         if not occurrences:
-            raise FeditError(_block_failure(block, lines))
+            raise FeditError(_block_failure(block, lines, creating=creating))
         if len(occurrences) > 1:
             where = ", ".join(str(i + 1) for i in occurrences[:8])
             raise FeditError(
@@ -744,7 +769,7 @@ def apply_search_replace_to_text(before: str, edit_text: str) -> tuple[str, list
     return join_text(lines, final_newline, terminator, bom), warnings
 
 
-def _block_failure(block: Block, lines: list[str]) -> str:
+def _block_failure(block: Block, lines: list[str], creating: bool = False) -> str:
     """Point the model at the closest region to its SEARCH text."""
     expected = "\n".join(f"    | {line}" for line in block.search) or "    (empty)"
     window = block.search[:6]
@@ -756,12 +781,25 @@ def _block_failure(block: Block, lines: list[str]) -> str:
             best, best_ratio = i, ratio
     near = lines[best:best + max(span, len(block.search))]
     closest = "\n".join(f"    | {line}" for line in near) or "    (empty)"
+    # "Re-read the file" is the wrong instruction when there is no file: it
+    # sends the model to read_file, which answers File not found, and the same
+    # edit comes back round again. Name the shape that does create one.
+    creation_note = (
+        f"  This file does not exist yet, so there is nothing to search for. To "
+        f"create it, send one block with an empty SEARCH and the whole new "
+        f"content in REPLACE:\n"
+        f"    <<<<<<< SEARCH\n"
+        f"    =======\n"
+        f"    (every line of the new file)\n"
+        f"    >>>>>>> REPLACE\n"
+        if creating else "")
     return (
         f"Block #{block.block_index}: SEARCH text not found in the file "
         f"({len(lines)} line(s), closest region at line {best + 1}, "
         f"{best_ratio:.0%} similar).\n"
         f"  Searched for:\n{expected}\n"
         f"  Closest content there:\n{closest}\n"
+        f"{creation_note}"
         f"  Fix: re-read the file and copy those lines verbatim (whitespace and "
         f"indentation included). No changes were written."
     )
@@ -1283,6 +1321,9 @@ def preview_edit(path: str, edit: str, format: str = "auto", fuzz: Optional[int]
     SEARCH/REPLACE cannot quote such a line and refuses instead of guessing
     where the block ends.
 
+    It previews a creation too: a path with no file at it is diffed against
+    emptiness, the same shapes ``apply_edit`` accepts to create one.
+
     Args:
         path: File that would be edited
         edit: A unified diff, or SEARCH/REPLACE blocks (see apply_edit)
@@ -1298,14 +1339,16 @@ def preview_edit(path: str, edit: str, format: str = "auto", fuzz: Optional[int]
     try:
         resolved = check_preview_path(path)
         before = ""
-        if resolved.is_file():
+        creating = not resolved.is_file()
+        if not creating:
             size = resolved.stat().st_size
             if size > MAX_FILE_BYTES:
                 return (f"Error: {resolved} is {size} bytes, over the "
                         f"{MAX_FILE_BYTES} limit -- the preview of an edit to "
                         f"it would be as unreviewable as the edit.")
             before = read_payload_for_edit(resolved)
-        after, warnings = run_edit(resolved, before, edit, format, fuzz)
+        after, warnings = run_edit(resolved, before, edit, format, fuzz,
+                                   creating=creating)
     except (FeditError, UnicodeDecodeError, OSError) as exc:
         return f"Error: {exc}"
 
@@ -1322,14 +1365,15 @@ def preview_edit(path: str, edit: str, format: str = "auto", fuzz: Optional[int]
 
 
 def run_edit(resolved: Path, before: str, edit: str,
-             fmt: str, fuzz: Optional[int]) -> tuple[str, list[str]]:
+             fmt: str, fuzz: Optional[int],
+             creating: bool = False) -> tuple[str, list[str]]:
     """Dispatch one edit payload through the right engine."""
     if len(edit.encode("utf-8")) > MAX_EDIT_BYTES:
         raise FeditError(f"edit payload is over {MAX_EDIT_BYTES} bytes")
     kind = resolve_format(fmt, edit)
     if kind == "sr":
-        return apply_search_replace_to_text(before, edit)
-    return apply_diff_to_text(before, edit, fuzz=fuzz)
+        return apply_search_replace_to_text(before, edit, creating=creating)
+    return apply_diff_to_text(before, edit, fuzz=fuzz, creating=creating)
 
 
 @server.tool()
@@ -1363,19 +1407,35 @@ def apply_edit(path: str, edit: str, format: str = "auto", fuzz: Optional[int] =
     several SEARCH/REPLACE blocks are applied in order; if any part fails, nothing
     is written at all; the file's final-newline state is preserved.
 
+    A file that does not exist yet is **created** when the edit adds rather than
+    replaces -- quote nothing to replace. Send an empty SEARCH with the whole new
+    content in REPLACE::
+
+        <<<<<<< SEARCH
+        =======
+        first line of the new file
+        second line
+        >>>>>>> REPLACE
+
+    or the diff's pure-addition shape, ``@@ -0,0 +1,2 @@`` with every line
+    prefixed by '+'. A SEARCH holding any text at all must still match bytes the
+    file has, so against a missing file it is refused, never guessed.
+
     If the file contains '=======', '<<<<<<<' or '>>>>>>>' lines (a git conflict,
     or documentation about this very format), pass ``format="diff"``: such a line
     cannot be quoted inside a SEARCH or REPLACE body, and SEARCH/REPLACE refuses
     rather than guessing. A diff tokenises no markers, so it handles them.
 
     Args:
-        path: File to edit (parent directory must exist)
+        path: File to edit; a missing file is created, but its parent directory
+            must already exist (make it with console's ``mkdir``)
         edit: The diff or SEARCH/REPLACE payload
         format: 'auto' (detect), 'search_replace' or 'diff'
         fuzz: Max context lines a hunk may ignore when repositioning (0..3)
 
     Returns:
-        The diff that was applied, plus the backup path for reverting
+        The diff that was applied, plus the backup path for reverting (a created
+        file has no backup, there was nothing to preserve)
 
     Example:
         apply_edit("/srv/app/main.py", edit, format="search_replace")
@@ -1393,7 +1453,8 @@ def apply_edit(path: str, edit: str, format: str = "auto", fuzz: Optional[int] =
                         f"file, so the cap applies to edits too; change it "
                         f"through console (``sed``/``awk``) instead.")
             before = read_payload_for_edit(resolved)
-        after, warnings = run_edit(resolved, before, edit, format, fuzz)
+        after, warnings = run_edit(resolved, before, edit, format, fuzz,
+                                   creating=creating)
     except (PathDenied, FeditError, UnicodeDecodeError, OSError) as exc:
         return f"Error: {exc}"
 

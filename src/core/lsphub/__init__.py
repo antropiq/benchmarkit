@@ -1,12 +1,13 @@
 """Language-server discovery, LSP sessions, and tool synthesis.
 
 Core-only: no FastAPI or browser concerns. Reads the declarative language
-server definitions from ``lsp_connectors/lsp_servers.json`` (one entry per
-server id, ``enable`` as the on/off source of truth), spawns one subprocess
-per activated server, performs the LSP handshake (``initialize`` ->
-``initialized``), keeps the session alive for the app's lifetime, and turns
-the server's advertised capabilities into OpenAI-format tool definitions so
-the Chat tab's tool loop can call them.
+server definitions from the workspace's ``.nojae/lsp-settings.json`` (one
+entry per server id, ``enable`` as the on/off source of truth, hand-written
+from the seeded ``.nojae/lsp-settings.template.json``), spawns one
+subprocess per activated server, performs the LSP handshake (``initialize``
+-> ``initialized``), keeps the session alive for the app's lifetime, and
+turns the server's advertised capabilities into OpenAI-format tool
+definitions so the Chat tab's tool loop can call them.
 
 Like the ``mcphub`` package (which this package deliberately mirrors), all LSP I/O
 runs on a private asyncio thread so synchronous callers (chat worker
@@ -17,8 +18,12 @@ never a command line.
 
 Layout — the module members live one concern per file:
 
-* :mod:`lsphub.constants` paths, timeouts, the Volar relay method names
-* :mod:`lsphub.discovery`` reading/validating/writing ``lsp_servers.json``
+* :mod:`lsphub.constants` paths (including the workspace declaration
+  resolver), timeouts, the Volar relay method names
+* :mod:`lsphub.discovery` reading/validating/writing ``lsp-settings.json``
+* :mod:`lsphub.seed` leaving the declaration *template* behind when a folder
+  becomes the working location (never the declaration itself — entries are
+  per-machine)
 * :mod:`lsphub.tools` the action catalogue and the tool-name scheme
 * :mod:`lsphub.session` ``DiagnosticsInbox``, ``DocumentStore``, ``ServerSession``
 * :mod:`lsphub.features` the client-side feature handlers (incl. the relay)
@@ -82,6 +87,11 @@ from .rendering import (
     truncate,
     uri_to_path,
 )
+from .seed import (
+    ensure_lsp_settings_template,
+    lsp_settings_file_state,
+    lsp_settings_template_state,
+)
 from .session import DiagnosticsInbox, DocumentStore, ServerSession
 from .tsserver import (
     find_project_config,
@@ -111,7 +121,10 @@ if TYPE_CHECKING:
         LSP_LOGS_DIR,
         LSP_MISSING_HINT,
         LSP_RESTRICTED_PATHS,
-        LSP_SERVERS_PATH,
+        LSP_SETTINGS_FILENAME,
+        LSP_SETTINGS_PATH,
+        LSP_SETTINGS_TEMPLATE,
+        LSP_SETTINGS_TEMPLATE_FILENAME,
         MAX_DOCUMENT_BYTES,
         MAX_RESULT_CHARS,
         PROJECT_CONFIG_NAMES,
@@ -123,6 +136,7 @@ if TYPE_CHECKING:
         TSSERVER_PROJECT_INFO,
         TSSERVER_REQUEST,
         TSSERVER_RESPONSE,
+        lsp_settings_path,
     )
 
 __all__ = [
@@ -136,7 +150,10 @@ __all__ = [
     "LSP_LOGS_DIR",
     "LSP_MISSING_HINT",
     "LSP_RESTRICTED_PATHS",
-    "LSP_SERVERS_PATH",
+    "LSP_SETTINGS_FILENAME",
+    "LSP_SETTINGS_PATH",
+    "LSP_SETTINGS_TEMPLATE",
+    "LSP_SETTINGS_TEMPLATE_FILENAME",
     "LspManager",
     "MAX_DOCUMENT_BYTES",
     "MAX_RESULT_CHARS",
@@ -155,6 +172,7 @@ __all__ = [
     "all_servers",
     "apply_whole_line_edits",
     "client_capabilities",
+    "ensure_lsp_settings_template",
     "fetch_diagnostics",
     "find_project_config",
     "language_id_for_suffix",
@@ -162,6 +180,9 @@ __all__ = [
     "location_line",
     "lsp_installed",
     "lsp_reach_is_refused",
+    "lsp_settings_file_state",
+    "lsp_settings_path",
+    "lsp_settings_template_state",
     "parse_tsserver_request",
     "position",
     "register_features",

@@ -22,10 +22,10 @@ logs/
 /e2e-ws-root/
 /e2e-modes-root/
 mcp_connectors/externals.json
-# LSP declaration file: may carry secrets in its per-entry `env` maps.
-lsp_connectors/lsp_servers.json
 # The workspace policy folder: machine-local per checkout, and the app reserves
-# it (hidden and unwritable from the Editor), so it is never source.
+# it (hidden and unwritable from the Editor), so it is never source. The LSP
+# declaration (.nojae/lsp-settings.json) and its seeded template live here too,
+# and may carry secrets in their per-entry `env` maps.
 .nojae/
 resources/memory_registration.json
 pyrightconfig.json

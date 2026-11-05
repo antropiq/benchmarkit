@@ -172,14 +172,20 @@ dialog, without an app restart.
 
 | File | Declares |
 |---|---|
-| `.env` (from `.env.example`) | Endpoint, model, sampling, verifier, vision flag. |
-| `mcp_connectors/externals.json` | The MCP connectors the agent may call. |
-| `lsp_connectors/lsp_servers.json` (from `lsp_servers.example.json`) | The language servers. |
+| `.env` (from `.env.example`) | Endpoint, model, sampling, verifier, vision flag, and `BENCHMARKIT_PYTHON_ROOT` (the python the stdio connectors run on). |
+| `.nojae/mcp-settings.json` (seeded from `mcp_connectors/mcp-settings.default.json`) | The MCP connectors the agent may call. |
+| `.nojae/lsp-settings.json` (written from the seeded `.nojae/lsp-settings.template.json`) | The language servers. |
 
 The two declaration files may carry API keys, so they are gitignored and their
-secrets are never returned by the API.
+secrets are never returned by the API. Both belong to the **working
+location**: when a folder becomes it, the app seeds the MCP declaration from
+its committed template — with the `console` and `fedit` connectors
+pre-declared — and leaves the LSP *template* beside it, a copy of
+`lsp_connectors/lsp_servers.example.json`. Neither seed ever overwrites an
+existing file. The LSP declaration is never seeded as a working file — its
+entries name machine-local paths — you write it yourself from the template.
 
-### The MCP setup file — `mcp_connectors/externals.json`
+### The MCP setup file — `.nojae/mcp-settings.json`
 
 One entry per connector id, each with an `enable` flag that is the only switch
 that counts. Two kinds:
@@ -192,7 +198,9 @@ Any `url`, `command`, `headers` or `env` value may reference an environment
 variable as `${NAME}`, or `${NAME:-fallback}` when the variable is optional. The
 reference is expanded when the file is read, using the environment the connector
 runs with — the app's own, `.env` included — so one declaration works on every
-machine and a secret can stay out of the file. Only the braced `${…}` form is
+machine and a secret can stay out of the file. Two names answer from the app
+itself rather than from the environment: `${PROJECT_ROOT}` is this install's
+own folder, always right by construction. Only the braced `${…}` form is
 special, an
 expanded value is never re-split into arguments, and an unset name is left
 written as-is and reported as a validation note in **Settings → MCP** rather
@@ -270,13 +278,18 @@ deny-list, and `console` execs one command with no shell: no pipes, no
 redirections, no command chains. `chrome-devtools` and `context7` are third-party
 and entirely optional.
 
-### The LSP setup file — `lsp_connectors/lsp_servers.json`
+### The LSP setup file — `.nojae/lsp-settings.json`
 
-Copy the committed example and adapt it. One entry per server id: a stdio
-`command`, the `workspaceRoot` it indexes, the file `extensions` it owns and the
-`tools` to expose. An enabled server adds `lsp_<id>_<action>` tools —
-diagnostics, hover, definition, references, symbols, completion, formatting — to
-the WorkBench tab. `${NAME}` expansion works here exactly as it does for MCP.
+When a folder becomes the working location, the app leaves
+`.nojae/lsp-settings.template.json` in its reserved folder — a copy of the
+committed `lsp_connectors/lsp_servers.example.json`, never overwritten. Copy
+it to `.nojae/lsp-settings.json` and adapt it; the app reads only
+`lsp-settings.json`, and a workspace without one simply has no language
+servers. One entry per server id: a stdio `command`, the `workspaceRoot` it
+indexes, the file `extensions` it owns and the `tools` to expose. An enabled
+server adds `lsp_<id>_<action>` tools — diagnostics, hover, definition,
+references, symbols, completion, formatting — to the WorkBench tab.
+`${NAME}` expansion works here exactly as it does for MCP.
 
 Install the servers themselves with npm, the same line on either system (the
 `lsp` extra only brings the Python client side):

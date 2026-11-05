@@ -19,8 +19,16 @@ from src.config import (
     questions_path,
     setup_path_location,
 )
-from src.core.mcphub import McpManager, load_externals
-from src.core.lsphub import LspManager, all_servers
+from src.core.mcphub import (
+    McpManager,
+    ensure_mcp_settings_file,
+    load_externals,
+)
+from src.core.lsphub import (
+    LspManager,
+    all_servers,
+    ensure_lsp_settings_template,
+)
 from src.core.editorfs import mutate as editorfs_mutate, policy_seed
 from src.core.termhub import TerminalHub
 from src.core import agent_modes
@@ -107,6 +115,61 @@ def _seed_prompt_helpers() -> Dict[str, Any]:
     return result
 
 
+def _seed_mcp_settings() -> Dict[str, Any]:
+    """Leave the workspace's MCP declaration file behind; never raise.
+
+    The second half of the pair the declaration file needs: it lives inside
+    ``.nojae`` now, so the boot seed must land *before* the lifespan's first
+    connector scan — a hub rebuilt over an unseeded folder would come up with
+    zero connectors. Same contract as the policy, modes and helpers seeds:
+    ``ensure_mcp_settings_file`` already answers a dict instead of raising, so
+    this wrapper only guards the *unexpected*, and a declaration file this app
+    could not write must not take the boot down with it. An unseeded workspace
+    simply has no MCP connectors — its chat works, its tools do not, and the
+    Settings → MCP panel says so.
+    """
+    try:
+        result = ensure_mcp_settings_file(path_location())
+    except Exception as exc:  # noqa: BLE001 — boot must survive anything here
+        _log.warning("could not seed the MCP settings file: %s", exc)
+        return {"state": "failed", "path": None, "error": str(exc)}
+    if result["state"] == "failed":
+        _log.warning(
+            "could not seed the MCP settings file at %s: %s",
+            result["path"],
+            result["error"],
+        )
+    return result
+
+
+def _seed_lsp_template() -> Dict[str, Any]:
+    """Leave the workspace's LSP declaration *template* behind; never raise.
+
+    The language-server declaration lives inside ``.nojae`` now, but unlike
+    the MCP one it is **never seeded as a working file** — every entry names
+    machine-local paths — so what lands here is the template
+    (``.nojae/lsp-settings.template.json``) the operator copies to
+    ``lsp-settings.json``. Same contract as the other four seeds:
+    ``ensure_lsp_settings_template`` already answers a dict instead of
+    raising, so this wrapper only guards the *unexpected*, and a template
+    this app could not write must not take the boot down with it. A
+    workspace with no declaration simply has no language servers — its chat
+    works without ``lsp_*`` tools, and the Settings → LSP panel says so.
+    """
+    try:
+        result = ensure_lsp_settings_template(path_location())
+    except Exception as exc:  # noqa: BLE001 — boot must survive anything here
+        _log.warning("could not seed the LSP settings template: %s", exc)
+        return {"state": "failed", "path": None, "error": str(exc)}
+    if result["state"] == "failed":
+        _log.warning(
+            "could not seed the LSP settings template at %s: %s",
+            result["path"],
+            result["error"],
+        )
+    return result
+
+
 def _sweep_trash() -> None:
     """Expire old trash batches — including the pre-``.nojae`` ones in ``logs/``.
 
@@ -173,6 +236,20 @@ def create_app() -> FastAPI:
     # reader that writes is how a stray ``.nojae`` turns up in a project someone
     # only meant to browse; ``POST /api/path-location`` is the other moment.
     _seed_prompt_helpers()
+    # And the workspace's MCP declaration file: it lives inside ``.nojae``
+    # now, so this seed must land before the lifespan's first connector scan
+    # below — that is the whole ordering rule for this one. Same reserved
+    # folder, same contract: a note in the log, never a boot failure; a
+    # workspace with no declaration file simply has no MCP connectors.
+    _seed_mcp_settings()
+    # And the workspace's LSP declaration *template*: the declaration itself
+    # moved into ``.nojae`` too, but it is hand-written (its entries are
+    # per-machine), so this seed only offers the copy-me template beside it.
+    # Same reserved folder, same contract: a note in the log, never a boot
+    # failure; a workspace with no declaration file simply has no language
+    # servers. Nothing scans the template, so — unlike the MCP seed — its
+    # ordering against the lifespan's first server scan carries no rule.
+    _seed_lsp_template()
     # And drain the trash of whichever location that is, plus the legacy
     # ``logs/trash`` batches the pre-``.nojae`` code wrote here. Age is the only
     # signal for a batch nobody addresses any more, and a boot is the one moment
@@ -184,8 +261,9 @@ def create_app() -> FastAPI:
         # MCP connector sessions live exactly as long as the web app: connected
         # here on startup, closed on shutdown. The env var is a test/dev switch
         # that keeps the endpoints alive but connects nothing. Every connector
-        # is declared in mcp_connectors/externals.json; entries with
-        # ``enable: false`` stay stopped until toggled on.
+        # is declared in the workspace's .nojae/mcp-settings.json (seeded at
+        # boot above); entries with ``enable: false`` stay stopped until
+        # toggled on.
         connectors = (
             [] if os.environ.get("BENCHMARKIT_DISABLE_MCP") else load_externals()[0]
         )
@@ -195,14 +273,14 @@ def create_app() -> FastAPI:
         # Language servers follow the same rule (own env-var switch, own log
         # dir): spawned with the app, shut down (shutdown/exit then
         # SIGTERM/SIGKILL) when it quits. Servers marked ``"lazy": true`` in
-        # lsp_servers.json spawn on their first tool call instead, so the app
-        # stays snappy and tsserver does not sit in RAM for nothing.
+        # .nojae/lsp-settings.json spawn on their first tool call instead, so
+        # the app stays snappy and tsserver does not sit in RAM for nothing.
         servers = (
             [] if os.environ.get("BENCHMARKIT_DISABLE_LSP") else all_servers()[0]
         )
         # Two gates must agree for a server to run: its ``enable`` flag in
-        # lsp_servers.json and the LSP_ENABLED key in .env, so a prepared
-        # config file can stay entirely dormant.
+        # .nojae/lsp-settings.json and the LSP_ENABLED key in .env, so a
+        # prepared config file can stay entirely dormant.
         active_ids = {
             server["id"] for server in servers if server["enable"]
         } & set(lsp_enabled_ids())

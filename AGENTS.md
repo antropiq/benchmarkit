@@ -64,12 +64,18 @@ through it.
   benchmark loop; one streamed chat reply including the shared tool-call loop;
   per-run results and their aggregates; the batch-mode lot listing (task files
   are listed through the path policy, never read); the WorkBench agent modes.
-- `core/mcphub/` and `core/lsphub/` — the MCP and language-server hubs. Their
-  declarations live in the declaration files under `mcp_connectors/` and
-  `lsp_connectors/` and are hot-toggled from the UI. The two mirror each other —
-  `constants` (paths, timeouts), `discovery` (read/validate/write the
-  declaration file), `manager` (the live hub), plus rendering of tool results.
-  Keep that symmetry when touching either one.
+- `core/mcphub/` and `core/lsphub/` — the MCP and language-server hubs. Both
+  declarations are the **working location's** (its reserved folder): the MCP
+  one is seeded by exclusive create the first time a folder is opened, from
+  the committed template in `mcp_connectors/`; the language-server one is
+  hand-written — its seed leaves only `.nojae/lsp-settings.template.json`, a
+  copy of the committed example in `lsp_connectors/`, because a server entry
+  names machine-local paths and a seeded declaration would load nowhere.
+  Both are hot-toggled from the UI. The two mirror each other — `constants`
+  (paths, timeouts), `discovery` (read/validate/write the declaration file),
+  `manager` (the live hub), plus rendering of tool results, and `seed` on
+  each side (MCP leaves the workspace its declaration file, LSP only its
+  template). Keep that symmetry when touching either one.
 - `core/editorfs/` — the Editor's file surface. Paths are relative to the working
   location and every call answers from the workspace policy's verdict. Reads are
   bounded; writes to `ro`/`hidden` are refused; and no write destroys bytes — a
@@ -137,9 +143,9 @@ Measurement rules hold across every stream:
 | `.env.test` | Test-only endpoint, same key set as the template. |
 | `resources/*.json` | Question sets — every file there is one selectable set. |
 | `results.json` | Run output, written once when a run ends. |
-| MCP connector declarations | Which connectors exist: `remote` (HTTP) or `local` (stdio). |
-| Language-server declarations | Which servers exist: a stdio command and its workspace root. |
-| Reserved workspace folder | This workspace's read/write policy, its agent-mode personas, and the app-owned prompt-helper store. |
+| MCP connector declarations | Which connectors exist: `remote` (HTTP) or `local` (stdio) — the working location's file in the reserved folder, seeded from a committed template. |
+| Language-server declarations | Which servers exist: a stdio command and its workspace root — the working location's file in the reserved folder, hand-written from the seeded template (the committed example in `lsp_connectors/` is that template's source). |
+| Reserved workspace folder | This workspace's read/write policy, its agent-mode personas, its hub declarations, and the app-owned prompt-helper store. |
 
 Those files may hold secrets, so they are gitignored and each has a committed
 template; the reserved folder's files have no template — the app seeds them.
@@ -152,7 +158,9 @@ These rules tie them together:
 - **The declaration files are the only source of truth for what runs.** Their
   `enable` flag is the switch; their secrets never leave the server. A value may
   reference an environment variable so one declaration works on every machine; an
-  unresolved name is kept verbatim with a note, never blanked.
+  unresolved name is kept verbatim with a note, never blanked. `${PROJECT_ROOT}`
+  is no environment variable: it answers from the app's own computed install
+  path, so a stray name in the environment cannot redirect a connector.
 - **A test run takes its endpoint from the test env file, never from a
   developer's.**
 - **One setting defines the working location** that every file-touching part of
@@ -237,8 +245,8 @@ These rules tie them together:
   before any usage chunk gets a re-counted back-fill, so a reported figure is not
   evidence of where it came from. Keep the estimated flag honest.
 - **Adding a connector is never a module under `src/`** — a local connector is a
-  script next to its declaration file plus an entry naming it. Both halves are
-  needed.
+  script (usually beside the shipped ones in `mcp_connectors/`) plus an entry in
+  the workspace's declaration file naming it. Both halves are needed.
 
 ## Maintaining this file
 

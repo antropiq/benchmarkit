@@ -124,10 +124,16 @@ def test_shells_are_refused_by_name_naming_the_design_on_both_platforms():
 def test_the_gbash_sets_replace_the_absent_names_and_keep_the_grammar(tmp_path, monkeypatch):
     in_gbash_mode(monkeypatch)
     monkeypatch.setattr(c, "ROOT_DIR", tmp_path.resolve())
-    # Names the probe found nowhere leave the list (B-D4's principle)...
-    assert refused("rg TODO")
-    assert refused("tree -L 2")
-    # ...the System32 half joins it, and `fc` is a real tool here, not a builtin.
+    # Names the probe found nowhere leave the gbash list (B-D4's principle) and
+    # stay in the POSIX one. Asserted as sets: whether such a name *resolves* is
+    # a fact about this runner's PATH (a Linux box carries `rg`, the Windows
+    # probe found none), and the unresolved-command refusal is the next test's
+    # -- it pins a name no tree carries, so it answers on every runner.
+    for absent in ("rg", "tree"):
+        assert absent in c.GBASH_ABSENT_COMMANDS
+        assert absent not in c.GBASH_ALLOWED_COMMANDS
+        assert absent in c.ALLOWED_COMMANDS
+    # The System32 half joins it, and `fc` is a real tool here, not a builtin.
     assert "fc" in c.GBASH_ALLOWED_COMMANDS
     assert "fc" not in c.GBASH_BUILTIN_COMMANDS
     assert "fc" in c.SHELL_BUILTIN_COMMANDS  # the POSIX list is untouched

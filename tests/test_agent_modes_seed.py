@@ -293,7 +293,7 @@ class TestTheEndpoints:
         """``client`` with recording hubs and hermetic declaration files.
 
         The pattern ``tests/test_editorfs_policy_seed.py`` and ``tests/test_api.py``
-        use for the hub endpoints: the real ``externals.json``/``lsp_servers.json``
+        use for the hub endpoints: the real ``mcp-settings.json``/``lsp-settings.json``
         of the developer's machine must not decide what a restart does here.
         """
         from src.core import lsphub
@@ -313,15 +313,15 @@ class TestTheEndpoints:
 
         app = create_app()
         monkeypatch.delenv("BENCHMARKIT_PATH_LOCATION", raising=False)
-        empty = tmp_path / "externals.json"
+        empty = tmp_path / "mcp-settings.json"
         empty.write_text("{}", encoding="utf-8")
-        monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH", empty)
+        monkeypatch.setattr(mcphub.constants, "MCP_SETTINGS_PATH", empty)
         servers_dir = tmp_path / "lsp_connectors"
         servers_dir.mkdir()
         (servers_dir / "restricted-paths.txt").write_text("/etc\n", encoding="utf-8")
         monkeypatch.setattr(lsphub.constants, "LSP_CONNECTORS_DIR", servers_dir)
         monkeypatch.setattr(
-            lsphub.constants, "LSP_SERVERS_PATH", servers_dir / "lsp_servers.json"
+            lsphub.constants, "LSP_SETTINGS_PATH", servers_dir / "lsp-settings.json"
         )
         monkeypatch.setattr(
             lsphub.constants, "LSP_RESTRICTED_PATHS",
@@ -340,7 +340,11 @@ class TestTheEndpoints:
     ):
         """The first of am-03's two entry points: a brand-new workspace opened
         at boot ends up with exactly the files of the reserved folder — the
-        policy, the modes, and (mbl-02) the prompt helpers — and nothing else."""
+        policy, the modes, the prompt helpers, the MCP declaration, and the
+        LSP template (never the LSP declaration, which is hand-written) — and
+        nothing else."""
+        from src.core import lsphub, mcphub
+
         target = tmp_path / "booted-project"
         target.mkdir()
         monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(target))
@@ -354,11 +358,20 @@ class TestTheEndpoints:
         assert (
             folder / prompt_helpers.PROMPT_HELPERS_FILENAME
         ).is_file()
+        assert (
+            folder / mcphub.constants.MCP_SETTINGS_FILENAME
+        ).is_file()
+        assert (
+            folder / lsphub.constants.LSP_SETTINGS_TEMPLATE_FILENAME
+        ).is_file()
+        assert not (folder / lsphub.constants.LSP_SETTINGS_FILENAME).is_file()
         assert sorted(name.name for name in folder.iterdir()) == sorted(
             [
                 editorfs_constants.POLICY_FILENAME,
                 agent_modes.AGENT_MODES_FILENAME,
                 prompt_helpers.PROMPT_HELPERS_FILENAME,
+                mcphub.constants.MCP_SETTINGS_FILENAME,
+                lsphub.constants.LSP_SETTINGS_TEMPLATE_FILENAME,
             ]
         )
         assert sorted(os.listdir(target)) == sorted(

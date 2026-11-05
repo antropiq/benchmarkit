@@ -447,8 +447,10 @@ function serverDetail(server) {
           <section v-show="activeSection === 'mcp'">
             <h3 class="settings-section-title">MCP connectors</h3>
             <p class="caption">
-              Every connector is declared in
-              <code>mcp_connectors/externals.json</code>; connected ones start
+              Every connector is declared in the workspace's
+              <code>.nojae/mcp-settings.json</code> (seeded from
+              <code>mcp_connectors/mcp-settings.default.json</code> when a folder
+              becomes the working location); connected ones start
               with the app and stop when it quits. Activated connectors add
               their tools to the WorkBench tab only — benchmark runs never use them.
               Toggling one updates its <code>enable</code> flag in that file and
@@ -464,7 +466,7 @@ function serverDetail(server) {
             </p>
             <p v-if="state.mcpLoading" class="caption">Loading connectors…</p>
             <p v-else-if="!state.mcpConnectors.length" class="caption">
-              Nothing declared in <code>mcp_connectors/externals.json</code>:
+              Nothing declared in <code>.nojae/mcp-settings.json</code>:
               add a <code>remote</code> or <code>local</code> entry to get
               connectors here.
             </p>
@@ -514,7 +516,7 @@ function serverDetail(server) {
               <code>lazy</code> spawn on their first tool call) and stop when
               it quits. Activated servers add their <code>lsp_*</code> tools
               to the WorkBench tab only — benchmark runs never use them. Toggling
-              one updates <code>lsp_connectors/lsp_servers.json</code> and
+              one updates <code>.nojae/lsp-settings.json</code> and
               starts or stops it right away. Both gates must agree: the
               switch here and the entry's <code>enable</code> flag.
             </p>
@@ -531,8 +533,8 @@ function serverDetail(server) {
             <p v-if="state.lspLoading" class="caption">Loading language servers…</p>
             <p v-else-if="!state.lspServers.length" class="caption">
               No language servers declared in
-              <code>lsp_connectors/lsp_servers.json</code> (copy
-              <code>lsp_servers.example.json</code> to get started).
+              <code>.nojae/lsp-settings.json</code> (copy the seeded
+              <code>.nojae/lsp-settings.template.json</code> to get started).
             </p>
             <div v-for="server in state.lspServers" :key="server.id" class="mcp-panel">
               <div class="mcp-panel-header">

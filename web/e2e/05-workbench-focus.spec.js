@@ -422,18 +422,21 @@ test.describe('WorkBench focus layout: three states, one gutter', () => {
     const overflowY = () =>
       scroller.evaluate((el) => getComputedStyle(el).overflowY)
 
-    // Off is the default: the whole history is on screen, so the box scrolls.
+    // On is the default: the panel paints only what its box holds, so the box
+    // clips and no bar can appear — the reader cannot be taken off the bottom
+    // of the flow.
+    await expect(scroller).toHaveClass(/chat-tool-scroll--live/)
+    await expect.poll(overflowY).toBe('hidden')
+
+    // The first click is the one that gives the whole history back: unbounded,
+    // so the box scrolls again.
+    await pressControl(page, LIVE_CONTROL)
+    await expect(scroller).not.toHaveClass(/chat-tool-scroll--live/)
     await expect.poll(overflowY).toBe('auto')
 
     await pressControl(page, LIVE_CONTROL)
     await expect(scroller).toHaveClass(/chat-tool-scroll--live/)
-    // The mode is on and no bar can appear: the box clips, so the reader cannot
-    // be taken off the bottom of the flow.
     await expect.poll(overflowY).toBe('hidden')
-
-    await pressControl(page, LIVE_CONTROL)
-    await expect(scroller).not.toHaveClass(/chat-tool-scroll--live/)
-    await expect.poll(overflowY).toBe('auto')
   })
 
   // Both controls are real `<button type="button">`s (D9), which is what makes

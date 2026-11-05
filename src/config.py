@@ -43,6 +43,7 @@ SETTING_KEYS: Tuple[str, ...] = (
     "VERIFIER_AGENT_ENDPOINT",
     "MAX_TOOL_ITERATION",
     "LSP_ENABLED",
+    "BENCHMARKIT_PYTHON_ROOT",
 )
 
 # Names an operating system already owns, which a managed key may therefore
@@ -272,6 +273,29 @@ def path_location() -> str:
     return (os.environ.get(PATH_LOCATION_KEY) or "").strip() or default_path_location()
 
 
+# Values the app provides for ``${NAME}`` references in the hub declaration
+# files (see ``mcphub.validation.expand_env``). ``BENCHMARKIT_PATH_LOCATION``
+# does not belong here — it is process state carried in the environment, which
+# is exactly what lets a workspace switch move it. ``PROJECT_ROOT`` is
+# deliberately *not* exported into the environment either: the app computes
+# its own root, so the value is always right, and a generic name like
+# ``PROJECT_ROOT`` exported process-wide would collide with whatever a shell,
+# a CI runner or one of the connectors' own scripts calls its project root —
+# the ``TEMP`` lesson in ``_RESERVED_ENV_NAMES``, seen from the other side:
+# a name the world already uses cannot become an export of ours either. The
+# value therefore reaches expansion from this computation alone, and a stray
+# ``PROJECT_ROOT`` in the environment cannot redirect connectors away from
+# this install.
+def provided_env_values() -> Dict[str, str]:
+    """The app-computed ``${NAME}`` values for hub declaration expansion.
+
+    Read at call time through this module, so a patched ``PROJECT_ROOT`` (a
+    test does exactly that) moves the answer — same convention as every other
+    patchable name.
+    """
+    return {"PROJECT_ROOT": str(PROJECT_ROOT)}
+
+
 # Project agent instructions: when present at the root of the working
 # location, their text is appended to the Chat system prompt so a new
 # conversation starts already knowing the project's conventions.
@@ -476,14 +500,22 @@ def _render_env(values: Dict[str, str]) -> str:
         line("VERIFIER_AGENT_ENDPOINT"),
         "",
         "# MCP connectors (Chat tab only) are declared only in",
-        "# mcp_connectors/externals.json: their per-entry ``enable`` flag is",
-        "# the single source of truth, no .env key is involved.",
+        "# .nojae/mcp-settings.json at the working location: seeded from",
+        "# mcp_connectors/mcp-settings.default.json when a folder becomes the",
+        "# working location, their per-entry ``enable`` flag is the single",
+        "# source of truth, no .env key is involved.",
         "# LSP language servers (Chat tab only) — ids of the servers in",
-        "# lsp_connectors/lsp_servers.json to activate on top of their",
+        "# .nojae/lsp-settings.json to activate on top of their",
         "# per-entry ``enable`` flag (both must agree).",
         line("LSP_ENABLED"),
         "# Cap on the tool loop of one chat reply, MCP + LSP together.",
         line("MAX_TOOL_ITERATION"),
+        "",
+        "# Absolute path to the python interpreter the stdio connectors run",
+        "# on (the console and fedit commands in .nojae/mcp-settings.json",
+        "# expand ${BENCHMARKIT_PYTHON_ROOT} from it). Unset leaves their",
+        "# commands unresolved — the MCP panel names the key.",
+        line("BENCHMARKIT_PYTHON_ROOT"),
         "",
     ]
     return "\n".join(lines)
@@ -515,8 +547,8 @@ def lsp_enabled_ids() -> List[str]:
 
     Comma-separated, deduplicated, order-preserving; empty entries ignored.
     A server is only actually started when this list contains its id *and*
-    its ``enable`` flag is true in ``lsp_servers.json`` — the env key lets a
-    whole prepared config file stay dormant.
+    its ``enable`` flag is true in ``.nojae/lsp-settings.json`` — the env key
+    lets a whole prepared config file stay dormant.
     """
     ids: List[str] = []
     for part in os.environ.get("LSP_ENABLED", "").split(","):

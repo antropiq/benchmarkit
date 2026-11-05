@@ -130,11 +130,15 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   await setRoot(page, scratchAbs)
 
   // The acceptance for the reserved folder's seeding, on the real switch and the
-  // real disk: a brand-new workspace ends up with exactly the three files the
-  // app seeds there — the policy (pol-05), the agent-modes file (am-03) and the
-  // prompt-helpers file (mbl-02/mbl-03) — and nothing else.
+  // real disk: a brand-new workspace ends up with exactly the five files the
+  // app seeds there — the policy (pol-05), the agent-modes file (am-03), the
+  // prompt-helpers file (mbl-02/mbl-03), the MCP declaration (from the
+  // committed template) and the LSP *template* only (the declaration itself is
+  // hand-written, so it must not appear here) — and nothing else.
   expect(fs.readdirSync(path.join(scratchAbs, '.nojae')).sort()).toEqual([
     'agent-modes.json',
+    'lsp-settings.template.json',
+    'mcp-settings.json',
     'prompt-helpers.json',
     'read-write-policy.json',
   ])

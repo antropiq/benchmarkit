@@ -26,7 +26,7 @@ from src.core.mcphub import (
 )
 
 # ---------------------------------------------------------------------------
-# externals.json loading and write-back
+# mcp-settings.json loading and write-back
 # ---------------------------------------------------------------------------
 
 
@@ -38,11 +38,11 @@ def _write_externals(path: Path, doc: Any) -> Path:
 
 class TestLoadExternals:
     def test_missing_file_is_empty_and_silent(self, tmp_path):
-        assert load_externals(tmp_path / "externals.json") == ([], [])
+        assert load_externals(tmp_path / "mcp-settings.json") == ([], [])
 
     def test_parses_remote_and_local_entries(self, tmp_path):
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {
                 "context7": {
                     "type": "remote",
@@ -71,7 +71,7 @@ class TestLoadExternals:
 
     def test_string_command_is_split_and_args_appended(self, tmp_path):
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {"devtools": {"type": "local", "command": "npx -y 'chrome devtools'", "args": ["--stdio"]}},
         )
         connectors, errors = load_externals(path)
@@ -79,20 +79,20 @@ class TestLoadExternals:
         assert connectors[0]["command"] == ["npx", "-y", "chrome devtools", "--stdio"]
 
     def test_invalid_json_reports_and_yields_nothing(self, tmp_path):
-        path = tmp_path / "externals.json"
+        path = tmp_path / "mcp-settings.json"
         path.write_text("{oops", encoding="utf-8")
         connectors, errors = load_externals(path)
         assert connectors == [] and len(errors) == 1 and "JSON" in errors[0]
 
     def test_non_object_root_reports(self, tmp_path):
-        path = tmp_path / "externals.json"
+        path = tmp_path / "mcp-settings.json"
         path.write_text("[]", encoding="utf-8")
         _, errors = load_externals(path)
         assert "object" in errors[0]
 
     def test_bad_entries_skipped_with_notes(self, tmp_path):
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {
                 "no_type": {"enable": True},
                 "bad_remote": {"type": "remote", "url": "ftp://x"},
@@ -107,7 +107,7 @@ class TestLoadExternals:
 
     def test_valid_entries_survive_bad_neighbours(self, tmp_path):
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {
                 "oops": {"type": "sideways"},
                 "good": {"type": "remote", "url": "https://x/mcp", "description": "Docs."},
@@ -129,7 +129,7 @@ class TestLoadExternals:
         monkeypatch.setenv("VOLTA_BIN", "/home/vgr/.volta/bin")
         monkeypatch.setenv("WS_DIR", str(tmp_path / "a dir"))
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {
                 "remote": {
                     "type": "remote",
@@ -160,7 +160,7 @@ class TestLoadExternals:
         """Expansion runs before the http(s) check, so ``${VAR}`` may hold a URL."""
         monkeypatch.setenv("MCP_BASE_URL", "https://mcp.example.com")
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {"ctx": {"type": "remote", "url": "${MCP_BASE_URL}/mcp"}},
         )
         connectors, errors = load_externals(path)
@@ -171,7 +171,7 @@ class TestLoadExternals:
         """An unset name is left written verbatim plus one note, never blanked."""
         monkeypatch.delenv("NO_SUCH_CONNECTOR_KEY", raising=False)
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {"remote": {"type": "remote", "url": "https://x/mcp", "headers": {"K": "${NO_SUCH_CONNECTOR_KEY}"}}},
         )
         connectors, errors = load_externals(path)
@@ -185,7 +185,7 @@ class TestLoadExternals:
         """Toggling ``enable`` must not persist an expanded value into the file."""
         monkeypatch.setenv("CTX_KEY", "ctx7sk-real")
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {"a": {"type": "remote", "url": "https://a", "enable": False, "headers": {"K": "${CTX_KEY}"}}},
         )
         assert set_externals_enabled({"a": True}, path) == []
@@ -196,13 +196,13 @@ class TestLoadExternals:
 
 class TestSetExternalsEnabled:
     def test_missing_file_is_noop(self, tmp_path):
-        path = tmp_path / "externals.json"
+        path = tmp_path / "mcp-settings.json"
         assert set_externals_enabled({"a": True}, path) == []
         assert not path.exists()
 
     def test_flips_flags_and_preserves_everything_else(self, tmp_path):
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {
                 "a": {"type": "remote", "url": "https://a", "enable": False, "custom": "keep"},
                 "b": {"type": "local", "command": ["x"], "enable": True},
@@ -216,12 +216,12 @@ class TestSetExternalsEnabled:
         assert data["untouched"]["enable"] is True
 
     def test_unknown_id_is_not_added(self, tmp_path):
-        path = _write_externals(tmp_path / "externals.json", {})
+        path = _write_externals(tmp_path / "mcp-settings.json", {})
         set_externals_enabled({"ghost": True}, path)
         assert json.loads(path.read_text(encoding="utf-8")) == {}
 
     def test_broken_file_is_left_untouched(self, tmp_path):
-        path = tmp_path / "externals.json"
+        path = tmp_path / "mcp-settings.json"
         path.write_text("{oops", encoding="utf-8")
         errors = set_externals_enabled({"a": True}, path)
         assert errors and "Could not update" in errors[0]
@@ -486,7 +486,7 @@ class TestLocalReachRefusal:
     ):
         _unbounded_guardrails(monkeypatch, mcphub)
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {
                 "remote_live": {
                     "type": "remote",
@@ -524,7 +524,7 @@ class TestLocalReachRefusal:
         _unbounded_guardrails(monkeypatch, mcphub)
         monkeypatch.delenv("NOT_SET_ANYWHERE_MARKER", raising=False)
         path = _write_externals(
-            tmp_path / "externals.json",
+            tmp_path / "mcp-settings.json",
             {
                 "local_live": {
                     "type": "local",
@@ -545,7 +545,7 @@ class TestLocalReachRefusal:
         client, _ = mcp_client
         _unbounded_guardrails(monkeypatch, mcphub)
         _write_externals(
-            tmp_path / "mcp_connectors" / "externals.json",
+            tmp_path / "mcp_connectors" / "mcp-settings.json",
             {
                 "console": {
                     "type": "local",
@@ -680,7 +680,7 @@ class TestLocalReachRefusal:
     ):
         """With the seam forced, the hub's own test switch is not what keeps it quiet.
 
-        The lifespan normally loads ``externals.json`` only when
+        The lifespan normally loads ``mcp-settings.json`` only when
         ``BENCHMARKIT_DISABLE_MCP`` is unset, so clearing it here puts the test on
         the real boot path: the connector's command *is* a program that leaves a
         marker file behind, and the assertion is that the marker never appears.
@@ -693,7 +693,7 @@ class TestLocalReachRefusal:
         monkeypatch.delenv("BENCHMARKIT_DISABLE_MCP", raising=False)
         _unbounded_guardrails(monkeypatch, mcphub)
         _write_externals(
-            tmp_path / "mcp_connectors" / "externals.json",
+            tmp_path / "mcp_connectors" / "mcp-settings.json",
             {
                 "console": {
                     "type": "local",
@@ -794,12 +794,12 @@ def mcp_client(monkeypatch, tmp_path):
     monkeypatch.setenv("MAX_TOOL_ITERATION", "25")
     monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
     # Point the hub at a temp declaration file, so the developer's own
-    # mcp_connectors/externals.json stays untouched. No file is written: the
+    # mcp_connectors/mcp-settings.json stays untouched. No file is written: the
     # tests that need entries write one themselves.
     connectors_dir = tmp_path / "mcp_connectors"
     connectors_dir.mkdir()
     monkeypatch.setattr(mcphub.constants, "MCP_CONNECTORS_DIR", connectors_dir)
-    monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH", connectors_dir / "externals.json")
+    monkeypatch.setattr(mcphub.constants, "MCP_SETTINGS_PATH", connectors_dir / "mcp-settings.json")
     monkeypatch.setattr(
         routes,
         "load_endpoints_config",
@@ -867,7 +867,7 @@ class RecordingManager:
 class TestMcpEndpoints:
     def _externals_file(self, tmp_path, doc=None) -> Path:
         return _write_externals(
-            tmp_path / "mcp_connectors" / "externals.json",
+            tmp_path / "mcp_connectors" / "mcp-settings.json",
             EXTERNALS_DOC if doc is None else doc,
         )
 
@@ -884,7 +884,7 @@ class TestMcpEndpoints:
         self._externals_file(tmp_path)
         client, _ = mcp_client
         body = client.get("/api/mcp").json()
-        # Sorted by id, only what externals.json declares.
+        # Sorted by id, only what mcp-settings.json declares.
         assert [c["id"] for c in body["connectors"]] == ["chrome-devtools", "context7"]
         by_id = {c["id"]: c for c in body["connectors"]}
         remote = by_id["context7"]
@@ -973,7 +973,7 @@ class TestMcpEndpoints:
         assert not any(entry["enable"] for entry in data.values())
 
     def test_corrupt_file_surfaces_externals_error_and_survives_post(self, mcp_client, tmp_path):
-        path = tmp_path / "mcp_connectors" / "externals.json"
+        path = tmp_path / "mcp_connectors" / "mcp-settings.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{oops", encoding="utf-8")
         client, _ = mcp_client
@@ -1527,7 +1527,7 @@ class TestChatMcpWiring:
     ):
         client, app = mcp_client
         _write_externals(
-            tmp_path / "mcp_connectors" / "externals.json",
+            tmp_path / "mcp_connectors" / "mcp-settings.json",
             {
                 "context7": {
                     "type": "remote",

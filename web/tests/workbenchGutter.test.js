@@ -60,17 +60,17 @@ beforeEach(() => {
   window.localStorage.clear()
   hubs({ mcp: true, lsp: true })
   // The Live View is singleton state, so a case that switched it leaves it
-  // switched for the next one — the default off is what every other case below
-  // reads the control's name against. The streaming flag is reset the same way,
-  // so a case that armed it cannot leave the strip locked.
-  chat.liveView = false
+  // switched for the next one — the default on (live view) is what every other
+  // case below reads the control's name against. The streaming flag is reset
+  // the same way, so a case that armed it cannot leave the strip locked.
+  chat.liveView = true
   streamReply(false)
 })
 
 afterEach(() => {
   window.localStorage.clear()
   hubs({})
-  chat.liveView = false
+  chat.liveView = true
   streamReply(false)
 })
 
@@ -114,9 +114,10 @@ describe('the focus gutter', () => {
     expect(btns[0].attributes()['aria-label']).toBe('Show the reasoning only')
     expect(btns[1].attributes()['aria-label']).toBe('Hide the tool column')
     // The third control's name says what the click does, never what was taken
-    // out of the stream.
+    // out of the stream — and the live view is on at load, so the click is the
+    // one that gives the history back.
     expect(btns[2].attributes()['aria-label']).toBe(
-      'Keep only the reasoning on screen'
+      'Show the whole reasoning history'
     )
   })
 
@@ -188,8 +189,8 @@ describe('the focus gutter', () => {
 
     await liveBtn().trigger('click')
     // The click is answered and the flag never moves: the mode cannot be
-    // switched mid-flux.
-    expect(chat.liveView).toBe(false)
+    // switched mid-flux — and it is the load-time live view that stays put.
+    expect(chat.liveView).toBe(true)
 
     streamReply(false)
     await nextTick()
@@ -197,10 +198,10 @@ describe('the focus gutter', () => {
     expect(chatBusy()).toBe(false)
 
     await liveBtn().trigger('click')
-    expect(chat.liveView).toBe(true)
-    expect(liveBtn().attributes()['aria-pressed']).toBe('true')
+    expect(chat.liveView).toBe(false)
+    expect(liveBtn().attributes()['aria-pressed']).toBe('false')
     expect(liveBtn().attributes()['aria-label']).toBe(
-      'Show the whole reasoning history'
+      'Keep only the reasoning on screen'
     )
   })
 })
@@ -293,17 +294,17 @@ describe('the state classes on the shell', () => {
     // every case below for the wrong reason.
     expect(scrollers, 'the panel renders its scroller').toHaveLength(1)
 
-    // Off is the default: the whole history is on screen and it scrolls.
+    // On is the default: the panel holds only what its box can, so it clips.
     expect(scrollers[0].classes()).toContain('chat-tool-scroll')
-    expect(scrollers[0].classes()).not.toContain('chat-tool-scroll--live')
-
-    await buttons(w)[2].trigger('click')
-    expect(chat.liveView).toBe(true)
-    expect(w.find('.chat-tool-scroll').classes()).toContain('chat-tool-scroll--live')
+    expect(scrollers[0].classes()).toContain('chat-tool-scroll--live')
 
     await buttons(w)[2].trigger('click')
     expect(chat.liveView).toBe(false)
     expect(w.find('.chat-tool-scroll').classes()).not.toContain('chat-tool-scroll--live')
+
+    await buttons(w)[2].trigger('click')
+    expect(chat.liveView).toBe(true)
+    expect(w.find('.chat-tool-scroll').classes()).toContain('chat-tool-scroll--live')
   })
 })
 
@@ -368,10 +369,22 @@ describe('the glyph marks', () => {
   // `python tools/nerd_icons.py check`, run from tests/test_file_icons.py).
   it('keeps the Live View mark on the same generated face', async () => {
     const w = mount(WorkBenchView)
-    expect(marks(w)[2].text()).toBe('\uf06e')
+    expect(marks(w)[2].text()).toBe('\uf070')
 
     await buttons(w)[2].trigger('click')
-    expect(marks(w)[2].text()).toBe('\uf070')
+    expect(marks(w)[2].text()).toBe('\uf06e')
+  })
+
+  // The load-time default is the closed eye. `useChat`'s state is a singleton
+  // that every case above has switched, so the app's own starting value is read
+  // where it is declared — the shipped initial state, not what this process
+  // happens to hold by now.
+  it('loads with the live view on', () => {
+    const source = readFileSync(
+      join(resolve(), 'src', 'composables', 'useChat.js'),
+      'utf8',
+    )
+    expect(source).toMatch(/liveView:\s*true,/)
   })
 })
 // wf-04's sweep — what the two tasks that shipped this could not see while

@@ -1,0 +1,28 @@
+{
+  "console": {
+    "type": "local",
+    "enable": true,
+    "description": "Console command",
+    "command": [
+      "${BENCHMARKIT_PYTHON_ROOT}",
+      "${PROJECT_ROOT}/mcp_connectors/console_mcp.py",
+      "--root-dir",
+      "${BENCHMARKIT_PATH_LOCATION}",
+      "--transport",
+      "stdio"
+    ]
+  },
+  "fedit": {
+    "type": "local",
+    "enable": true,
+    "description": "File editor",
+    "command": [
+      "${BENCHMARKIT_PYTHON_ROOT}",
+      "${PROJECT_ROOT}/mcp_connectors/fedit_mcp.py",
+      "--root-dir",
+      "${BENCHMARKIT_PATH_LOCATION}",
+      "--transport",
+      "stdio"
+    ]
+  }
+}

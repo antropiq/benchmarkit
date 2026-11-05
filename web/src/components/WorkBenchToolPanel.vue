@@ -161,7 +161,7 @@ watch(busy, (streaming) => {
 })
 
 const capacity = computed(() => {
-  if (!liveEnabled.value) return Infinity // "complete history" is the default
+  if (!liveEnabled.value) return Infinity // off: the whole history, no window
   const rows = busy.value ? pinnedRows.value : windowRows.value
   return rows || Infinity
 })

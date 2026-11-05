@@ -610,10 +610,11 @@ class TestLoadLspServers:
         assert errors == ["lsp_servers.json: 'taken': id is reserved — skipped"]
 
     def test_all_servers_reads_the_local_declaration_file(self):
-        # lsp_servers.json is gitignored (per-machine, may hold env secrets),
-        # so this only runs where one is configured — like the real app.
-        if not lsp_constants.LSP_SERVERS_PATH.is_file():
-            pytest.skip("no local lsp_connectors/lsp_servers.json on this machine")
+        # .nojae/lsp-settings.json is gitignored (per-machine, may hold env
+        # secrets), so this only runs where one is configured — like the real
+        # app.
+        if not lsp_constants.lsp_settings_path().is_file():
+            pytest.skip("no local .nojae/lsp-settings.json at this working location")
         servers, errors = all_servers()
         assert errors == []
         assert servers
@@ -870,7 +871,8 @@ class TestLspLifecycle:
 
     @pytest.mark.anyio
     async def test_restart_rereads_the_declaration_file(self, hub, tmp_path):
-        # The whole point of hub restart: an edited lsp_servers.json (here, a
+        # The whole point of hub restart: an edited .nojae/lsp-settings.json
+        # (here, a
         # different workspaceRoot and a changed tool list) applies without
         # restarting the web app.
         first = _fake_server_entry(tmp_path, "fake")
@@ -2003,8 +2005,8 @@ class TestLocalReachRefusal:
         A ``stopped`` entry with ``enable: true`` is what a *lazy* server looks
         like before its first call, and the catalogue publishes that state from
         the declared tools — so a refused server has to be ``error`` the moment
-        ``lsp_servers.json`` is read, or its tools reach chat and its first call
-        spawns it.
+        ``.nojae/lsp-settings.json`` is read, or its tools reach chat and its
+        first call spawns it.
         """
         monkeypatch.setattr(
             lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
@@ -2073,7 +2075,8 @@ class TestLocalReachRefusal:
     def test_a_booting_app_does_not_spawn_a_refused_server(self, tmp_path, monkeypatch):
         """With the seam forced, ``BENCHMARKIT_DISABLE_LSP`` is not what keeps it quiet.
 
-        The lifespan loads ``lsp_servers.json`` only when that switch is unset, so
+        The lifespan loads ``.nojae/lsp-settings.json`` only when that switch is
+        unset, so
         clearing it puts the test on the real boot path, and the declared command
         *is* a program that leaves a marker file behind — the assertion is that
         the marker never appears. A refusal that reported the right status while
@@ -2099,12 +2102,12 @@ class TestLocalReachRefusal:
         workspace.mkdir()
         monkeypatch.setattr(lsp_constants, "LSP_CONNECTORS_DIR", servers_dir)
         monkeypatch.setattr(
-            lsp_constants, "LSP_SERVERS_PATH", servers_dir / "lsp_servers.json"
+            lsp_constants, "LSP_SETTINGS_PATH", servers_dir / "lsp-settings.json"
         )
         monkeypatch.setattr(
             lsp_constants, "LSP_RESTRICTED_PATHS", servers_dir / "restricted-paths.txt"
         )
-        (servers_dir / "lsp_servers.json").write_text(
+        (servers_dir / "lsp-settings.json").write_text(
             _servers_doc(
                 pyright=_entry(
                     [
@@ -2117,10 +2120,10 @@ class TestLocalReachRefusal:
             ),
             encoding="utf-8",
         )
-        # Keep the MCP hub off the developer's own externals.json, since this app
+        # Keep the MCP hub off the developer's own mcp-settings.json, since this app
         # boots without the LSP switch and the MCP one is left as conftest set it.
         monkeypatch.setattr(
-            mcphub.constants, "EXTERNALS_PATH", servers_dir / "externals.json"
+            mcphub.constants, "MCP_SETTINGS_PATH", servers_dir / "mcp-settings.json"
         )
         monkeypatch.setattr(
             routes,
@@ -2473,12 +2476,12 @@ def lsp_client(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
     # Point the hub at a temp declaration file (fake servers), so the real
-    # lsp_connectors/lsp_servers.json stays untouched.
+    # .nojae/lsp-settings.json stays untouched.
     servers_dir = tmp_path / "lsp_connectors"
     servers_dir.mkdir()
     workspace = tmp_path / "web"
     workspace.mkdir()
-    servers_path = servers_dir / "lsp_servers.json"
+    servers_path = servers_dir / "lsp-settings.json"
     servers_path.write_text(
         _servers_doc(
             pyright=_entry(
@@ -2496,12 +2499,12 @@ def lsp_client(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     monkeypatch.setattr(lsp_constants, "LSP_CONNECTORS_DIR", servers_dir)
-    monkeypatch.setattr(lsp_constants, "LSP_SERVERS_PATH", servers_path)
+    monkeypatch.setattr(lsp_constants, "LSP_SETTINGS_PATH", servers_path)
     monkeypatch.setattr(lsp_constants, "LSP_RESTRICTED_PATHS", servers_dir / "restricted-paths.txt")
-    # Keep the MCP hub off the developer's own externals.json: no connector is
+    # Keep the MCP hub off the developer's own mcp-settings.json: no connector is
     # declared in these tests unless they write that file themselves.
     monkeypatch.setattr(
-        mcphub.constants, "EXTERNALS_PATH", servers_dir / "externals.json"
+        mcphub.constants, "MCP_SETTINGS_PATH", servers_dir / "mcp-settings.json"
     )
     monkeypatch.setattr(
         routes,
@@ -2567,7 +2570,7 @@ class TestLspEndpoints:
         file_values = dotenv_values(config_module.ENV_PATH)
         assert file_values["LSP_ENABLED"] == "pyright"
         # enable flag written back for every declared server, both gates move.
-        data = json.loads(lsp_constants.LSP_SERVERS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(lsp_constants.LSP_SETTINGS_PATH.read_text(encoding="utf-8"))
         assert data["pyright"]["enable"] is True
         assert data["vue"]["enable"] is False
         assert data["pyright"]["env"] == {"SECRET": "do-not-leak"}  # keys kept
@@ -2579,7 +2582,7 @@ class TestLspEndpoints:
         assert response.status_code == 200
         assert "LSP_ENABLED" not in os.environ
         assert not [s for s in response.json()["servers"] if s["active"]]
-        data = json.loads(lsp_constants.LSP_SERVERS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(lsp_constants.LSP_SETTINGS_PATH.read_text(encoding="utf-8"))
         assert data["pyright"]["enable"] is False
 
     def test_post_unknown_server_returns_422(self, lsp_client):
@@ -2770,7 +2773,7 @@ class TestChatLspWiring:
         monkeypatch.setenv("LSP_ENABLED", "pyright")
         # The MCP connector comes from the declaration file, whose ``enable``
         # flag is the only activation source.
-        externals_path = mcphub.constants.EXTERNALS_PATH
+        externals_path = mcphub.constants.mcp_settings_path()
         externals_path.parent.mkdir(parents=True, exist_ok=True)
         externals_path.write_text(
             json.dumps({"console_mcp": {"type": "local", "enable": True, "command": ["x"]}}),

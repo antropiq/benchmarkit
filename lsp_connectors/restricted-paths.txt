@@ -1,9 +1,9 @@
-# Absolute workspace roots that lsp_servers.json may NOT point a language
-# server at. Same idea as mcp_connectors/restricted-fqdn.txt: one prefix per
-# line, '#' starts a comment. A declared workspaceRoot resolving to one of
-# these (or inside one) is rejected with a validation note instead of
-# loading — a language server indexing a secret tree would put its contents
-# in the model's context window.
+# Absolute workspace roots that .nojae/lsp-settings.json may NOT point a
+# language server at. Same idea as mcp_connectors/restricted-fqdn.txt: one
+# prefix per line, '#' starts a comment. A declared workspaceRoot resolving
+# to one of these (or inside one) is rejected with a validation note instead
+# of loading — a language server indexing a secret tree would put its
+# contents in the model's context window.
 #
 # THE FORMAT (target B, B-D1): one list, both platforms' path forms. A line may
 # reference an environment variable as ${NAME} (or ${NAME:-fallback}), expanded

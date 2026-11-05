@@ -14,7 +14,8 @@ Ajouter une fonctionnalité permettant de limiter la mémoire utilisée par le p
 
 - **Emplacement :** Dans la barre d'outils du panneau de raisonnement (WorkBench), sous les boutons existants (maximiser, réduire).
 - **Élément :** Un bouton (icône suggérée : "Focus", "Align Bottom" ou "Eye").
-- **État par défaut :** Inactif (Mode "Historique Complet" actif).
+- **État par défaut :** Actif (Mode "Live View" au chargement — le panneau borné
+  est le plus économe ; le clic rend le mode "Historique Complet").
 
 ### 3.2. Logique du Bouton
 

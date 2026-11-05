@@ -1,20 +1,24 @@
 """Shape validation of declarative connector entries.
 
 The validators below interpret the JSON shapes shared by
-``mcp_connectors/externals.json`` and ``lsp_connectors/lsp_servers.json``
-(a ``headers``/``env`` mapping of scalars, a kilo-style command), so the
+``.nojae/mcp-settings.json`` and ``.nojae/lsp-settings.json`` (a
+``headers``/``env`` mapping of scalars, a kilo-style command), so the
 two hubs import them from here rather than duplicating the rules.
 
 Environment references are expanded here as well (``expand_env``), by the
 two *discovery* modules right after parsing — that way a per-machine path
 or an API key can live in the environment instead of in these gitignored
-declarations, and the same file works on every checkout.
+declarations, and the same file works on every checkout. Names the app
+computes itself (``${PROJECT_ROOT}``) are answered by the expansion too,
+from ``config.provided_env_values`` rather than from the environment.
 """
 
 import os
 import re
 import shlex
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+from src.config import provided_env_values
 
 # ``${NAME}``, plus the shell's ``${NAME:-fallback}`` escape hatch. Only a
 # braced reference is special, so a bare ``$`` stays literal and npm version
@@ -25,19 +29,26 @@ ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 def expand_env(value: str) -> Tuple[str, List[str]]:
     """Substitute ``${NAME}`` / ``${NAME:-fallback}`` references in a string.
 
-    Reads :data:`os.environ`, which already carries the ``.env`` loaded at
-    startup (``config.load_dotenv_once``), so ``${HOME}`` and a project key
-    like ``${CONTEXT7_API_KEY}`` are equally available. Returns the expanded
-    text plus the names that resolved to nothing: an unresolved reference is
-    left written as-is rather than blanked out, so a typo stays visible in
-    the entry's validation note instead of quietly becoming an empty path or
-    an empty API key.
+    Two value sources, in order: the app's own computed values
+    (``config.provided_env_values`` — today ``${PROJECT_ROOT}``) answer first,
+    because the app knows its install root better than the environment and a
+    stray ``PROJECT_ROOT`` exported by a shell or CI must not redirect a
+    connector away from this checkout. Everything else reads
+    :data:`os.environ`, which already carries the ``.env`` loaded at startup
+    (``config.load_dotenv_once``) and refreshed on every settings save — so
+    ``${HOME}``, a managed key like ``${BENCHMARKIT_PYTHON_ROOT}`` and a
+    project key like ``${CONTEXT7_API_KEY}`` are equally available. Returns
+    the expanded text plus the names that resolved to nothing: an unresolved
+    reference is left written as-is rather than blanked out, so a typo stays
+    visible in the entry's validation note instead of quietly becoming an
+    empty path or an empty API key.
     """
     missing: List[str] = []
+    app_values = provided_env_values()
 
     def replace(match: "re.Match[str]") -> str:
         name, fallback = match.group(1), match.group(2)
-        found = os.environ.get(name)
+        found = app_values.get(name) or os.environ.get(name)
         if found is not None:
             return found
         if fallback is not None:

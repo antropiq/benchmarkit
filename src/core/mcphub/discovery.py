@@ -1,12 +1,13 @@
-"""Discovery and validation of the declared external connectors.
+"""Discovery and validation of the workspace's declared connectors.
 
-Reads ``mcp_connectors/externals.json`` (kilo.json-style ``remote``/``local``
-entries) into the dicts the rest of the package consumes — that file is the
-one and only source of connectors. The path is looked up through
-``mcphub.constants`` *inside* each function call, so redirecting the hub at
-another connector folder is one attribute patch, not an import dance. The
-heavy ``mcp`` package is only checked for, never imported here, so discovery
-keeps working without the optional ``[mcp]`` extra.
+Reads ``<working location>/.nojae/mcp-settings.json`` (kilo.json-style
+``remote``/``local`` entries) into the dicts the rest of the package
+consumes — that file is the one and only source of connectors. The path is
+looked up through ``mcphub.constants.mcp_settings_path()`` *inside* each
+function call, so a switched working location moves the read and a patched
+pin redirects it — one attribute, not an import dance. The heavy ``mcp``
+package is only checked for, never imported here, so discovery keeps working
+without the optional ``[mcp]`` extra.
 """
 
 import importlib.util
@@ -55,7 +56,7 @@ def mcp_reach_is_refused() -> bool:
 def load_externals(
     path: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Read ``mcp_connectors/externals.json`` into connector dicts.
+    """Read the workspace's ``.nojae/mcp-settings.json`` into connector dicts.
 
     A missing file yields ``([], [])``. Unreadable/invalid JSON yields one
     file-level error and no connectors. A single malformed entry is skipped
@@ -69,7 +70,7 @@ def load_externals(
     an unset name is still loaded, with a note saying so (see
     :func:`~mcphub.validation.expand_env`).
     """
-    root = path or constants.EXTERNALS_PATH
+    root = path or constants.mcp_settings_path()
     connectors: List[Dict[str, Any]] = []
     errors: List[str] = []
     if not root.is_file():
@@ -172,14 +173,14 @@ def load_externals(
 def set_externals_enabled(
     enabled: Dict[str, bool], path: Optional[Path] = None
 ) -> List[str]:
-    """Write ``enable`` flags back to ``externals.json``, keeping everything else.
+    """Write ``enable`` flags back to the workspace's declaration file, keeping everything else.
 
     Only entries already present in the file are touched; other keys, entry
     order, and unknown ids are preserved. A missing file is a no-op. A file
     that cannot be parsed is left untouched (never rebuilt from partial
     knowledge) and reported back as an error list.
     """
-    root = path or constants.EXTERNALS_PATH
+    root = path or constants.mcp_settings_path()
     if not root.is_file():
         return []
     try:

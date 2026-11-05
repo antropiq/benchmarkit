@@ -1,27 +1,78 @@
 """Static configuration of the LSP hub: paths, timeouts, wire constants.
 
-The gitignored declaration file and the workspace deny-list live here as
-*module attributes* on purpose: the code that reads them resolves them
-through this module, so pointing the whole hub at another
-``lsp_servers.json`` (the tests do exactly this) is one patch of
-``lsphub.constants.LSP_SERVERS_PATH`` instead of a hunt for every importer.
+The workspace's declaration file and the deny-list live here as *module
+attributes* on purpose (same idea as ``mcphub.constants``): the code that
+reads them resolves them through this module at call time, so pointing the
+hub at another declaration file (the tests do exactly this) is one patch of
+``lsphub.constants.LSP_SETTINGS_PATH`` instead of a hunt for every importer.
+
+The declaration itself lives in the workspace — like the MCP one, it
+describes *this* folder's servers, so ``lsp_settings_path()`` is built per
+call out of the active working location. The install-level example beside
+the deny-list (``lsp_connectors/lsp_servers.example.json``) is not read as a
+declaration any more: it is the committed source of the template the seed
+copies when a folder becomes the working location.
 """
 
 from pathlib import Path
+from typing import Optional
 
 # The one reach-capability seam, re-exported through *this* module so both hubs
 # answer the question with the same function and a test forces it the same way
 # it redirects any other hub constant (win-07 / A-D4).
 from src.core.mcphub.process import guardrails_speak_here  # noqa: F401 — hub attr
 
+# The reserved folder's name comes from ``mcphub.constants`` (which takes it
+# from ``mcp_connectors/policy_shared``): two constants for one folder name
+# is how the folder stops being one folder.
+from src.core.mcphub.constants import POLICY_DIRNAME
+from src.config import path_location
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LSP_CONNECTORS_DIR = PROJECT_ROOT / "lsp_connectors"
 LSP_LOGS_DIR = PROJECT_ROOT / "logs" / "lsp"
 
-# Declarative language servers, keyed by id (mirrors externals.json). The
-# file may carry secrets in ``env`` and is therefore gitignored; its ``env``
-# values are never returned by the API.
-LSP_SERVERS_PATH = LSP_CONNECTORS_DIR / "lsp_servers.json"
+# The workspace's language-server declaration, keyed by id, inside the
+# reserved folder at the working location: the one and only source of
+# language servers. The file may carry secrets in ``env`` and is therefore
+# gitignored (via ``.nojae/``); its ``env`` values are never returned by the
+# API. The ``enable`` toggles write back into it — the folder's "edited only
+# outside the app" rule bends for it the way it does for the MCP declaration
+# and the prompt-helper store.
+LSP_SETTINGS_FILENAME = "lsp-settings.json"
+
+# The template the seed leaves in the reserved folder when a folder becomes
+# the working location. Unlike MCP there is **no seeded declaration**: a
+# server's ``workspaceRoot`` and interpreter paths are per-machine, so the
+# app hands out this template and the operator writes the declaration from
+# it by hand. The hub never reads the template.
+LSP_SETTINGS_TEMPLATE_FILENAME = "lsp-settings.template.json"
+
+# The committed install-level example, copied byte for byte into the seeded
+# template. Its ``${NAME}`` references resolve on every read
+# (``mcphub.validation.expand_env``), which is what keeps one file correct
+# on every machine and across every workspace switch.
+LSP_SETTINGS_TEMPLATE = LSP_CONNECTORS_DIR / "lsp_servers.example.json"
+
+# **A pin, not the default.** When not ``None`` it wins over the computed
+# path below — the ``mcphub.constants.MCP_SETTINGS_PATH`` precedent: one
+# patchable override keeps the tests' one-attribute redirect without
+# re-introducing an import-time constant. Left at ``None``, the workspace's
+# own file answers.
+LSP_SETTINGS_PATH: Optional[Path] = None
+
+
+def lsp_settings_path() -> Path:
+    """The active workspace's ``.nojae/lsp-settings.json`` (may not exist).
+
+    Built per call out of module attributes, so the pin above, a patched
+    filename, or a switched working location each move the lookup the same
+    way. A read of an absent file is ``([], [])`` — an undeclared workspace
+    simply has no language servers until its declaration is written.
+    """
+    if LSP_SETTINGS_PATH is not None:
+        return LSP_SETTINGS_PATH
+    return Path(path_location()) / POLICY_DIRNAME / LSP_SETTINGS_FILENAME
 
 # Deny-list of workspace roots a server may not be pointed at (same idea as
 # mcp_connectors/restricted-fqdn.txt). One absolute prefix per line.

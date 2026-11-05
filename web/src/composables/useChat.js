@@ -25,11 +25,13 @@ const state = reactive({
   // Covers the whole request — waiting, thinking and every MCP/LSP tool
   // round — and is cleared when the reply ends, is stopped or errors out.
   session: { startedAt: 0 },
-  // The reasoning panel's Live View (toggled in WorkBenchFocusGutter.vue): off
-  // keeps the whole thinking history on screen, which is the default; on lets
-  // the panel paint only what its box can hold. Panel render state only — the
-  // flows stay in `block.text`, so a save or a copy never loses bytes.
-  liveView: false,
+  // The reasoning panel's Live View (toggled in WorkBenchFocusGutter.vue): on
+  // lets the panel paint only what its box can hold, which is the default —
+  // the bounded panel is the cheap one, and the whole history is what the
+  // click gives back; off keeps every line of the thinking on screen. Panel
+  // render state only — the flows stay in `block.text`, so a save or a copy
+  // never loses bytes.
+  liveView: true,
   // A pause request is armed but its `pause_ack` has not landed yet: the ⏸
   // button blinks and is disabled, and the composer stays shut (the ack is
   // what reopens it). Cleared by the ack, by finish(), and by reset().
@@ -279,7 +281,8 @@ function setChatLsp(id, on) {
 }
 
 // Restart a hub: tear every session down and rebuild it from a fresh scan of
-// its declaration file, so a hand-edited ``externals.json``/``lsp_servers.json``
+// its declaration file, so a hand-edited
+// ``.nojae/mcp-settings.json``/``.nojae/lsp-settings.json``
 // (new entry, changed command, another ``workspaceRoot``) takes effect without
 // restarting the web app. Awaited by the server, so on return the statuses in
 // the refreshed snapshot are real. Errors never throw: they land in

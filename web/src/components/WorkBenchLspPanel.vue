@@ -48,17 +48,18 @@ function rowTitle(server) {
   return `Use ${server.label} tools in this conversation`
 }
 
-// Restarting respawns every language server from a fresh lsp_servers.json
-// scan, so a hub thread blocked in a chat tool call would be killed
-// mid-call: the button is only usable on an idle conversation, and stays
-// busy until the awaited server-side restart comes back.
+// Restarting respawns every language server from a fresh
+// .nojae/lsp-settings.json scan, so a hub thread blocked in a chat tool
+// call would be killed mid-call: the button is only usable on an idle
+// conversation, and stays busy until the awaited server-side restart comes
+// back.
 const canRestart = computed(
   () => state.phase === 'idle' && !state.lsp.restarting && !batch.active,
 )
 const restartTitle = computed(() => {
   if (batch.active) return 'Unavailable while a batch runs'
   if (state.lsp.restarting) return 'Restarting language servers…'
-  return 'Restart the LSP hub: respawn every server from lsp_servers.json'
+  return 'Restart the LSP hub: respawn every server from .nojae/lsp-settings.json'
 })
 </script>
 

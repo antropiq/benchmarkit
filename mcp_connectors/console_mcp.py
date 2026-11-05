@@ -510,7 +510,12 @@ def operator_run(token: str) -> Optional[list[str]]:
     ``'\n\n&&'`` becomes ``['\n', '\n', '&&']``. A token holding anything else
     (a redirection like ``>&``, or a plain argument) is not a run.
     """
-    if not token or any(char not in _SEPARATOR_CHARS for char in token):
+    # Leading-char reject first: almost every token starts with an ordinary
+    # argument character, and that answer costs one set lookup instead of a
+    # per-character scan.
+    if not token or token[0] not in _SEPARATOR_CHARS:
+        return None
+    if any(char not in _SEPARATOR_CHARS for char in token):
         return None
     parts: list[str] = []
     position = 0
@@ -602,6 +607,15 @@ def shell_tokens(command: str) -> list[str]:
         raise ShellSyntaxError(str(exc)) from exc
 
 
+# The only characters :func:`unquote` has anything to do with. A token holding
+# none of them is its own unquoted form in *both* modes: an unquoted token
+# carries no whitespace (the lexer split on it), ``shlex.split`` runs with
+# comments off, and the literal mode strips quotes only -- so the word to exec
+# is the token as it stands, which is the answer for the overwhelming majority
+# of tokens without paying a shlex round-trip per argument.
+_UNQUOTE_SIGNS: frozenset[str] = frozenset("\"'\\")
+
+
 def unquote(token: str, literal_backslash: bool = False) -> str:
     """Strip the quoting a token carries, so ``argv`` holds the word to exec.
 
@@ -617,6 +631,8 @@ def unquote(token: str, literal_backslash: bool = False) -> str:
     backslashes survive for the tool that accepts them. The default ``False``
     keeps the Linux verdicts exact (roadmap §9 rule 2).
     """
+    if not any(char in token for char in _UNQUOTE_SIGNS):
+        return token
     if literal_backslash:
         return unquote_literal(token)
     if len(token) > 1 and token.startswith("'") and not token.endswith("'"):
@@ -836,10 +852,10 @@ def looks_like_path(token: str) -> bool:
     return True
 
 
-def _trusted_prefix_hit(path: Path) -> Optional[str]:
+def _trusted_prefix_hit(path: Path, *, fold: bool) -> Optional[str]:
     """The scratch prefix (``/tmp`` …) ``path`` stays inside, or None."""
     return path_policy.prefix_hit(
-        path.as_posix(), path_policy.ALLOW_PREFIXES, fold=path_model_fold()
+        path.as_posix(), path_policy.ALLOW_PREFIXES, fold=fold
     )
 
 
@@ -952,7 +968,9 @@ def write_target_tokens(base_command: str, path_tokens: list[str]) -> frozenset[
 
 
 def protected_path_error(
-    token: str, base: Optional[Path] = None
+    token: str,
+    base: Optional[Path] = None,
+    real: Optional[Path] = None,
 ) -> Optional[str]:
     """Refuse a path token that names a credential store (C-6).
 
@@ -981,13 +999,19 @@ def protected_path_error(
     ``base`` is the directory the command will run in -- the tool's ``cwd``
     argument -- because that is where a relative token lands: judging ``x``
     against the root when the command runs in ``<root>/vendor`` would ask about
-    a file the command never touches.
+    a file the command never touches. ``real`` is that target when the caller
+    has already resolved it (:func:`statement_policy_error` resolves each token
+    once and reuses the answer everywhere); resolving is the one disk-touching
+    step here, so it is never asked twice for one token.
     """
     as_written = absolute_as_written(token, base)
-    real = resolve_as_path(token, base)
+    if real is None:
+        real = resolve_as_path(token, base)
+    fold = path_model_fold()
 
-    inside_root = is_within_root(token, base)
-    if inside_root and (real == as_written or _within_root_or_none(real)):
+    # The root carve-out asks the resolved path: "the token resolves inside
+    # ROOT_DIR" and "its real target is inside ROOT_DIR" are one question.
+    if _within_root_or_none(real):
         return None
 
     def refusal_from(ask) -> Optional[str]:
@@ -1005,20 +1029,20 @@ def protected_path_error(
     # Identity first: what the path *is* outranks where it sits (B-D2).
     refusal = refusal_from(
         lambda candidate: path_policy.name_component_deny_reason(
-            candidate, for_write=False, fold=path_model_fold()
+            candidate, for_write=False, fold=fold
         )
     )
     if refusal:
         return refusal
 
-    if _trusted_prefix_hit(as_written) and _trusted_prefix_hit(real):
+    if _trusted_prefix_hit(as_written, fold=fold) and _trusted_prefix_hit(real, fold=fold):
         return None
 
     # Location second: the protected prefixes, with the scratch allowance
     # already weighed against them.
     return refusal_from(
         lambda candidate: path_policy.prefix_deny_reason(
-            candidate, for_write=False, fold=path_model_fold()
+            candidate, for_write=False, fold=fold
         )
     )
 
@@ -1207,11 +1231,18 @@ def statement_policy_error(
                     r"(C:\dir\name) or leave it workspace-relative."
                 )
 
+    # Every question below asks about the *resolved* token, and resolving is
+    # the only disk-touching step a verdict pays per token -- so each token is
+    # resolved once here and the answer is handed to all three checks (and
+    # reused by the root bypass at the end), never asked of the filesystem
+    # twice for one word of one command.
+    real_of = {token: resolve_as_path(token, base) for token in path_tokens}
+
     # Credential stores are off-limits whatever the rest of the policy decided
     # (C-6): the lists below answer "may this command run", never "is this
     # target allowed", so an allow-listed `cat` used to reach ~/.ssh.
     for token in path_tokens:
-        protected = protected_path_error(token, base)
+        protected = protected_path_error(token, base, real=real_of[token])
         if protected:
             return protected
 
@@ -1232,7 +1263,7 @@ def statement_policy_error(
     write_tokens = write_target_tokens(base_command, path_tokens)
     for token in path_tokens:
         refusal = workspace_policy_error(
-            resolve_as_path(token, base), for_write=token in write_tokens
+            real_of[token], for_write=token in write_tokens
         )
         if refusal:
             return refusal
@@ -1243,7 +1274,7 @@ def statement_policy_error(
     # resolves under that directory, and "does this reach outside the root" has
     # to be asked about the file the child will touch.
     if ROOT_DIR is not None and path_tokens and all(
-        is_within_root(t, base) for t in path_tokens
+        _within_root_or_none(real_of[t]) for t in path_tokens
     ):
         return _resolver_refusal(base_command)
 
@@ -1321,6 +1352,63 @@ def resolve_work_dir(
     return (candidate, None)
 
 
+def _validated_statements(
+    command: str,
+    work_dir: Optional[Path] = None,
+    literal_backslash: Optional[bool] = None,
+) -> Tuple[Optional[list[ShellStatement]], str]:
+    """``(statements, "")`` when the command may run, ``(None, refusal)`` when not.
+
+    One parse, judged and handed back: :func:`execute_command` execs the argv
+    this function returned, so what runs and what was checked are the same
+    words by construction rather than by re-parsing the string and hoping the
+    two reads agree.
+    """
+    if not command or not command.strip():
+        return None, "Command cannot be empty"
+
+    literal = path_model_backslash(literal_backslash)
+    try:
+        statements = parse_shell_statements(command, literal)
+    except ShellSyntaxError as exc:
+        return None, f"Invalid command format: {exc}"
+
+    total = len(statements)
+
+    # A statement with no command word (`2>&1` on its own) has nothing to run;
+    # refusing it beats indexing an empty argv.
+    for index, statement in enumerate(statements, start=1):
+        if not statement.argv:
+            return None, (
+                "Command has no program to run" + statement_position(index, total)
+            )
+
+    # Blocked commands first, on every statement (C-2): the security part of
+    # the policy is reported even when the command will be refused anyway.
+    for index, statement in enumerate(statements, start=1):
+        if not statement.argv:
+            continue
+        base_command = statement.argv[0]
+        if base_command in ALWAYS_BLOCKED_COMMANDS:
+            if base_command in SHELL_COMMANDS:
+                refusal = f"Command '{base_command}' {NO_SHELL_SENTENCE}"
+            else:
+                refusal = f"Command '{base_command}' is blocked for security reasons"
+            return None, refusal + statement_position(index, total)
+
+    # Then the structure the connector cannot honour.
+    structure_error = shell_feature_error(statements)
+    if structure_error:
+        return None, structure_error
+
+    for index, statement in enumerate(statements, start=1):
+        error = statement_policy_error(statement, work_dir)
+        if error:
+            return None, error + statement_position(index, total)
+
+    return statements, ""
+
+
 def validate_command(
     command: str,
     work_dir: Optional[Path] = None,
@@ -1351,49 +1439,8 @@ def validate_command(
     Returns:
         Tuple of (is_valid, error_message)
     """
-    if not command or not command.strip():
-        return False, "Command cannot be empty"
-
-    literal = path_model_backslash(literal_backslash)
-    try:
-        statements = parse_shell_statements(command, literal)
-    except ShellSyntaxError as exc:
-        return False, f"Invalid command format: {exc}"
-
-    total = len(statements)
-
-    # A statement with no command word (`2>&1` on its own) has nothing to run;
-    # refusing it beats indexing an empty argv.
-    for index, statement in enumerate(statements, start=1):
-        if not statement.argv:
-            return False, (
-                "Command has no program to run" + statement_position(index, total)
-            )
-
-    # Blocked commands first, on every statement (C-2): the security part of
-    # the policy is reported even when the command will be refused anyway.
-    for index, statement in enumerate(statements, start=1):
-        if not statement.argv:
-            continue
-        base_command = statement.argv[0]
-        if base_command in ALWAYS_BLOCKED_COMMANDS:
-            if base_command in SHELL_COMMANDS:
-                refusal = f"Command '{base_command}' {NO_SHELL_SENTENCE}"
-            else:
-                refusal = f"Command '{base_command}' is blocked for security reasons"
-            return False, refusal + statement_position(index, total)
-
-    # Then the structure the connector cannot honour.
-    structure_error = shell_feature_error(statements)
-    if structure_error:
-        return False, structure_error
-
-    for index, statement in enumerate(statements, start=1):
-        error = statement_policy_error(statement, work_dir)
-        if error:
-            return False, error + statement_position(index, total)
-
-    return True, ""
+    statements, error = _validated_statements(command, work_dir, literal_backslash)
+    return (statements is not None, error)
 
 
 @server.tool()
@@ -1445,20 +1492,17 @@ def execute_command(
     # anchored those arguments at the server root would judge one file and
     # execute another -- `execute_command("touch x", cwd="vendor")` writes
     # <root>/vendor/x, and an ``ro`` rule on ``vendor`` has to see that.
-    is_valid, error_msg = validate_command(command, work_dir_path)
-    if not is_valid:
-        return f"Error: {error_msg}"
+    statements, validation_error = _validated_statements(command, work_dir_path)
+    if statements is None:
+        return f"Error: {validation_error}"
 
-    # What runs is the argv that was just validated, not the string handed to a
-    # shell: `shell=True` re-interpreted the same text with a richer language
-    # than the checker understood, so a newline started a second statement no
-    # policy ever looked at and `$( )` ran inside the in-root bypass (C-3, C-4).
-    # Validation above already refused every multi-statement command, so there
-    # is exactly one statement here.
-    try:
-        statements = parse_shell_statements(command, path_model_backslash())
-    except ShellSyntaxError as exc:
-        return f"Error: Invalid command format: {exc}"
+    # What runs is the argv that was just validated -- the very list the policy
+    # returned, not a second reading of the string: `shell=True` re-interpreted
+    # the same text with a richer language than the checker understood, so a
+    # newline started a second statement no policy ever looked at and `$( )`
+    # ran inside the in-root bypass (C-3, C-4). Validation above already
+    # refused every multi-statement command, so there is exactly one statement
+    # here.
     argv = statements[0].argv
 
     # The gbash toolset execs the program the resolver found (G-D4): the search

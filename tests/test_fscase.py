@@ -280,14 +280,14 @@ class TestTheSwitchForgetsIt:
             def status(self) -> List[Dict[str, object]]:
                 return []
 
-        monkeypatch.setattr(mcphub.constants, "EXTERNALS_PATH",
-                            location / "externals.json")
+        monkeypatch.setattr(mcphub.constants, "MCP_SETTINGS_PATH",
+                            location / "mcp-settings.json")
         servers_dir = location / "lsp_connectors"
         servers_dir.mkdir()
         (servers_dir / "restricted-paths.txt").write_text("/etc\n", encoding="utf-8")
         monkeypatch.setattr(lsphub.constants, "LSP_CONNECTORS_DIR", servers_dir)
         monkeypatch.setattr(
-            lsphub.constants, "LSP_SERVERS_PATH", servers_dir / "lsp_servers.json"
+            lsphub.constants, "LSP_SETTINGS_PATH", servers_dir / "lsp-settings.json"
         )
         monkeypatch.setattr(
             lsphub.constants, "LSP_RESTRICTED_PATHS",

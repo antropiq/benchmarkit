@@ -97,7 +97,7 @@ class McpManager:
     async def start_all(self) -> None:
         """Connect a client to every enabled connector. Never raises.
 
-        Disabled entries (``enable: false`` in ``externals.json``) stay
+        Disabled entries (``enable: false`` in ``.nojae/mcp-settings.json``) stay
         ``stopped`` until :meth:`start_connector`.
         """
         if self._started or self._stopped:
@@ -392,7 +392,7 @@ class McpManager:
         hub thread is created and *this same object* keeps serving the chat
         worker threads that already hold a reference to it, so a restart never
         invalidates an in-flight conversation. ``connectors`` is the freshly
-        validated ``externals.json`` scan, so a hand-edited declaration (a new
+        validated ``.nojae/mcp-settings.json`` scan, so a hand-edited declaration (a new
         connector, a changed command, a different ``cwd``) is picked up without
         restarting the web app.
 

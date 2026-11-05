@@ -356,6 +356,65 @@ def test_a_missing_parent_directory_says_so(tmp_path):
     assert "mkdir" in out, out
 
 
+# --- creating a file that is not there (fedit-issues F-14) ------------------
+
+
+def test_a_missing_file_is_created_by_both_edit_shapes(tmp_path):
+    """Both shapes that quote nothing to replace create the file, and a created
+    file is not warned about (a hunk with no old content has nothing to match
+    on, so _locate clamping its declared line is not a hunk that moved)."""
+    first = tmp_path / "by-search.txt"
+    out = f.apply_edit(str(first),
+                       "<<<<<<< SEARCH\n=======\nhello\nworld\n>>>>>>> REPLACE")
+    assert out.startswith("Applied"), out
+    assert "Warnings" not in out, out
+    assert first.read_text(encoding="utf-8") == "hello\nworld\n"
+
+    second = tmp_path / "by-diff.txt"
+    out = f.apply_edit(str(second),
+                       "--- a/by-diff.txt\n+++ b/by-diff.txt\n@@ -0,0 +1,2 @@\n"
+                       "+one\n+two\n", format="diff")
+    assert out.startswith("Applied"), out
+    assert "Warnings" not in out, out
+    assert second.read_text(encoding="utf-8") == "one\ntwo\n"
+
+
+def test_creating_a_file_leaves_nothing_to_revert(tmp_path):
+    """There were no bytes to preserve, so a creation must not claim a backup
+    revert_edit could restore."""
+    target = tmp_path / "brand-new.txt"
+    out = f.apply_edit(str(target), "<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE")
+    assert "Backup" not in out, out
+    assert "No backup" in f.list_edits(str(target)), out
+
+
+def test_an_edit_quoting_content_of_a_missing_file_offers_the_creation_shape(tmp_path):
+    """The typical failed attempt: the model sends a SEARCH holding the lines it
+    imagines replacing. 'Re-read the file and copy those lines verbatim' is then
+    a loop -- read_file answers File not found -- so the refusal has to name the
+    shape that does create the file. An existing file keeps the old advice."""
+    missing = tmp_path / "absent.txt"
+    refused = f.apply_edit(str(missing),
+                           "<<<<<<< SEARCH\nold content\n=======\nnew\n>>>>>>> REPLACE")
+    assert "does not exist yet" in refused, refused
+    assert "empty SEARCH" in refused, refused
+    assert not missing.exists()
+
+    refused = f.apply_edit(str(tmp_path / "absent-diff.txt"),
+                           "--- a/absent-diff.txt\n+++ b/absent-diff.txt\n"
+                           "@@ -1,3 +1,3 @@\n context\n-old\n+new\n context2\n",
+                           format="diff")
+    assert "does not exist yet" in refused, refused
+    assert "only adds lines" in refused, refused
+
+    present = tmp_path / "present.txt"
+    present.write_text("hello\n", encoding="utf-8")
+    refused = f.apply_edit(str(present),
+                           "<<<<<<< SEARCH\nnope\n=======\nx\n>>>>>>> REPLACE")
+    assert "does not exist yet" not in refused, refused
+    assert "re-read the file" in refused, refused
+
+
 def test_fuzz_is_clamped_to_the_documented_range(tmp_path):
     """F-7: an unclamped fuzz lets a hunk trim its whole context away, which
     turns 'reposition a little' into 'match anywhere' -- how an edit lands in
@@ -541,7 +600,7 @@ def ws(tmp_path, monkeypatch):
 
     The connector resolves paths against ``ROOT_DIR`` and asks the workspace
     policy through it, so the root *is* the workspace here exactly as
-    ``externals.json`` configures it (``--root-dir ${BENCHMARKIT_PATH_LOCATION}``).
+    ``mcp-settings.json`` configures it (``--root-dir ${BENCHMARKIT_PATH_LOCATION}``).
     The cache in the connector process is keyed on that root, so it is cleared on
     both sides of every test -- otherwise one test's parsed rules answer the next
     test's paths (the same reason pol-04's app-side cache carries the root).
