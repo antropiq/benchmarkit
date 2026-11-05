@@ -1,11 +1,6 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import ApiKeyField from './ApiKeyField.vue'
-import {
-  describeAgentModes,
-  describePolicy,
-  describePromptHelpers,
-} from '../lib/path-location-policy'
 import { useBenchmark } from '../composables/useBenchmark'
 
 const {
@@ -18,14 +13,12 @@ const {
   saveMcp,
   toggleLsp,
   saveLsp,
-  setPathLocation,
 } = useBenchmark()
 
 const dialogEl = ref(null)
-const activeSection = ref('working-dir')
+const activeSection = ref('llm')
 
 const SECTIONS = [
-  { id: 'working-dir', label: 'Working directory' },
   { id: 'llm', label: 'LLM' },
   { id: 'question-set', label: 'Question set' },
   { id: 'sampling', label: 'Sampling params' },
@@ -33,51 +26,6 @@ const SECTIONS = [
   { id: 'mcp', label: 'MCP' },
   { id: 'lsp', label: 'LSP' },
 ]
-
-// The Set button only makes sense while the field disagrees with what the
-// server has applied — comparing against ``pathLocationCurrent`` (the value
-// returned by GET/POST /api/path-location) rather than a snapshot taken here
-// means a canonicalised path (server realpath) does not leave the button
-// spuriously enabled.
-const pathLocationChanged = computed(
-  () => (state.pathLocation || '').trim() !== state.pathLocationCurrent,
-)
-
-// The policy line that is *not* a warning: what the file is, in the app's own
-// words (``lib/path-location-policy``). The warning half of that block lives in
-// ``state.pathLocationPolicyNote`` and is rendered above this one, so the two
-// never say the same thing twice.
-const policySentence = computed(
-  () => describePolicy(state.pathLocationPolicy)?.text ?? '',
-)
-
-// The same pair for the agent-modes file am-03 seeds in the same reserved
-// folder: a caption for what the file is, a warn line when the seed failed.
-const agentModesSentence = computed(
-  () => describeAgentModes(state.pathLocationAgentModes)?.text ?? '',
-)
-
-// The same pair for the prompt-helper file mbl-02 seeds in that folder: a
-// caption for what the file is, a warn line when the seed failed or when the
-// one-time lift of the older app-level file could not happen.
-const promptHelpersSentence = computed(
-  () => describePromptHelpers(state.pathLocationPromptHelpers)?.text ?? '',
-)
-
-// One warning line per switch, not one per file: the reserved-folder seeds
-// (pol-05's policy, am-03's modes, mbl-02's helpers) fail independently, but
-// they are the outcome of the *same* action, so the dialog joins whatever
-// failed into a single status paragraph. A helpers-only failure still reads as
-// "the location is set, one file did not land" — never as a red switch.
-const seedFailureNote = computed(() =>
-  [
-    state.pathLocationPolicyNote,
-    state.pathLocationAgentModesNote,
-    state.pathLocationPromptHelpersNote,
-  ]
-    .filter(Boolean)
-    .join(' '),
-)
 
 const MCP_STATUS_CLASS = {
   running: 'green',
@@ -187,82 +135,6 @@ function serverDetail(server) {
         </nav>
 
         <div class="settings-editor">
-          <section v-show="activeSection === 'working-dir'">
-            <h3 class="settings-section-title">Working directory</h3>
-            <p class="caption path-location-hint" id="path-location-help">
-              The folder the MCP connectors and
-              language servers operate on. Applied to both hubs at once; it
-              resets to this install on the next server start.
-            </p>
-            <label>
-              Path
-              <span class="path-location-row">
-                <input
-                  v-model="state.pathLocation"
-                  type="text"
-                  spellcheck="false"
-                  :disabled="state.pathLocationLoading"
-                  aria-describedby="path-location-help"
-                />
-                <button
-                  type="button"
-                  class="path-location-set"
-                  title="Point the MCP and LSP tools at this folder and reload them"
-                  :disabled="
-                    !pathLocationChanged ||
-                    state.pathLocationSaving ||
-                    state.pathLocationLoading
-                  "
-                  @click="setPathLocation"
-                >
-                  {{ state.pathLocationSaving ? 'Reloading…' : 'Set' }}
-                </button>
-              </span>
-            </label>
-            <p v-if="state.pathLocationError" class="alert-error" role="alert">
-              {{ state.pathLocationError }}
-            </p>
-            <!-- The workspace's own policy file (pol-05): the server seeds a
-                 default one the moment a folder becomes the working location,
-                 and reports what happened. A seed that could not happen is a
-                 note, not an error — the location *is* set and both hubs
-                 restarted; only that project's tree stays unfiltered. -->
-            <!-- And the agent-modes file (am-03) and the prompt-helper file
-                 (mbl-02) in the same folder, reported in the same shape. The
-                 seeds fail independently but belong to one action, so the
-                 warnings are joined into a single status line, and each file's
-                 own caption still appears unless its own seed is the one being
-                 shouted about. -->
-            <p
-              v-if="seedFailureNote"
-              class="path-location-policy-note path-location-policy-note--warn"
-              role="status"
-            >
-              {{ seedFailureNote }}
-            </p>
-            <p
-              v-if="state.pathLocationPolicy && !state.pathLocationPolicyNote"
-              class="caption path-location-policy-note"
-            >
-              {{ policySentence }}
-            </p>
-            <p
-              v-if="state.pathLocationAgentModes && !state.pathLocationAgentModesNote"
-              class="caption path-location-policy-note"
-            >
-              {{ agentModesSentence }}
-            </p>
-            <p
-              v-if="
-                state.pathLocationPromptHelpers &&
-                !state.pathLocationPromptHelpersNote
-              "
-              class="caption path-location-policy-note"
-            >
-              {{ promptHelpersSentence }}
-            </p>
-          </section>
-
           <section v-show="activeSection === 'llm'">
             <h3 class="settings-section-title">LLM</h3>
             <label>

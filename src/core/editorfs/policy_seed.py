@@ -131,8 +131,8 @@ def ensure_policy_file(root: str) -> Dict[str, Any]:
     """Create ``<root>/.nojae/read-write-policy.json`` if absent. Never overwrites.
 
     Returns ``{"state": "created" | "existing" | "failed", "path": …,
-    "error": Optional[str]}`` — a shape the settings dialog and the Editor
-    banner can render without knowing anything about the filesystem.
+    "error": Optional[str]}`` — a shape the app bar can render without knowing
+    anything about the filesystem.
 
     The whole function is one ``try``/``except``: a seed that cannot happen
     (read-only mount, root owned by someone else, no disk) is a **NOTE** for the
@@ -165,7 +165,7 @@ def policy_file_state(root: str) -> Dict[str, Any]:
     """What a **reader** may say about the policy file, writing nothing.
 
     ``GET /api/path-location`` asks this rather than :func:`ensure_policy_file`:
-    the settings dialog is opened far more often than a workspace is switched,
+    the working location is read far more often than a workspace is switched,
     and a read that leaves a folder behind in someone's project is exactly the
     mistake the seeding rules forbid. Same shape as the other answers, plus
     ``"absent"`` — a workspace whose seed failed, or which predates the feature.
@@ -179,7 +179,7 @@ def policy_file_state(root: str) -> Dict[str, Any]:
         return _failed(path, exc.strerror or str(exc))
     if not stat_module.S_ISREG(info.st_mode):
         # The same condition pol-04 reports as a file-level error finding;
-        # naming it here stops the dialog claiming a policy the loader rejects.
+        # naming it here stops the answer claiming a policy the loader rejects.
         return _failed(path, "the policy path is a folder, not a file")
     return _existing(path)
 

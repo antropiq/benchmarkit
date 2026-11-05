@@ -107,10 +107,24 @@ test.describe('App boot: displayed configuration, tabs, empty state', () => {
     await expect(page.getByLabel('Reset to initial state')).toBeDisabled()
   })
 
-  test('app bar shows the active working location', async ({ page }) => {
+  // The working location is *editable* here, not just displayed: the field and
+  // its Set button live in the app bar, and the settings dialog has no part in
+  // the switch (it has no section for it at all).
+  test('app bar shows the active working location, and offers to move it', async ({
+    page,
+  }) => {
     const { pathLocation } = await bootIdle(page)
 
-    await expect(page.locator('.appbar-workspace-path')).toHaveText(pathLocation)
+    const field = page.locator('.appbar-location-input')
+    await expect(field).toHaveValue(pathLocation)
+    // Nothing is pending, so there is nothing to apply.
+    await expect(page.locator('.appbar-location-set')).toBeDisabled()
+
+    // The dialog no longer carries that row of its own.
+    await page.getByRole('button', { name: 'Open settings' }).click()
+    const nav = page.locator('.settings-nav')
+    await expect(nav.getByRole('button', { name: /working/i })).toHaveCount(0)
+    await page.locator('.settings-dialog').getByRole('button', { name: 'Cancel' }).click()
   })
 
   // The clock and the two counters are shared by the Benchmark and the

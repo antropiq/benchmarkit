@@ -175,7 +175,7 @@ def lsp_settings_template_state(root: str) -> Dict[str, Any]:
     """What a **reader** may say about the template file, writing nothing.
 
     ``GET /api/path-location`` asks this instead of
-    :func:`ensure_lsp_settings_template` — the settings dialog opens far more
+    :func:`ensure_lsp_settings_template` — the working location is read far more
     often than a workspace is switched, and a read that leaves a folder in
     someone's project is the mistake the seeding rules forbid. ``absent`` is
     a normal answer here: a workspace whose seed failed, or one that

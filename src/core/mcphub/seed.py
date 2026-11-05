@@ -161,7 +161,7 @@ def mcp_settings_file_state(root: str) -> Dict[str, Any]:
     """What a **reader** may say about the declaration file, writing nothing.
 
     ``GET /api/path-location`` asks this instead of
-    :func:`ensure_mcp_settings_file` — the settings dialog opens far more
+    :func:`ensure_mcp_settings_file` — the working location is read far more
     often than a workspace is switched, and a read that leaves a folder in
     someone's project is the mistake the seeding rules forbid. ``absent`` is
     a normal answer here: a workspace whose seed failed, or one that

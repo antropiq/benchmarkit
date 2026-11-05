@@ -155,7 +155,7 @@ LEGACY_PROMPT_HELPERS_PATH: Path = (
 
 
 def _state_dict(state: str, path: str, error: Optional[str] = None) -> Dict[str, Any]:
-    """The one payload shape: what the settings dialog renders without a syscall.
+    """The one payload shape: what the app bar renders without a syscall.
 
     Same keys as ``policy_seed``'s and ``agent_modes``' answers (``created`` /
     ``existing`` / ``absent`` / ``failed``), so the client-side sentence is the
@@ -327,10 +327,10 @@ def prompt_helpers_file_state(root: str) -> Dict[str, Any]:
     """What a **reader** may say about the helpers file, writing nothing.
 
     ``GET /api/path-location`` asks this instead of :func:`ensure_prompt_helpers_file`
-    — the settings dialog opens far more often than a workspace is switched, and
-    a read that leaves a folder in someone's project is the mistake the seeding
-    rules forbid. ``"absent"`` is a normal answer here: a workspace whose seed
-    failed, or one that predates the feature, chats on nine empty bullets.
+    — the working location is read far more often than a workspace is switched,
+    and a read that leaves a folder in someone's project is the mistake the
+    seeding rules forbid. ``"absent"`` is a normal answer here: a workspace whose
+    seed failed, or one that predates the feature, chats on nine empty bullets.
     """
     path = prompt_helpers_file_path(root)
     try:

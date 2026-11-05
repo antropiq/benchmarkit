@@ -9,18 +9,13 @@ import { useBenchmark } from '../composables/useBenchmark'
 import { useChat } from '../composables/useChat'
 import { useBatch } from '../composables/useBatch'
 
-const { state, openSettings } = useBenchmark()
+const { state, openSettings, setPathLocation } = useBenchmark()
 const { state: chat } = useChat()
 const { state: batch } = useBatch()
 
 const models = computed(() => (state.config?.models ?? []).join(' · '))
 const serverUrl = computed(() => state.config?.serverUrl || '')
 const running = computed(() => state.status === 'running')
-
-// Working location both hubs run against: ``pathLocationCurrent`` is the
-// value the server confirmed, so the app bar shows what is live and updates
-// on its own as soon as the Settings dialog sets a new one.
-const workspace = computed(() => state.pathLocationCurrent || '')
 
 // One pill for both screens: a running benchmark wins; otherwise a chat
 // reply in flight reports its own phase (including the reasoning flag).
@@ -66,6 +61,53 @@ watch(
 )
 onUnmounted(clearBatchPillTimer)
 
+// -- the working location, edited in place ---------------------------------
+//
+// ``state.pathLocation`` is what the user has typed, ``state.pathLocationCurrent``
+// what the server applied (its realpath), so Set reads the same difference the
+// field is about: a canonicalised path never leaves it spuriously enabled.
+const pathLocationChanged = computed(
+  () => (state.pathLocation || '').trim() !== state.pathLocationCurrent,
+)
+
+// A session must not have its root moved out from under it: the route refuses
+// the switch with 409 while a benchmark run or a chat reply is in flight, and
+// a batch would find its lot folder re-rooted mid-task. ``chatBusy`` is the
+// WorkBench's own rule (it also covers the idle gap between two batch turns),
+// so the button cannot disagree with a send being refused. The pill reads the
+// same three states, so a locked Set always explains itself.
+const locationLocked = computed(
+  () => running.value || batch.active || chatBusy.value,
+)
+const locationTitle = computed(() =>
+  locationLocked.value
+    ? 'Unavailable while a session is running'
+    : 'Point the MCP and LSP tools, the Editor and the terminal at this folder',
+)
+
+// What the switch answered that is worth a line under the field: the refusal
+// (red), or the reserved-folder seeds that could not land. The latter is a
+// warning and never a refusal — the location *did* move and both hubs
+// restarted. The three seeds fail independently but are the outcome of one
+// action, so they join into one sentence.
+const locationNote = computed(() =>
+  [
+    state.pathLocationPolicyNote,
+    state.pathLocationAgentModesNote,
+    state.pathLocationPromptHelpersNote,
+  ]
+    .filter(Boolean)
+    .join(' '),
+)
+
+// One gesture, two entries: the button and Enter in the field. The lock is
+// re-checked here rather than left to the disabled button, because a key
+// reaches the request without ever meeting the button.
+function applyLocation() {
+  if (locationLocked.value) return
+  setPathLocation()
+}
+
 const pillLabel = computed(() => {
   if (!running.value && batch.active) return 'Batch'
   if (!running.value && batchOutcome.value) return `batch ${batchOutcome.value}`
@@ -108,12 +150,50 @@ const pillClass = computed(() => {
            nothing is generating. -->
       <SessionStatBadges />
       <TabNav />
-      <span
-        v-if="workspace"
-        class="appbar-workspace"
-        :title="`Working location: ${workspace}`"
-        >Workspace &#8594; <span class="appbar-workspace-path">{{ workspace }}</span></span
-      >
+      <div class="appbar-location">
+        <div class="appbar-location-row">
+          <input
+            v-model="state.pathLocation"
+            class="appbar-location-input"
+            type="text"
+            spellcheck="false"
+            aria-label="Working location"
+            :disabled="state.pathLocationLoading"
+            :title="state.pathLocationCurrent"
+            @keydown.enter.prevent="applyLocation"
+          />
+          <button
+            class="appbar-location-set"
+            type="button"
+            :disabled="
+              !pathLocationChanged || state.pathLocationSaving || locationLocked
+            "
+            :title="locationTitle"
+            @click="applyLocation"
+          >
+            {{ state.pathLocationSaving ? 'Reloading…' : 'Set' }}
+          </button>
+        </div>
+        <!-- One line, whichever half of the answer it is: the refusal, or the
+             seeds that could not land. The bar has no room for a wrapped
+             sentence, so it truncates and `title` carries the whole of it. -->
+        <p
+          v-if="state.pathLocationError"
+          class="appbar-location-note appbar-location-note--error"
+          role="alert"
+          :title="state.pathLocationError"
+        >
+          {{ state.pathLocationError }}
+        </p>
+        <p
+          v-else-if="locationNote"
+          class="appbar-location-note"
+          role="status"
+          :title="locationNote"
+        >
+          {{ locationNote }}
+        </p>
+      </div>
     </div>
 
     <div class="appbar-actions">

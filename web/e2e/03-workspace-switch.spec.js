@@ -66,31 +66,26 @@ function expectedPath(root, rel) {
 // assertion work whatever the host.
 const fold = (p) => p.replaceAll('\\', '/')
 
-// The switch as a user performs it: Settings → Working directory → type → Set.
-// The dialog stays open after `Set` (it is an apply, not a save), so the spec
-// closes it the same way a user would before going back to the tree.
+// The switch as a user performs it: the app bar's working-location field, then
+// its Set button. There is nothing to close afterwards — the field *is* the
+// location, and Set is an apply, so the bar shows the new root as soon as the
+// server has answered.
 //
 // `target` is always absolute: the route refuses anything else with 422, so a
 // relative one would leave the location exactly where it was while the page
-// looked like it had moved. The appbar assertion folds the separators on both
-// sides — the sentence these lines are here for is "the appbar moved to the
-// root this switch asked for", the app's behaviour, and the host's spelling of
-// a path may not decide it.
+// looked like it had moved. The assertion folds the separators on both sides —
+// the sentence these lines are here for is "the app bar moved to the root this
+// switch asked for", the app's behaviour, and the host's spelling of a path may
+// not decide it.
 async function setRoot(page, target) {
-  await page.getByRole('button', { name: 'Open settings' }).click()
-  const dialog = page.locator('.settings-dialog')
-  await expect(dialog).toBeVisible()
-  await dialog.getByRole('button', { name: 'Working directory' }).click()
-  const field = dialog.locator('.path-location-row input')
+  const field = page.locator('.appbar-location-input')
   await field.fill(target)
-  await expect(dialog.locator('.path-location-set')).toBeEnabled()
-  await dialog.locator('.path-location-set').click()
-  const appbar = page.locator('.appbar-workspace-path')
+  const button = page.locator('.appbar-location-set')
+  await expect(button).toBeEnabled()
+  await button.click()
   await expect
-    .poll(async () => fold((await appbar.textContent()) ?? ''))
+    .poll(async () => fold(await field.inputValue()))
     .toContain(fold(target))
-  await dialog.getByRole('button', { name: 'Cancel' }).click()
-  await expect(dialog).not.toBeVisible()
 }
 
 test.beforeEach(async ({ request }) => {
@@ -218,7 +213,16 @@ test('a switch replaces the prompt-helper bullets the composer offers', async ({
   const titles = () => bullets.evaluateAll((els) => els.map((el) => el.getAttribute('title')))
   const bootTitles = await titles()
 
+  // The switch reloads the row itself, un-awaited, so `setRoot` can report the
+  // new root while that GET is still in flight. Await the answer here: were the
+  // write below to land first, the switch's own load would put the sentinel on
+  // screen — and the "a write from outside is no reason to change the screen"
+  // assertion would then be measuring the order of two requests.
+  const switchLoad = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === '/api/prompt-helpers',
+  )
   await setRoot(page, scratchAbs)
+  await switchLoad
 
   // One recognisable helper, written by the app's own writer while the scratch
   // root is the active workspace (`POST /api/prompt-helpers` can only address

@@ -417,12 +417,15 @@ directory at startup, so a fresh checkout needs no configuration, and it is
 deliberately **not** a `.env` key, so a settings save can neither erase it nor
 resurrect a stale value.
 
-**Settings → Working directory** shows the live value and repoints the MCP and
-LSP tools at another folder in one step; that change is process-local, and the
-next start is back at the install directory. Export the variable (or set it in
-`.env`) to pin it permanently. The folder must exist and must not sit under a
-restricted path. In a declaration, reference it as `${BENCHMARKIT_PATH_LOCATION}`
-— the app defines it for the connectors and the language servers it starts.
+The **app bar** holds that value as an editable field: type another folder and
+press **Set** to repoint the MCP and LSP tools, the Editor's tree and new
+terminal sessions at it in one step. Set is inert while a benchmark run, a
+WorkBench reply or a batch is running — a session must not have its root moved
+out from under it. The change is process-local, and the next start is back at
+the install directory. Export the variable (or set it in `.env`) to pin it
+permanently. The folder must exist and must not sit under a restricted path. In
+a declaration, reference it as `${BENCHMARKIT_PATH_LOCATION}` — the app defines
+it for the connectors and the language servers it starts.
 
 That folder gets its own read/write policy in `<working location>/.nojae/read-write-policy.json`,
 which answers one question per file — `rw`, `ro` or `hidden` — for the Editor

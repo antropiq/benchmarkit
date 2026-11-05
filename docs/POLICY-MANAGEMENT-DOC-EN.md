@@ -33,8 +33,8 @@ to it. One file, one answer, whoever is asking.
 ## 2. Where the file comes from
 
 When a folder becomes your working location — at app start, or when you change it
-in **Settings** — benchmarkit writes a ready-made policy file there **if none
-exists**. That default hides the usual noise (`.git`, caches) and makes
+in the **app bar** — benchmarkit writes a ready-made policy file there **if
+none exists**. That default hides the usual noise (`.git`, caches) and makes
 dependency and build folders read-only, so you start from a worked example rather
 than from an empty file.
 
@@ -260,7 +260,7 @@ Index numbers in those messages count the entries of the `policies` list from
 
 ## 9. Checklist for a new project
 
-1. Point the working location at the project (Settings).
+1. Point the working location at the project (the app bar's location field).
 2. Open `<project>/.nojae/read-write-policy.json` in an external editor.
 3. Read the default rules; delete what does not fit this project.
 4. Add `ro` for anything derived or vendored that you still want to read.

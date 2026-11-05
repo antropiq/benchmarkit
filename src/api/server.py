@@ -208,8 +208,8 @@ def create_app() -> FastAPI:
     # Seed the workspace policy for whichever location that chose — the second
     # of the two entry points ``POST /api/path-location`` is the other. This is
     # how benchmarkit gets its own ``.nojae/read-write-policy.json`` on first
-    # launch, and why a project opened from the settings dialog arrives with a
-    # tree already filtered by rules the user can read.
+    # launch, and why a project opened from the app bar arrives with a tree
+    # already filtered by rules the user can read.
     #
     # Called from here rather than from inside ``setup_path_location()`` on
     # purpose: ``src/config.py`` sits at the bottom of the dependency graph

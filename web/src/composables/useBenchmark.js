@@ -69,9 +69,9 @@ const state = reactive({
   lspError: null,
   lspServersError: null, // .nojae/lsp-settings.json validation errors from the backend
   // Working location both hubs point at (${BENCHMARKIT_PATH_LOCATION} in
-  // .nojae/mcp-settings.json and .nojae/lsp-settings.json). ``pathLocation`` is
-  // what the input shows/edits, ``pathLocationCurrent`` the value the server
-  // confirmed — the Set button is enabled while the two differ.
+  // .nojae/mcp-settings.json and .nojae/lsp-settings.json), shown and set from
+  // the app bar. ``pathLocation`` is what its input holds, ``pathLocationCurrent``
+  // the value the server confirmed — Set is enabled while the two differ.
   pathLocation: '',
   pathLocationCurrent: '',
   pathLocationLoading: false,
@@ -85,11 +85,11 @@ const state = reactive({
   // is rendered as a *note* — never into ``pathLocationError``, because the
   // switch itself succeeded and a red line there would claim it had not.
   pathLocationPolicy: null,
-  // The one sentence that note carries, for the surfaces that must shout rather
-  // than caption: set from ``describePolicy`` only when its tone is ``warn``, so
-  // a ``created``/``existing``/``absent`` report stays the plain caption the
-  // dialog renders from ``pathLocationPolicy``. Cleared on every attempt, so a
-  // note from a switch that has since worked cannot linger.
+  // The one sentence the app bar shows under its field for this file: set from
+  // ``describePolicy`` only when its tone is ``warn``, so a ``created`` or
+  // ``absent`` report (and ``existing``, which has nothing to tell) leaves the
+  // bar's line out. Cleared on every attempt, so a note from a switch that has
+  // since worked cannot linger.
   pathLocationPolicyNote: null,
   // The second file in the same reserved folder (am-03): the workspace's
   // agent-modes file, seeded at the same two moments and reported in the same
@@ -509,23 +509,15 @@ export function useBenchmark() {
       state.lspEnabled = []
       state.lspError = null
       state.lspServersError = null
-      state.pathLocation = ''
-      // ``pathLocationCurrent`` is deliberately *not* blanked: it is the value
-      // the app bar label shows, and blanking it would make that label
-      // disappear for the moment loadPathLocation() below takes. The dialog
-      // field still re-syncs to it (loadPathLocation assigns both).
-      state.pathLocationError = null
-      state.pathLocationPolicy = null
-      state.pathLocationPolicyNote = null
-      state.pathLocationAgentModes = null
-      state.pathLocationAgentModesNote = null
-      state.pathLocationPromptHelpers = null
-      state.pathLocationPromptHelpersNote = null
+      // The working location is not this dialog's business any more: its field
+      // and its answer lines live in the app bar, whose state a settings read
+      // must not clear (a seed warning the user has not read yet would vanish
+      // on an unrelated visit to the dialog). ``loadPathLocation()`` runs at
+      // boot and after every switch.
       refreshModelLists()
       loadQuestionSets()
       loadMcp()
       loadLsp()
-      loadPathLocation()
     } catch (exc) {
       state.settingsError = `Could not reach the API: ${exc}`
     } finally {
@@ -834,8 +826,8 @@ export function useBenchmark() {
       // a real state — a workspace whose seed failed, or one opened before the
       // feature existed.
       state.pathLocationPolicy = body.policy || null
-      // Same rule as after a switch: only a ``warn`` tone becomes the note, so
-      // ``absent`` stays the plain caption and a lingering note from an earlier
+      // Same rule as after a switch: only a ``warn`` tone becomes the bar's own
+      // line, so ``absent`` stays silent, and a lingering note from an earlier
       // attempt cannot outlive the read that disproves it.
       const described = describePolicy(body.policy)
       state.pathLocationPolicyNote =
@@ -849,7 +841,7 @@ export function useBenchmark() {
         describedModes && describedModes.tone === 'warn' ? describedModes.text : null
       // And the helpers block (mbl-02) — read-only here as well, so ``absent``
       // is the ordinary answer for a project that was never switched into, and
-      // the dialog's caption still has to say what the bullets are.
+      // needs no line under the field.
       state.pathLocationPromptHelpers = body.promptHelpers || null
       const describedHelpers = describePromptHelpers(body.promptHelpers)
       state.pathLocationPromptHelpersNote =
@@ -897,14 +889,15 @@ export function useBenchmark() {
       // tried to). A ``failed`` state is a note, not an error — the location is
       // set and both hubs restarted; only the workspace's own rules are
       // missing. ``lib/path-location-policy`` is what turns the block into the
-      // sentence the dialog shows (and pol-07's Editor banner reuses it).
+      // sentence under the app bar's field — its own words, and the only place
+      // these three blocks are rendered.
       state.pathLocationPolicy = body.policy || null
       const described = describePolicy(body.policy)
       state.pathLocationPolicyNote =
         described && described.tone === 'warn' ? described.text : null
       // am-03: the same switch seeded the modes file too, and the same tone
-      // rule applies — a ``failed`` seed adds one more line to the note (the
-      // dialog renders it under the policy's), never a red "the switch failed".
+      // rule applies — a ``failed`` seed adds one more clause to that line,
+      // never a red "the switch failed".
       state.pathLocationAgentModes = body.agentModes || null
       const describedModes = describeAgentModes(body.agentModes)
       state.pathLocationAgentModesNote =

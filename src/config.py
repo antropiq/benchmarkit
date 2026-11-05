@@ -268,7 +268,7 @@ def path_location() -> str:
 
     Reads ``os.environ`` at call time, so a value set through the API is what
     the next hub re-scan sees. Falls back to the boot default rather than
-    returning empty, so the settings dialog always shows a real path.
+    returning empty, so the app bar always shows a real path.
     """
     return (os.environ.get(PATH_LOCATION_KEY) or "").strip() or default_path_location()
 
@@ -316,9 +316,9 @@ def load_agent_instructions(location: Optional[str] = None) -> str:
 
     Resolved against ``BENCHMARKIT_PATH_LOCATION`` (the same folder the
     file-touching tools are pointed at) at call time, so moving the location
-    through the settings dialog also moves where the instructions are looked
-    for. Read per chat request rather than cached: editing ``AGENTS.md`` then
-    takes effect on the very next message.
+    from the app bar also moves where the instructions are looked for. Read per
+    chat request rather than cached: editing ``AGENTS.md`` then takes effect on
+    the very next message.
     """
     root = Path(location) if location else Path(path_location())
     try:

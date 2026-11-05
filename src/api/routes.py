@@ -130,7 +130,7 @@ class QuestionSetIn(SettingsFieldsMixin):
 
 
 class PathLocationIn(SettingsFieldsMixin):
-    """Working-location change as sent by the settings dialog."""
+    """Working-location change as sent by the app bar's location field."""
 
     path: str = ""
 
@@ -1273,11 +1273,11 @@ def build_router(state: RunState) -> APIRouter:
 
         pol-05 seeds a default ``.nojae/read-write-policy.json`` at the two
         moments a folder becomes the working location (boot, and the switch
-        below), so a GET must not write one: the settings dialog is opened far
+        below), so a GET must not write one: the app bar reads the location far
         more often than a workspace is switched, and a read that leaves a folder
         in someone's project is the mistake the seeding rules forbid. ``state``
-        is ``existing`` / ``absent`` / ``failed`` here, and the dialog turns
-        ``absent`` into "this project has no policy file yet".
+        is ``existing`` / ``absent`` / ``failed`` here, and the app bar leaves
+        ``absent`` as the plain fact it is.
         """
         return policy_seed.policy_file_state(path_location())
 
