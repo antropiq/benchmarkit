@@ -1349,7 +1349,6 @@ body {
   color: var(--pico-muted-color);
   cursor: pointer;
   transition: color 0.15s ease, background-color 0.15s ease;
-  margin-right: 0.35rem;
 }
 
 .chat-gutter-btn:is(:hover, :focus-visible) {

@@ -89,7 +89,13 @@ Rebuild a face after editing the ranges with, per weight/style:
    GENERATED from the UI_GLYPHS table of tools/nerd_icons.py by
    `python tools/nerd_icons.py generate`; `check` (run by the test suite) fails
    if they drift, so a glyph the component asks for that this subset lacks cannot
-   reach a browser as a tofu box. */
+   reach a browser as a tofu box.
+
+   Unlike the two faces above, this one is subset from the *Propo* variant
+   (`UI_SOURCE_VARIANT`): the same outlines and code points, but each advance
+   fitted to its own ink instead of one fixed pitch. The marks are centred by
+   their own box, which centres the advance — from the fixed-pitch variant the
+   wide marks hang off the right of it and look glued to the container's edge. */
 @font-face {
   font-family: "JetBrains Mono Nerd Icons UI";
   font-style: normal; font-weight: 400; font-display: block;

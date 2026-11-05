@@ -89,6 +89,24 @@ def test_gutter_block_declares_a_known_mark(tool) -> None:
         assert f"const {name} = " in block, f"the block lacks {name}"
 
 
+def test_ui_marks_are_centred_on_their_own_ink(tool) -> None:
+    """Each gutter mark's advance equals its ink, so ``place-items: center``
+    centres the mark and not an empty box around it.
+
+    The marks are one character of a centred button, which centres the *advance*.
+    The fixed-pitch Nerd variant gives every glyph the same advance however wide
+    its ink is, so its eye — 1048 units of ink in a 600-unit advance — hangs
+    3.5px right of its box at the gutter's 16px and reads as glued to the message
+    column. ``UI_SOURCE_VARIANT`` is the answer; this is the guard, read off the
+    shipped subset because that is what a browser lays out.
+    """
+    pytest.importorskip("fontTools")
+
+    problems = []
+    tool.ui_marks_are_centred(problems)
+    assert not problems, "\n".join(problems)
+
+
 def test_subsets_match_the_mapping_when_source_fonts_present(tool) -> None:
     """With the untracked ``fonts/`` download available, the woff2 cmaps and the
     generated module match the tool's tables exactly. Skipped elsewhere."""

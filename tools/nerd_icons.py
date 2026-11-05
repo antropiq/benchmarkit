@@ -37,6 +37,22 @@ FONT_DIR = ROOT / "web/src/fonts"
 SUBSET_WOFF2 = {400: "Regular", 700: "Bold"}
 FAMILY = "JetBrains Mono Nerd Icons"
 
+# The source variant each family is subset from -- the same Nerd-patched family
+# in two widths.
+#
+# The tree's icons sit in a left-aligned column, so the fixed-pitch face serves
+# it. The UI marks are not: each is centred inside its own box, and the
+# fixed-pitch face gives every glyph the same advance (600/1000 em) while drawing
+# icons of very different widths inside it -- the eye's ink is 1048 units wide,
+# the chevron's 462. The wide marks therefore hang off the right of their own
+# advance box (the eye by 219 units: 3.5px at the gutter's 16px, and 4.4 for the
+# slashed eye), which reads as a mark glued to the edge of its container rather
+# than centred in it. `Propo` is the same outlines at the same code points with
+# every advance fitted to its own ink bounds, so centring the box centres the
+# mark.
+SOURCE_VARIANT = ""
+UI_SOURCE_VARIANT = "Propo"
+
 # The app's own icon marks (today: the WorkBench focus gutter), by the name the
 # Nerd Fonts cmap gives them. Their face is the generated "JetBrains Mono Nerd
 # Icons UI" family in `nerd-fonts.css`, subset to exactly these code points —
@@ -224,8 +240,9 @@ def used_glyphs() -> List[str]:
     return sorted(set(out))
 
 
-def source_ttf(weight: str = "Regular") -> Path:
-    return ROOT / f"fonts/JetBrainsMono/JetBrainsMonoNerdFont-{weight}.ttf"
+def source_ttf(weight: str = "Regular", variant: str = SOURCE_VARIANT) -> Path:
+    """One untracked source face: the variant chooses the pitch (see above)."""
+    return ROOT / f"fonts/JetBrainsMono/JetBrainsMonoNerdFont{variant}-{weight}.ttf"
 
 
 def source_cmap() -> Dict[str, int]:
@@ -457,13 +474,14 @@ def write_css(code_points: Set[int], family: str = FAMILY) -> None:
 
 
 def write_subset(
-    cmap: Dict[str, int], weight: int, source_weight: str, stem: str, glyphs: List[str]
+    cmap: Dict[str, int], weight: int, source_weight: str, stem: str, glyphs: List[str],
+    variant: str = SOURCE_VARIANT,
 ) -> None:
     """Subset one source face down to exactly the glyphs one family uses."""
     missing = [name for name in glyphs if name not in cmap]
     if missing:
         raise SystemExit(
-            f"not in {source_ttf()}: {', '.join(missing)}\n"
+            f"not in {source_ttf(source_weight, variant)}: {', '.join(missing)}\n"
             "pick a glyph the Nerd-patched face really carries (check its cmap)."
         )
     unicodes = ",".join(f"U+{cmap[name]:04X}" for name in sorted(set(glyphs)))
@@ -472,7 +490,7 @@ def write_subset(
         [
             sys.executable, "-m", "fontTools.subset",
             f"--unicodes={unicodes}", "--flavor=woff2", "--no-hinting",
-            "--desubroutinize", str(source_ttf(source_weight)),
+            "--desubroutinize", str(source_ttf(source_weight, variant)),
             f"--output-file={out}",
         ],
         check=True,
@@ -491,13 +509,42 @@ def generate() -> int:
 
     ui_points = {cmap[name] for name in UI_GLYPHS}
     for weight, source_weight in UI_SUBSET_WOFF2.items():
-        write_subset(cmap, weight, source_weight, "nerd-ui-icons", UI_GLYPHS)
+        write_subset(cmap, weight, source_weight, "nerd-ui-icons", UI_GLYPHS,
+                     UI_SOURCE_VARIANT)
     write_css(ui_points, UI_FAMILY)
     write_ui_block(cmap)
     print(
         f"{len(code_points)} tree code points, {len(ui_points)} UI code points written"
     )
     return 0
+
+
+def ui_marks_are_centred(problems: List[str]) -> None:
+    """Every UI mark's advance equals its own ink, so centring the box centres it.
+
+    Each mark is one character of a `place-items: center` button, which centres
+    the *advance*, and nothing else distinguishes the two: subset the face from
+    the fixed-pitch variant and every box is 600/1000 em however wide its glyph
+    is, so the eye's ink hangs 3.5px right of its box at the gutter's 16px and
+    the mark reads as glued to the container's edge. Assert the advance against
+    the shipped subset rather than the source -- the subset is what a browser
+    lays out, so the regression this catches is a face generated from the wrong
+    variant.
+    """
+    from fontTools.ttLib import TTFont
+
+    for weight in UI_SUBSET_WOFF2:
+        path = FONT_DIR / f"nerd-ui-icons-{weight}.woff2"
+        font = TTFont(str(path))
+        glyf, hmtx = font["glyf"], font["hmtx"]
+        for code, name in sorted(font.getBestCmap().items()):
+            ink = glyf[name].xMax - glyf[name].xMin
+            if abs(hmtx[name][0] - ink) > 20:  # a third of a px at 16px
+                problems.append(
+                    f"nerd-ui-icons-{weight}.woff2 U+{code:04X} is off-centre: "
+                    f"advance {hmtx[name][0]} against ink {ink} -- regenerate from "
+                    f"the {UI_SOURCE_VARIANT!r} variant"
+                )
 
 
 def check() -> int:
@@ -548,6 +595,8 @@ def check() -> int:
             if expand(block) != expected:
                 problems.append(f"CSS: a {family!r} unicode-range does not match its glyphs")
                 break
+
+    ui_marks_are_centred(problems)
 
     # The component's own block: without the untracked download the code points
     # cannot be re-resolved from the glyph names, but they can be read back, and

@@ -119,6 +119,35 @@ async function boxes(page, selectors) {
   return out
 }
 
+// How far a mark's *ink* sits from the centre of its own advance box, in px.
+//
+// The box a mark lays out spans its advance, so the box alone cannot tell a
+// centred glyph from one whose ink hangs off the right of its advance — which is
+// exactly how the eye of the Live View read as glued to the message column: the
+// face had been subset from the fixed-pitch Nerd variant, whose advance is one
+// fixed width however wide the glyph's ink is (tools/nerd_icons.py,
+// `UI_SOURCE_VARIANT`). Only the font's own metrics answer it, so this asks the
+// browser for the metrics of the font the element actually resolves to — after
+// loading that face, since an unloaded one measures as the fallback.
+async function inkOffsetOf(page, mark) {
+  const fontSize = await mark.evaluate((el) => getComputedStyle(el).fontSize)
+  await page.evaluate(
+    ([family, size, text]) =>
+      document.fonts.load(`${size} "${family}"`, text).then(() => null),
+    [MARKS_FAMILY, fontSize, await mark.evaluate((el) => el.textContent)],
+  )
+  return mark.evaluate((el) => {
+    const style = getComputedStyle(el)
+    const ctx = document.createElement('canvas').getContext('2d')
+    // The element's own stack, so the metrics are the face the mark really draws.
+    ctx.font = `${style.fontSize} ${style.fontFamily}`
+    const metrics = ctx.measureText(el.textContent)
+    const inkCentre =
+      (metrics.actualBoundingBoxRight - metrics.actualBoundingBoxLeft) / 2
+    return inkCentre - metrics.width / 2
+  })
+}
+
 test.describe('WorkBench focus layout: three states, one gutter', () => {
   test('normal: both columns in the flow, the gutter between them', async ({
     page,
@@ -235,11 +264,11 @@ test.describe('WorkBench focus layout: three states, one gutter', () => {
     }
   })
 
-  // The strip is one column of marks, so the honest signal about it is measured:
-  // each control is a 28px box filling the gutter's width, and the glyph inside
-  // it sits on the gutter's own centre line. A mark's box spans its ink, so its
-  // left edge is read too — a test blind to the ink would keep passing while a
-  // rule nudged one mark sideways.
+  // The strip is one column of marks, so the honest signal about it is measured
+  // twice: each control is a 28px box filling the gutter's width with the mark's
+  // box on the gutter's own centre line, *and* that mark's ink is centred within
+  // its box. One half catches a rule that nudges a mark sideways, the other a
+  // face whose metrics are not its ink.
   test('the three controls share the gutter centre line', async ({ page }) => {
     await openWorkBench(page)
 
@@ -255,9 +284,15 @@ test.describe('WorkBench focus layout: three states, one gutter', () => {
       expect(Math.abs(box.width - gutter.width), `control ${index} width`).toBeLessThanOrEqual(1)
       expect(Math.abs(box.x - gutter.x), `control ${index} left edge`).toBeLessThanOrEqual(1)
 
-      const mark = await boxOf(page, `${GUTTER} .chat-gutter-mark >> nth=${index}`)
-      const markCentre = mark.x + mark.width / 2
+      const mark = page.locator(`${GUTTER} .chat-gutter-mark >> nth=${index}`)
+      const markBox = await mark.boundingBox()
+      const markCentre = markBox.x + markBox.width / 2
       expect(Math.abs(markCentre - centre), `control ${index} mark`).toBeLessThanOrEqual(1)
+
+      // 1px: the ink's own rounding is a fraction of it, the off-centre this
+      // guards against was 3.5px.
+      const ink = await inkOffsetOf(page, mark)
+      expect(Math.abs(ink), `control ${index} ink is centred in its box`).toBeLessThanOrEqual(1)
     }
   })
 
