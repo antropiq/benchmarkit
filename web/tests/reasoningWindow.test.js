@@ -25,11 +25,11 @@ function painted(result) {
 
 describe('boxCapacity', () => {
   // The height of one reasoning row and the gap the list puts between BLOCKS,
-  // as the theme has them (`.chat-reasoning-line` is 0.7rem x 1.45, and
+  // as the theme has them (`.chat-reasoning-line` is 0.8rem x 1.45, and
   // `--bi-chat-tool-gap` is 0.35rem at the 16px root). Named here because the
   // bug this pins was a divisor: the row's height is what a row costs, and the
   // gap belongs to the blocks and their `cost`, never to the row's height.
-  const ROW = 16.24 // 0.7rem x line-height 1.45
+  const ROW = 18.56 // 0.8rem x line-height 1.45
   const GAP = 5.6 // 0.35rem
 
   it('divides the box by the row height, not by row plus gap', () => {
@@ -37,9 +37,9 @@ describe('boxCapacity', () => {
       Math.floor(340 / ROW),
     )
     // The old answer: charging every row for a gap it never gets, which left
-    // 96px — five rows — of blank panel under the last line of the flow.
-    expect(boxCapacity({ inside: 340, rowHeight: ROW + GAP })).toBe(15)
-    expect(boxCapacity({ inside: 340, rowHeight: ROW })).toBeGreaterThan(15)
+    // 80px — four rows — of blank panel under the last line of the flow.
+    expect(boxCapacity({ inside: 340, rowHeight: ROW + GAP })).toBe(14)
+    expect(boxCapacity({ inside: 340, rowHeight: ROW })).toBeGreaterThan(14)
   })
 
   it('fills a box whose height is an exact number of rows', () => {

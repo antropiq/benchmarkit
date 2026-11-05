@@ -2366,7 +2366,7 @@ body {
    column budget counts with. */
 .chat-reasoning {
   font-family: var(--pico-font-family-monospace);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   line-height: 1.45;
   color: var(--pico-muted-color);
   tab-size: 4;
@@ -2401,7 +2401,7 @@ body {
   visibility: hidden;
   pointer-events: none;
   font-family: var(--pico-font-family-monospace);
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   line-height: 0;
   tab-size: 4;
 }
