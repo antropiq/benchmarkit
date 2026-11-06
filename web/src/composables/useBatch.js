@@ -97,14 +97,25 @@ export function taskInstructionForAttempt(taskLocation, attempt = 0) {
   )}`
 }
 
+// Shown in place of the dropdown when the lot folder holds no task lot, so the
+// dialog says what to do next instead of presenting an empty select.
+export const NO_BATCH_ITEMS_MESSAGE =
+  'There is no existing batch items available. Create batch tasks with the ' +
+  'Todo builder agent.'
+
 const state = reactive({
   // --- dialog state ---
   open: false,
-  prefix: '', // 'ed-'
+  prefix: '', // the prefix picked in the dropdown ('ed-')
   dir: 'todos', // relative to the working location
-  includeLot: true, // send the 00 body as `batchContext` on every task (B7)
+  // The dropdown's options, from GET /api/batch/prefixes: one entry per prefix
+  // that has at least one task in `dir` ({ prefix, tasks, hasLot }). Names
+  // only -- batch mode reads no file body (B13), and a prefix is offered exactly
+  // when listing it would give a non-empty lot.
+  prefixes: [],
+  prefixesLoading: false,
   listing: null, // payload of GET /api/batch/tasks
-  loading: false, // the blur-time fetch
+  loading: false, // the lot listing fetch
   error: null, // fetch / validation message inside the dialog
   // --- run state ---
   active: false, // batch_in_progress — the one flag the UI locks on (B10/B11)
@@ -201,8 +212,48 @@ export function useBatch() {
     chat.error = message
   }
 
-  // Fetch the lot listing for the current prefix/dir. Fires on blur, on Enter,
-  // and once more right before Launch (the listing could be stale by then).
+  // The dropdown's options: every prefix that has at least one task in `dir`.
+  // Fires when the dialog opens and whenever `dir` changes — the folder is the
+  // only thing the option list depends on. A folder that cannot be listed is
+  // reported on the dialog's error line (the same honesty as the listing): an
+  // empty dropdown next to a silent failure would read as "no tasks", which is
+  // a different and much less actionable statement.
+  async function fetchPrefixes() {
+    state.error = null
+    state.prefixesLoading = true
+    try {
+      const query = new URLSearchParams({ dir: state.dir.trim() })
+      const res = await fetch(`/api/batch/prefixes?${query}`)
+      const body = await res.json().catch(() => null)
+      if (!res.ok) {
+        state.prefixes = []
+        state.error = describeError(
+          body,
+          `Could not list the task prefixes (${res.status}).`,
+        )
+        return false
+      }
+      state.prefixes = Array.isArray(body?.prefixes) ? body.prefixes : []
+      // A prefix that no longer has a lot (its files moved into done/, or the
+      // folder changed) must not stay selected: Launch would have nothing to
+      // run, and the dropdown would show a value that is not among its options.
+      if (!state.prefixes.some((item) => item.prefix === state.prefix)) {
+        state.prefix = ''
+        state.listing = null
+      }
+      return true
+    } catch (exc) {
+      state.prefixes = []
+      state.error = `Could not reach the API: ${exc}`
+      return false
+    } finally {
+      state.prefixesLoading = false
+    }
+  }
+
+  // Fetch the lot listing for the current prefix/dir. Fires when a prefix is
+  // picked, when `dir` changes, and once more right before Launch (the listing
+  // could be stale by then).
   async function validate() {
     const prefix = state.prefix.trim()
     state.error = null
@@ -404,8 +455,10 @@ export function useBatch() {
   // `code` mode in this workspace) sends no `agentMode` at all, so the server's
   // default answers — see `pinLotMode`.
   async function runOneTurn(task, attempt = 0) {
-    const lotText =
-      state.includeLot && state.listing?.lot?.text ? state.listing.lot.text : null
+    // The lot's big picture rides on every task turn whenever the listing found
+    // one: there is no opt-out — a 00 file is the lot's context, and the per-task
+    // context reset (B6) is exactly why it must not be left to a checkbox.
+    const lotText = state.listing?.lot?.text ? state.listing.lot.text : null
     // E14: a turn that never fires would hang the loop on a phase change that
     // never happens, so sendBatchTurn's boolean decides immediately.
     if (
@@ -558,6 +611,16 @@ export function useBatch() {
     await launch()
   }
 
+  // The lot folder changed (or the dialog opened): the option list is the first
+  // thing to re-read, because it is what the selected prefix belongs to. Only a
+  // prefix that survived the re-fetch is worth listing — `fetchPrefixes` clears
+  // the selection when it did not, and listing an empty one would put a folder
+  // error on the dialog for a folder the user just typed.
+  async function refreshLot() {
+    await fetchPrefixes()
+    if (state.prefix.trim()) await validate()
+  }
+
   // Stop kills the whole lot (B9); the transcript is kept, exactly like an
   // interactive Stop, and there is no resume. The loop's inter-task guard reads
   // `state.active`, so the flag is cleared here rather than in the loop.
@@ -591,7 +654,8 @@ export function useBatch() {
     if (!reset) return
     state.prefix = ''
     state.dir = 'todos'
-    state.includeLot = true
+    state.prefixes = []
+    state.prefixesLoading = false
     state.listing = null
     state.loading = false
     state.error = null
@@ -601,11 +665,11 @@ export function useBatch() {
     if (state.active || benchmark.status === 'running') return
     state.error = null
     state.open = true
-    // A lot that just ran leaves its prefix in the form (Launch closes without
-    // resetting it), so reopening re-lists: the tasks whose files the model
-    // already moved into `done/` must be gone from the count, and a stale
-    // listing would let them be launched a second time.
-    if (state.prefix.trim()) validate()
+    // A lot that just ran left its tasks in `done/`, so both the option list and
+    // the count are re-read: a prefix whose lot is empty now must disappear from
+    // the dropdown, which is what keeps a finished task from being launched a
+    // second time.
+    refreshLot()
   }
 
   const canLaunch = computed(() => {
@@ -637,12 +701,25 @@ export function useBatch() {
     return lot ? `big picture: ${lot.name}` : 'no 00 file'
   })
 
+  // The empty case: the folder was read and holds no task lot at all. Not while
+  // it is still being listed, and not when the read itself failed — that already
+  // has its own line, and "no batch items" would be a lie about a folder the app
+  // could not open.
+  const noBatchItems = computed(
+    () =>
+      !state.prefixesLoading &&
+      state.prefixes.length === 0 &&
+      !state.error,
+  )
+
   return {
     state,
     canLaunch,
     countLabel,
     skippedLabel,
     lotLabel,
+    noBatchItems,
+    refreshLot,
     validate,
     openDialog,
     closeDialog,

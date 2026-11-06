@@ -1,10 +1,9 @@
 <script setup>
 import { computed, nextTick, ref, watch } from 'vue'
-import { humanFileSize } from '../composables/useChat'
-import { MAX_TASK_RETRIES, useBatch } from '../composables/useBatch'
+import { NO_BATCH_ITEMS_MESSAGE, useBatch } from '../composables/useBatch'
 
 // The lot-launch form. A thin view: every field it shows is useBatch state, and
-// the count caption is what its blur-time fetch fills (the pattern
+// the count caption is what the select-time fetch fills (the pattern
 // RegistrationMemoryDlg and SettingsDialog both follow — watch + showModal +
 // backdrop click + native-close sync).
 const {
@@ -13,14 +12,12 @@ const {
   countLabel,
   skippedLabel,
   lotLabel,
+  noBatchItems,
+  refreshLot,
   validate,
   closeDialog,
   requestLaunch,
 } = useBatch()
-
-// Only quoted in the explanatory caption, so a future change to the loop's
-// retry budget cannot leave the dialog promising something else.
-const retryLimit = MAX_TASK_RETRIES
 
 const dialogEl = ref(null)
 
@@ -62,12 +59,6 @@ const resolvedDir = computed(() => {
   return `${listing.workspace}/${listing.dir}`
 })
 
-const lotSize = computed(() => {
-  const lot = state.listing?.lot
-  if (!lot) return 'no big picture found'
-  return `${humanFileSize(lot.size)} — re-sent on every task turn`
-})
-
 // E13: only the 00 file matched, so there is nothing to run.
 const onlyLotFile = computed(
   () => !!state.listing && state.listing.taskCount === 0 && !!state.listing.lot,
@@ -76,11 +67,17 @@ const countHint = computed(() =>
   onlyLotFile.value ? ' — only the big-picture file matches' : '',
 )
 
-// Enter in a text field would submit the form (= Launch) before the listing it
-// depends on has arrived, so the fields own Enter: it only re-lists.
-function onFieldEnter(event) {
-  event.preventDefault()
+// A prefix is picked, never typed: the listing that feeds the count and the
+// Launch decision follows the selection.
+function onPrefixChange() {
   validate()
+}
+
+// Enter in the folder field would submit the form (= Launch) before the folder
+// it depends on has been re-listed, so the field owns Enter: it only re-lists.
+function onDirEnter(event) {
+  event.preventDefault()
+  refreshLot()
 }
 </script>
 
@@ -96,31 +93,24 @@ function onFieldEnter(event) {
       <header>
         <h2 id="batch-dlg-title">Batch mode</h2>
       </header>
-      <p class="caption">
-        Runs a numbered lot of task files through WorkBench, one task per chat
-        turn. The model reads each task file itself; the conversation context is
-        reset between tasks, so what carries over is what is on disk. A task
-        counts as finished only once its file has left this folder for
-        <code>done/</code>: a task whose file is still here is relaunched, up to
-        {{ retryLimit }} times, after which the lot aborts. Choose the MCP and
-        LSP connectors before launching — they freeze with the first task and
-        cannot change mid-lot.
-      </p>
 
       <form @submit.prevent="requestLaunch">
-        <label>
-          Task file prefix
-          <input
+        <p v-if="noBatchItems" class="caption">{{ NO_BATCH_ITEMS_MESSAGE }}</p>
+        <label v-else>
+          Task lot
+          <select
             v-model="state.prefix"
-            type="text"
-            spellcheck="false"
-            placeholder="ed-"
-            :disabled="state.active"
-            autocomplete="off"
+            :disabled="state.active || state.prefixesLoading"
             aria-describedby="batch-count"
-            @blur="validate"
-            @keydown.enter="onFieldEnter"
-          />
+            @change="onPrefixChange"
+          >
+            <option value="" disabled>
+              {{ state.prefixesLoading ? 'Listing…' : 'Select a prefix' }}
+            </option>
+            <option v-for="item in state.prefixes" :key="item.prefix" :value="item.prefix">
+              {{ item.prefix }} ({{ item.tasks }} {{ item.tasks === 1 ? 'task' : 'tasks' }})
+            </option>
+          </select>
         </label>
         <label>
           Lot folder (relative to the workspace)
@@ -129,10 +119,10 @@ function onFieldEnter(event) {
             type="text"
             spellcheck="false"
             placeholder="todos"
-            :disabled="state.loading || state.active"
+            :disabled="state.prefixesLoading || state.loading || state.active"
             autocomplete="off"
-            @blur="validate"
-            @keydown.enter="onFieldEnter"
+            @blur="refreshLot"
+            @keydown.enter="onDirEnter"
           />
         </label>
 
@@ -146,10 +136,6 @@ function onFieldEnter(event) {
         <p v-if="state.listing?.lotNote" class="caption">{{ state.listing.lotNote }}</p>
         <p v-if="doneFolderMissing" class="caption">{{ doneFolderHint }}</p>
 
-        <label class="checkbox">
-          <input v-model="state.includeLot" type="checkbox" :disabled="state.active" />
-          Include the big picture ({{ lotSize }})
-        </label>
         <p v-if="state.listing?.truncated" class="caption">
           More tasks than the app lists — the lot was truncated to
           {{ state.listing.tasks.length }} entries.

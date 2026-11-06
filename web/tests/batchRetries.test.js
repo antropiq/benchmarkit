@@ -312,7 +312,6 @@ function reset() {
   batch.loading = false
   batch.prefix = 'ed-'
   batch.dir = 'todos'
-  batch.includeLot = true
   batch.pinnedMode = null
   batch.modeNote = null
   agentModes.modes = []
@@ -669,5 +668,51 @@ describe('the lot pins its mode', () => {
     useBatch().clearBatchRun()
     expect(batch.pinnedMode).toBeNull()
     expect(batch.modeNote).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The big picture is a fact about the lot, not an option: there is no checkbox
+// any more, so a listing that found a 00 file sends it on every task turn, and
+// one that found none sends nothing.
+
+describe('the big picture rides automatically', () => {
+  beforeEach(reset)
+
+  it('a lot with a 00 file sends its text on every task turn', async () => {
+    const sent = []
+    const payloads = []
+    const tasks = [task(1, 'ed-01-a.md'), task(2, 'ed-02-b.md')]
+    stubRoutes({ sent, payloads, tasks })
+    await loadAgentModes()
+    seedLot(tasks)
+    batch.listing.lot = {
+      name: 'ed-00-lot.md',
+      path: 'todos/ed-00-lot.md',
+      size: 15,
+      heading: null,
+      text: 'the lot big picture',
+    }
+
+    await launch()
+
+    expect(payloads).toHaveLength(2)
+    for (const payload of payloads) {
+      expect(payload.batchContext).toBe('the lot big picture')
+    }
+  })
+
+  it('a lot without one sends no batchContext at all', async () => {
+    const sent = []
+    const payloads = []
+    const tasks = [task(1, 'ed-01-a.md')]
+    stubRoutes({ sent, payloads, tasks })
+    await loadAgentModes()
+    seedLot(tasks) // listingOf() carries lot: null
+
+    await launch()
+
+    expect(payloads).toHaveLength(1)
+    expect('batchContext' in payloads[0]).toBe(false)
   })
 })
