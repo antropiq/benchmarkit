@@ -92,12 +92,17 @@ function serverDetail(server) {
 
 // The workspace settings file's own report (D8/D9): ``failed`` carries its
 // sentence in ``error``, the still-holds-the-template-text state in
-// ``message``. The server's sentence already names the file and its path, so
-// the dialog shows it verbatim — adds nothing, translates nothing.
+// ``message``. ``absent`` carries its own too: production can never reach it
+// (the seed always creates the file), but the e2e suite's mode reads a
+// hand-authored file the app never seeds, so a switched-to workspace really can
+// have none — and empty fields with no explanation would read as an app bug.
+// The server's sentence already names the file and its path, so the dialog
+// shows it verbatim — adds nothing, translates nothing.
 const workspaceSettingsNote = computed(() => {
   const block = state.workspaceSettings
   if (!block) return null
   if (block.state === 'failed') return block.error || null
+  if (block.state === 'absent') return block.message || null
   if (block.state === 'ok' && !block.configured) return block.message || null
   return null
 })
@@ -125,11 +130,10 @@ const workspaceSettingsPath = computed(
     </header>
     <p class="caption settings-hint">
       The model connection is saved to this workspace's
-      <code>.nojae/nojae-settings.json</code><template v-if="workspaceSettingsPath">
-      (<code>{{ workspaceSettingsPath }}</code>)</template>; the verifier and
-      the question set go to the server-side <code>.env</code>. Saving here
-      applies right away; editing either file by hand needs a server restart.
-      Leave optional fields empty to omit them.
+      <code>{{ workspaceSettingsPath }}</code> — the file this server reads and
+      writes; the verifier and the question set go to the server-side
+      <code>.env</code>. Saving here applies right away; editing either file by
+      hand needs a server restart. Leave optional fields empty to omit them.
     </p>
 
     <p v-if="state.settingsError" class="alert-error" role="alert">

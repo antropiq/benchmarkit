@@ -1,9 +1,26 @@
 # Workspace-scoped LLM settings — `.nojae/nojae-settings.json`
 
-Status: spec, complete — no open questions. Not implemented. Scope: move the
-model-connection and sampling settings out of the global `.env` into a
-per-working-location file, so each workspace targets its own server, model,
-prompt and sampling parameters.
+**Status**: **landed** by lot `wss` (`todos/done/wss-01_workspace_settings_module.md`
+… `todos/done/wss-07_docs_readme_agents_spec.md`) — §5's module is
+`src/core/workspace_settings.py` and its template `nojae-settings.default.json`
+(ws-01); §3's seeding moments are `server._seed_workspace_settings()` and
+`routes.post_path_location()`, with D10's ordering pinned by
+`tests/test_workspace_settings_seed.py` (ws-02); D2/D6/D9's read side is
+`EndpointsConfig.from_workspace` plus `config.load_endpoints_config()`, guarded
+by `tests/test_env_isolation.py` (ws-03); §5's split writers are
+`routes.WORKSPACE_SETTING_KEYS`, `get_settings`/`post_settings` and `post_lsp`
+(ws-04); §5's dialog is `SettingsDialog.vue` (ws-05); ws-06 is the verification
+pass. §6's sentences are in the README and `AGENTS.md`. The §10 manual check is
+the human step, written down in
+[`nojae-settings-workspace-smoke-checklist.md`](nojae-settings-workspace-smoke-checklist.md).
+One follow-up extends it rather than re-opening it:
+[`nojae-test-settings-spec.md`](nojae-test-settings-spec.md) gives the e2e suite
+its own file of this same shape, so a spec can never reach a developer's server.
+This document is the lot's authority and its historical record — it was
+annotated, and is not to be revised: its present-tense descriptions of `.env`
+describe the state the lot started from. Scope: move the model-connection and
+sampling settings out of the global `.env` into a per-working-location file, so
+each workspace targets its own server, model, prompt and sampling parameters.
 
 ## 1. What this is for
 

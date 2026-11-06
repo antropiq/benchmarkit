@@ -35,10 +35,12 @@ const EXECUTABLE_PATH =
   process.env.PLAYWRIGHT_EXECUTABLE_PATH ??
   (process.platform === 'win32' ? undefined : '/usr/bin/chromium')
 
-// The env file that defines the LLM endpoint for the server under test.
-// `.env.test` (repo root, gitignored, copied from `.env.test.example`) names the
-// dedicated test server: it is the only endpoint a spec may reach, so the suite
-// never depends on — or silently passes against — the developer's own `.env`.
+// The env file holding the **app-level** keys for the server under test — the
+// question set, the debug switch and the verifier block, i.e. what `.env` holds
+// (`.env.test` is gitignored, copied from `.env.test.example`). It is *not* the
+// endpoint's home any more: the model connection lives in the workspace's
+// settings file, and the suite has its own one of those (below), so a spec can
+// never talk to the developer's workspace settings.
 // Resolved from this file's own location, not from `cwd`, so the run works from
 // `web/` or root.
 const ENV_FILE =
@@ -52,9 +54,38 @@ const ENV_FILE =
 if (!existsSync(ENV_FILE)) {
   throw new Error(
     `E2E env file not found: ${ENV_FILE}\n` +
-      'It is the only LLM endpoint a e2e spec may use. Point E2E_ENV_FILE at a ' +
-      'file with the same key set as .env.example, and make sure the server it ' +
-      'names is reachable.',
+      'It holds the app-level keys a e2e run uses. Point E2E_ENV_FILE at a ' +
+      'file with the same key set as .env.example.',
+  )
+}
+
+// The suite's own model connection: `.nojae/nojae-test-settings.json` at the
+// working location the server under test boots on — the same 14 members the
+// Settings dialog writes to `nojae-settings.json`, and the only settings file a
+// spec may read. The app never creates or writes it (it is hand-authored, like
+// `.env.test`), and with the switch below on there is no fallback to the
+// workspace file: a missing fixture must stop the suite here rather than look
+// like an app bug — or, worse, silently reach the developer's own server and key.
+//
+// Resolved the way the app resolves it: `BENCHMARKIT_PATH_LOCATION` when set,
+// else the repo root (the boot default), plus the reserved folder's file name.
+// `E2E_ENV_FILE` has no sibling override on purpose — a settings file named by
+// an env var could live outside the reserved folder, where the workspace policy
+// and the `.nojae` invisibility rules do not apply.
+const TEST_SETTINGS_FILE = join(
+  process.env.BENCHMARKIT_PATH_LOCATION?.trim() ||
+    join(dirname(fileURLToPath(import.meta.url)), '..'),
+  '.nojae',
+  'nojae-test-settings.json',
+)
+
+if (!existsSync(TEST_SETTINGS_FILE)) {
+  throw new Error(
+    `E2E test settings file not found: ${TEST_SETTINGS_FILE}\n` +
+      'It is the only model connection a e2e spec may use, and it is authored ' +
+      'by hand — the app never creates it. Write it beside the workspace ' +
+      'policy in that folder (see the "Setting up tests for benchmarkit" ' +
+      'section of the README) and make sure the server it names is reachable.',
   )
 }
 
@@ -166,6 +197,13 @@ export default defineConfig({
       ...TEST_ENV,
       BENCHMARKIT_DISABLE_MCP: '1',
       BENCHMARKIT_DISABLE_LSP: '1',
+      // The switch that makes the server under test read
+      // `.nojae/nojae-test-settings.json` instead of the workspace's own
+      // settings file — so no spec can reach the developer's live server and
+      // key. Applied last when the server is spawned, exactly like the two
+      // flags above, which is what beats an ambient value inherited from a
+      // running app's process tree.
+      BENCHMARKIT_TEST_SETTINGS: '1',
     },
   },
   globalSetup: './e2e/global-setup.js',

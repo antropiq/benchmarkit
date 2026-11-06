@@ -162,28 +162,97 @@ cd web && npm test    # frontend
 The suite is hermetic: it needs no reachable model, and `BENCHMARKIT_DISABLE_MCP`
 / `BENCHMARKIT_DISABLE_LSP` switch the two hubs off entirely.
 
+### Setting up tests for benchmarkit
+
+The end-to-end suite (`cd web && npm run test:e2e`) has **its own** model
+connection, so a spec can never talk to the server your workspace is configured
+with. Two files, one switch:
+
+| File | Holds |
+|---|---|
+| `.env.test` (from `.env.test.example`) | The **app-level** keys — `QUESTION_SET`, `LLM_DEBUG`, the four `VERIFIER_AGENT_*`, `BENCHMARKIT_PYTHON_ROOT`: the same set `.env` holds. |
+| `.nojae/nojae-test-settings.json` | The suite's **model connection** — the same members as the workspace's `nojae-settings.json`: server, key, model id, prompt, sampling, the vision flag, `lspEnabled`, `maxToolIteration`. |
+
+`web/playwright.config.js` parses `.env.test` into the environment of the server
+under test and exports `BENCHMARKIT_TEST_SETTINGS=1`, which is the one switch
+that makes that server read the test settings file instead of the workspace's
+own. Nothing else turns it on — the backend suite pins it off.
+
+**The test settings file is created by hand and never by the app.** It has no
+committed template and the app never seeds, saves or rewrites it, so a
+Settings-dialog save cannot change what the suite talks to, and it is invisible
+to the built-in Editor (`.nojae` is reserved) — edit it outside the app. It is
+gitignored with the rest of `.nojae`, so it may hold a real key; no document
+about it may.
+
+```json
+{
+  "serverUrl": "http://<test-host>:8080/v1",
+  "serverApiKey": "",
+  "endpoint": "<the test model id, exactly as the server names it>",
+  "supportsVision": false,
+  "sysprompt": "You are a helpful assistant.",
+  "temperature": 1,
+  "topP": 0.95,
+  "topK": 20,
+  "minP": 0,
+  "repeatPenalty": 1.0,
+  "presencePenalty": 0,
+  "reasoning": "off",
+  "lspEnabled": [],
+  "maxToolIteration": 25
+}
+```
+
+Write it at `<working location>/.nojae/nojae-test-settings.json` — the working
+location the server boots on, which is the repo root unless
+`BENCHMARKIT_PATH_LOCATION` says otherwise. The pinned samplers and
+`"reasoning": "off"` are what keep the streaming specs reproducible.
+
+**A missing file stops the whole suite before a spec runs**, with a message
+naming the path — there is no fallback to the workspace's settings file, because
+a suite that quietly reached your own server and key would be green while
+proving nothing. Fix it by writing the file above; then make sure the server it
+names is reachable, since the endpoint stays a real one.
+
+Two checks confirm the fixture really is what the suite talks to (one machine,
+by hand):
+
+1. Put a deliberately wrong `endpoint` in the file and run the suite — the
+   failure names `nojae-test-settings.json`.
+2. Move the file away and run it again — the suite refuses to start, before any
+   spec runs.
+
+Both are cheap, and together they rule out the one failure mode this file
+exists to prevent: a green run measured against someone else's server.
+
 ---
 
 ## 2. Configuring the app
 
-Three files hold everything, and **all three are hot**: a change is picked up by
-**Settings → Refresh MCP** / **Refresh LSP**, or by the toggles in the Settings
-dialog, without an app restart.
+Four files hold everything. The two hub declaration files are **hot**: a change
+is picked up by **Settings → Refresh MCP** / **Refresh LSP**, or by the toggles
+in the Settings dialog, without an app restart. `.env` and
+`.nojae/nojae-settings.json` follow the other rule: a save from the dialog is
+live at once, a hand-edit needs a server restart.
 
 | File | Declares |
 |---|---|
-| `.env` (from `.env.example`) | Endpoint, model, sampling, verifier, vision flag, and `BENCHMARKIT_PYTHON_ROOT` (the python the stdio connectors run on). |
+| `.env` (from `.env.example`) | The verifier, the question set, and `BENCHMARKIT_PYTHON_ROOT` (the python the stdio connectors run on). |
+| `.nojae/nojae-settings.json` (seeded from `nojae-settings.default.json`) | The model connection, sampling and LSP activation for this workspace. |
 | `.nojae/mcp-settings.json` (seeded from `mcp_connectors/mcp-settings.default.json`) | The MCP connectors the agent may call. |
 | `.nojae/lsp-settings.json` (written from the seeded `.nojae/lsp-settings.template.json`) | The language servers. |
 
 The two declaration files may carry API keys, so they are gitignored and their
-secrets are never returned by the API. Both belong to the **working
-location**: when a folder becomes it, the app seeds the MCP declaration from
-its committed template — with the `console` and `fedit` connectors
-pre-declared — and leaves the LSP *template* beside it, a copy of
-`lsp_connectors/lsp_servers.example.json`. Neither seed ever overwrites an
-existing file. The LSP declaration is never seeded as a working file — its
-entries name machine-local paths — you write it yourself from the template.
+secrets are never returned by the API; the settings file holds the model key too
+(gitignored with the rest of `.nojae`), and the Settings dialog writes it. All
+three belong to the **working location**: when a folder becomes it, the app
+seeds the model connection and the MCP declaration from their committed
+templates — the MCP one with the `console` and `fedit` connectors pre-declared —
+and leaves the LSP *template* beside it, a copy of
+`lsp_connectors/lsp_servers.example.json`. No seed ever overwrites an existing
+file. The LSP declaration is never seeded as a working file — its entries name
+machine-local paths — you write it yourself from the template.
 
 ### The MCP setup file — `.nojae/mcp-settings.json`
 
@@ -290,6 +359,16 @@ indexes, the file `extensions` it owns and the `tools` to expose. An enabled
 server adds `lsp_<id>_<action>` tools — diagnostics, hover, definition,
 references, symbols, completion, formatting — to the WorkBench tab.
 `${NAME}` expansion works here exactly as it does for MCP.
+
+Two gates must agree for a server to run: its `enable` flag in
+`lsp-settings.json` **and** its id in the `lspEnabled` array of
+`.nojae/nojae-settings.json`, so a prepared declaration can stay entirely
+dormant. The ids are the server ids in the file — `pyright`, `typescript` and
+`vue` in the examples below — and the Settings dialog's LSP section toggles
+that array for you (a hand-edit of it needs a server restart, as for every
+member of that file). A freshly seeded workspace has `lspEnabled: []`, so even
+a declaration with every `enable` set to true starts nothing until you switch
+the servers on there.
 
 Install the servers themselves with npm, the same line on either system (the
 `lsp` extra only brings the Python client side):
@@ -436,26 +515,36 @@ read-only) and edited outside the app — see
 
 ### LLM configuration — `.env`
 
-Copy `.env.example` to `.env` and point it at your server. Everything else is
-optional and editable later from the Settings dialog:
+Copy `.env.example` to `.env` when you want a verifier or a different question
+set. This file holds only what is scoped to **this benchmarkit install**: the
+model connection — server, key, model id, system prompt, sampling, the vision
+flag, the LSP ids to activate and the cap on one chat reply's tool loop — lives
+in the workspace's `.nojae/nojae-settings.json`, which the Settings dialog
+writes and which travels with the folder (see the table at the top of this
+section). What is left here is the verifier, the question set and two technical
+keys, and the dialog edits the first two but not those two:
 
 ```bash
-SERVER_URL=http://127.0.0.1:8080/v1
-SERVER_URL_API_KEY=not-needed
-ENDPOINT=my-model
-#SUPPORTS_VISION=1                  # enables the WorkBench image attach button
-#TEMPERATURE=0.2
-#REASONING=off|low|medium|high|xhigh
-#MAX_TOOL_ITERATION=25              # tool-loop cap for one WorkBench reply
+#QUESTION_SET=legacy                # resources/<name>.json
 #LLM_DEBUG=1                        # logs every request payload to the console
 #VERIFIER_AGENT_SERVERURL=http://127.0.0.1:8080/v1   # second model, Benchmark tab
 #VERIFIER_AGENT_ENDPOINT=verifier-model
+#BENCHMARKIT_PYTHON_ROOT=           # the python the stdio connectors run on
 ```
+
+`LLM_DEBUG` and `BENCHMARKIT_PYTHON_ROOT` are **hand-edited**: they are managed
+keys, so a settings save keeps them, but nothing in the dialog edits them.
+`LLM_DEBUG=1` makes the LLM client log the payload of every request to the
+server console — very verbose, and switched back off once the failure is read.
 
 A `.env` save **regenerates the file from a fixed template**: fixed key set and
 order, empty optional keys commented out, hand-written extras lost. Add or rename
 a key and you change the template, the renderer and the committed example
 together.
+
+The e2e suite reads the same app-level keys from `.env.test`, and its model
+connection from the test settings file — see
+[Setting up tests for benchmarkit](#setting-up-tests-for-benchmarkit).
 
 ### Run
 
@@ -465,9 +554,10 @@ Both systems, once the two builds above are done:
 benchmarkit          # API + UI on http://127.0.0.1:8000
 ```
 
-Nothing else is required — a fresh checkout with no configuration gives you a
-working WorkBench and a working Editor; the connectors and servers only decide
-how far the agent may reach.
+Nothing else is required for the Editor. A fresh checkout's WorkBench needs one
+thing: the model connection, which the Settings dialog writes into the
+workspace's settings file — a freshly seeded one is not configured yet and says
+so. The connectors and servers only decide how far the agent may reach.
 
 ---
 
@@ -499,7 +589,7 @@ between tasks, and continuity comes from disk: git and the files that moved.
 Batch mode refuses to start unless the connectors it depends on are on.
 
 Around the composer: the reasoning and tool panel (every tool call, its result
-and the server that answered), image attach when `SUPPORTS_VISION` is set,
+and the server that answered), image attach when `supportsVision` is on,
 workspace-scoped prompt helpers, a session stopwatch and context-size badge, and
 Save / Load of a conversation as a plain JSON file. Markdown renders with KaTeX,
 highlighted code and Mermaid diagrams, always through the sanitizer.
@@ -545,4 +635,6 @@ All three tabs call the model through the same client against an
 OpenAI-compatible endpoint — llama.cpp, vLLM, or a hosted one — so adding a model
 is configuration, never code. Every event the server emits is numbered, so a
 reconnecting browser replays what it missed and a refresh loses nothing.
-Configuration changes take effect hot: no restart, ever.
+Configuration changes are live the moment the Settings dialog saves them; a
+hand-edit of a hub declaration file is picked up by its **Refresh**, and only a
+hand-edit of `.env` or of the workspace settings file waits for a server restart.

@@ -453,3 +453,190 @@ class TestTheStateVocabulary:
         state = workspace_settings.workspace_settings_state()
         assert state["state"] == "failed"
         assert workspace_settings.load_workspace_settings() == {}
+
+
+# -- the test-settings switch (T-D1 … T-D8) ------------------------------------
+
+
+@pytest.fixture
+def test_mode(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Turn the switch on for one test (T-D2: it is read per call).
+
+    ``tests/conftest.py``'s autouse fixture pins it off for the suite, so a test
+    that wants the mode asks for it here — and gets the mode's own filename back
+    for the helpers below to build their paths with.
+    """
+    monkeypatch.setenv(workspace_settings.TEST_SETTINGS_KEY, "1")
+    return workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME
+
+
+def suite_settings_path(root: Path) -> Path:
+    """The **test** file's path under ``root``, from the module's attributes."""
+    return (
+        root
+        / workspace_settings.POLICY_DIRNAME
+        / workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME
+    )
+
+
+class TestTheSwitchPicksTheFile:
+    def test_off_answers_the_production_name(self, workspace: Path):
+        assert workspace_settings.test_settings_mode() is False
+        assert workspace_settings.active_settings_filename() == (
+            workspace_settings.WORKSPACE_SETTINGS_FILENAME
+        )
+        assert workspace_settings.workspace_settings_path() == str(
+            settings_path(workspace)
+        )
+
+    def test_on_answers_the_test_name_at_the_active_root(
+        self, workspace: Path, test_mode: str, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The mode moves the lookup, and a location switch moves it again (D4)."""
+        assert workspace_settings.active_settings_filename() == test_mode
+        assert workspace_settings.workspace_settings_path() == str(
+            suite_settings_path(workspace)
+        )
+        elsewhere = workspace / "elsewhere"
+        monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(elsewhere))
+        assert workspace_settings.workspace_settings_path() == str(
+            suite_settings_path(elsewhere)
+        )
+
+    def test_the_two_names_differ(self):
+        """One name for both would make a spec read the developer's live key."""
+        assert (
+            workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME
+            != workspace_settings.WORKSPACE_SETTINGS_FILENAME
+        )
+
+
+class TestTheReaderFollowsTheSwitch:
+    def test_with_both_files_present_only_the_test_file_answers(
+        self, workspace: Path, test_mode: str
+    ):
+        """T-D3, no fallback: the workspace file's values never answer here."""
+        write_settings(workspace, configured(serverUrl="http://dev-live:9/v1",
+                                             serverApiKey="the-developers-key"))
+        suite_settings_path(workspace).parent.mkdir(exist_ok=True)
+        suite_settings_path(workspace).write_text(
+            configured(serverUrl="http://suite:9/v1", endpoint="suite-model"),
+            encoding="utf-8",
+        )
+        assert workspace_settings.test_settings_mode() is True
+
+        state = workspace_settings.workspace_settings_state()
+        assert state["state"] == "ok"
+        assert state["configured"] is True
+        assert state["path"] == str(suite_settings_path(workspace))
+        assert workspace_settings.workspace_setting("serverUrl") == "http://suite:9/v1"
+        assert workspace_settings.workspace_setting("serverApiKey") == ""
+
+    def test_an_absent_test_file_is_absent_not_the_workspace_file(
+        self, workspace: Path, test_mode: str
+    ):
+        """The seed always creates the production file — and that is not a fixture."""
+        workspace_settings.ensure_workspace_settings_file(str(workspace))
+        assert settings_path(workspace).is_file()
+
+        assert workspace_settings.load_workspace_settings() == {}
+        state = workspace_settings.workspace_settings_state()
+        assert state["state"] == "absent"
+        assert state["path"] == str(suite_settings_path(workspace))
+        assert state["message"] and str(suite_settings_path(workspace)) in state["message"]
+
+    def test_the_refusal_sentence_names_the_test_file(
+        self, workspace: Path, test_mode: str
+    ):
+        from src import config as config_module
+
+        refusal = config_module.workspace_settings_refusal()
+        assert refusal is not None
+        assert workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME in refusal
+
+    def test_an_unknown_member_in_the_test_file_fails(self, workspace: Path, test_mode: str):
+        """D9 applies to the test file verbatim (T-D8)."""
+        suite_settings_path(workspace).parent.mkdir(exist_ok=True)
+        suite_settings_path(workspace).write_text(
+            configured(temperture=0.2), encoding="utf-8"
+        )
+        state = workspace_settings.workspace_settings_state()
+        assert state["state"] == "failed"
+        assert "temperture" in state["error"]
+
+    def test_a_wrong_type_in_the_test_file_fails(self, workspace: Path, test_mode: str):
+        suite_settings_path(workspace).parent.mkdir(exist_ok=True)
+        suite_settings_path(workspace).write_text(
+            configured(topK="20"), encoding="utf-8"
+        )
+        state = workspace_settings.workspace_settings_state()
+        assert state["state"] == "failed"
+        assert "topK" in state["error"]
+
+
+class TestTheWriterRefusesTheTestFile:
+    def test_a_save_refuses_in_test_mode_and_leaves_the_bytes_untouched(
+        self, workspace: Path, test_mode: str
+    ):
+        """T-D5: the fixture the next spec depends on is never rewritten."""
+        raw = configured(serverUrl="http://suite:9/v1")
+        path = suite_settings_path(workspace)
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(raw, encoding="utf-8")
+
+        with pytest.raises(workspace_settings.WorkspaceSettingsFileError) as caught:
+            workspace_settings.save_workspace_settings({"serverUrl": "http://evil/v1"})
+        assert workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME in str(caught.value)
+        assert path.read_text(encoding="utf-8") == raw
+
+    def test_a_save_refuses_even_when_the_test_file_is_absent(
+        self, workspace: Path, test_mode: str
+    ):
+        with pytest.raises(workspace_settings.WorkspaceSettingsFileError):
+            workspace_settings.save_workspace_settings({"serverUrl": "http://evil/v1"})
+        assert not suite_settings_path(workspace).exists()
+
+
+class TestTheSeederIgnoresTheSwitch:
+    def test_the_seed_still_writes_the_production_name_in_test_mode(
+        self, workspace: Path, test_mode: str
+    ):
+        """T-D4: the reserved folder's file set never depends on the mode."""
+        result = workspace_settings.ensure_workspace_settings_file(str(workspace))
+        assert result["state"] == "created"
+        assert result["path"] == str(settings_path(workspace))
+        assert settings_path(workspace).is_file()
+        assert not suite_settings_path(workspace).exists()
+        # And the file in use is still the absent test file, not the seed.
+        assert workspace_settings.workspace_settings_state()["state"] == "absent"
+
+
+class TestTheSelfCheckPinsTheTables:
+    def test_the_import_check_fails_when_the_test_table_loses_a_member(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """T-D8: the production table must stay a subset of the test one.
+
+        A dropped member would make the suite's own fixture read as malformed —
+        or, with the check gone, a silently-defaulted sampler would make a green
+        e2e run mean nothing.
+        """
+        shrunk = dict(workspace_settings.WORKSPACE_TEST_SETTINGS_KEYS)
+        shrunk.pop("temperature")
+        monkeypatch.setattr(
+            workspace_settings, "WORKSPACE_TEST_SETTINGS_KEYS", shrunk
+        )
+        with pytest.raises(ValueError) as caught:
+            workspace_settings._self_check()
+        assert "temperature" in str(caught.value)
+
+    def test_the_import_check_fails_when_the_two_names_collide(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            workspace_settings,
+            "WORKSPACE_TEST_SETTINGS_FILENAME",
+            workspace_settings.WORKSPACE_SETTINGS_FILENAME,
+        )
+        with pytest.raises(ValueError):
+            workspace_settings._self_check()

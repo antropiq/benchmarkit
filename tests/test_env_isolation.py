@@ -228,3 +228,74 @@ class TestTheEnvWipeLoopsStillCoverWhatStaysInTheEnv:
             "BENCHMARKIT_PYTHON_ROOT",
         ):
             assert key in config_module.SETTING_KEYS
+
+
+class TestTheTestSettingsSwitchCannotLeakIntoTheSuite:
+    """T-D7: the e2e switch is pinned off, so it cannot redirect these reads.
+
+    ``BENCHMARKIT_TEST_SETTINGS`` makes a process read the suite's own
+    ``.nojae/nojae-test-settings.json`` — a hand-authored fixture the app never
+    seeds. An exported ``1`` in the runner's shell would leave every test here
+    reading a file that is not there, failing en masse for a reason no traceback
+    explains, so ``tests/conftest.py`` clears the key and these cases pin that.
+    """
+
+    @pytest.fixture(autouse=True, scope="module")
+    def ambient_switch_is_exported(self):
+        """Put the switch in the environment for this module, as a shell would.
+
+        A module-scoped autouse fixture runs *before* the function-scoped guard
+        this file is about, so every test here starts with the key exported —
+        the exact leak ``tests/conftest.py`` exists to close. Drop that guard and
+        the cases below go red on this machine rather than passing quietly, which
+        is what makes this a test of the guard and not of the ambient shell.
+        """
+        saved = os.environ.get(workspace_settings.TEST_SETTINGS_KEY)
+        os.environ[workspace_settings.TEST_SETTINGS_KEY] = "1"
+        yield
+        if saved is None:
+            os.environ.pop(workspace_settings.TEST_SETTINGS_KEY, None)
+        else:
+            os.environ[workspace_settings.TEST_SETTINGS_KEY] = saved
+
+    def test_the_guard_clears_an_ambient_value(self):
+        """The exported ``1`` above is gone by the time a test body runs."""
+        assert workspace_settings.TEST_SETTINGS_KEY not in os.environ
+        assert workspace_settings.test_settings_mode() is False
+        assert workspace_settings.active_settings_filename() == (
+            workspace_settings.WORKSPACE_SETTINGS_FILENAME
+        )
+        # And the read side answers the production name, so a group-1 value can
+        # only come from a file this test wrote.
+        assert workspace_settings.workspace_settings_state()["path"].endswith(
+            workspace_settings.WORKSPACE_SETTINGS_FILENAME
+        )
+
+    def test_with_the_switch_on_no_test_reads_the_production_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        """The mode is reachable per test — and then the workspace file is dead."""
+        neutralise_workspace_settings(monkeypatch, tmp_path,
+                                      serverUrl="http://dev-live:9/v1")
+        monkeypatch.setenv(workspace_settings.TEST_SETTINGS_KEY, "1")
+        workspace_settings.invalidate_workspace_settings()
+
+        state = workspace_settings.workspace_settings_state()
+        assert state["state"] == "absent"
+        assert state["path"].endswith(
+            workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME
+        )
+        assert workspace_settings.load_workspace_settings() == {}
+        assert workspace_settings.workspace_setting("serverUrl") is None
+
+        config, error = load_endpoints_config()
+        assert config is None
+        assert isinstance(error, str)
+        assert workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME in error
+
+    def test_the_two_names_are_named_by_the_module_not_by_a_literal(self):
+        """These cases exercise the real lookup only if the names differ."""
+        assert workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME != (
+            workspace_settings.WORKSPACE_SETTINGS_FILENAME
+        )
+        assert workspace_settings.TEST_SETTINGS_KEY == "BENCHMARKIT_TEST_SETTINGS"

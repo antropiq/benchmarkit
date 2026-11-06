@@ -386,6 +386,25 @@ def _no_lsp_processes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_test_settings_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the e2e settings switch **off** for the whole backend suite (T-D7).
+
+    ``BENCHMARKIT_TEST_SETTINGS`` makes a process read
+    ``.nojae/nojae-test-settings.json`` instead of the workspace's own settings
+    file. That file is a hand-authored e2e fixture the app never seeds, so an
+    exported ``1`` in the runner's shell would leave the *whole* suite reading a
+    file that is not there and failing en masse for a reason no traceback
+    explains. Clearing it here is what keeps the suite's answer independent of
+    the machine it runs on; the e2e suite is the only thing that turns it on,
+    through ``web/playwright.config.js``. A unit test that wants the mode flips
+    it itself with ``monkeypatch.setenv`` — the switch is read per call.
+    """
+    from src.core import workspace_settings
+
+    monkeypatch.delenv(workspace_settings.TEST_SETTINGS_KEY, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_trash_of_its_own(monkeypatch: pytest.MonkeyPatch,
                          tmp_path: Path) -> None:
     """Keep every test's sweep off the app repo's legacy ``logs/trash``.
@@ -529,7 +548,8 @@ def write_workspace_settings(
     report the file *not configured* (spec D8).
 
     The path is built from the module's own ``POLICY_DIRNAME`` /
-    ``WORKSPACE_SETTINGS_FILENAME`` — never a literal — and the settings cache is
+    ``active_settings_filename()`` — never a literal — so a test that flips the
+    test-settings mode writes the file that mode reads, and the settings cache is
     invalidated so the write answers immediately (D4: a hand-write is not a
     restart).
     """
@@ -545,7 +565,7 @@ def write_workspace_settings(
     raw.update(members)
     folder = root / workspace_settings.POLICY_DIRNAME
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / workspace_settings.WORKSPACE_SETTINGS_FILENAME
+    path = folder / workspace_settings.active_settings_filename()
     path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
     workspace_settings.invalidate_workspace_settings()
     return path

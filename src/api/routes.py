@@ -586,7 +586,9 @@ def _settings_json(values: Dict[str, str]) -> Dict[str, Any]:
     for field, member in WORKSPACE_SETTING_KEYS.items():
         value = workspace.get(member)
         if value is None:
-            value = _WORKSPACE_ABSENT[workspace_settings.WORKSPACE_SETTINGS_KEYS[member]]
+            value = _WORKSPACE_ABSENT[
+                workspace_settings.active_settings_keys()[member]
+            ]
         data[field] = value
     data["sysprompt"] = workspace.get("sysprompt") or DEFAULT_LLM_SYSPROMPT
     data["questionSet"] = values.get("QUESTION_SET", "")
@@ -620,7 +622,7 @@ def _workspace_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         text = (raw or "").strip()
         if not text:
             continue
-        expected = workspace_settings.WORKSPACE_SETTINGS_KEYS[member]
+        expected = workspace_settings.active_settings_keys()[member]
         if expected is bool:
             # The dialog's checkbox sends a native boolean (handled above);
             # this pass exists for hand-written clients still sending the
@@ -661,7 +663,18 @@ def _save_workspace_group_one(current: Dict[str, Any], values: Dict[str, Any]) -
     through the writer in one save, which over an absent file writes exactly
     the members it is given. The module stays the file's only writer and the
     only formater of its bytes.
+
+    The test-mode refusal is consulted **here as well as in the writer**, and
+    before the ``os.remove`` below: this is the one caller that deletes the file
+    it is about to write, so a refusal that only lived in the writer would have
+    already destroyed the suite's fixture. Both call sites ask the same
+    predicate, so neither can disagree about what is refused.
     """
+    if workspace_settings.test_settings_mode():
+        raise HTTPException(
+            status_code=409,
+            detail=workspace_settings.test_settings_write_refusal(),
+        )
     owned = set(WORKSPACE_SETTING_KEYS.values())
     carried = {m: v for m, v in current.items() if m not in owned}
     desired = {**carried, **values}

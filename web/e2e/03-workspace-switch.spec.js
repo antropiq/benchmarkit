@@ -61,17 +61,28 @@ function expectedPath(root, rel) {
   return path.join(root, rel).replaceAll(path.sep, '/')
 }
 
-// The committed template the seed copies byte for byte, read from the install
-// (this file's own `../../..`, the way `playwright.config.js` locates the repo).
-// Its `serverUrl` is an instruction sentence, which is exactly what a freshly
-// seeded workspace's Settings dialog answers with — the not-configured state
-// the lot calls D8. Read from the checkout rather than hardcoded so the spec
-// follows the template instead of pinning its wording.
+// The install root, from this file's own `../../..` — the way
+// `playwright.config.js` locates the repo, and the same join that file uses to
+// find the suite's settings fixture.
 const REPO_ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
-function templateDocument() {
-  return JSON.parse(
-    fs.readFileSync(path.join(REPO_ROOT, 'nojae-settings.default.json'), 'utf8'),
-  )
+
+// The suite's own model connection: the file the server under test is configured
+// from, because `playwright.config.js` exports `BENCHMARKIT_TEST_SETTINGS` and
+// refuses to start the suite without it. Read from disk with `node:fs` — the
+// folder is reserved, so no Editor route can see it — and resolved the way the
+// app resolves it: `BENCHMARKIT_PATH_LOCATION` when set, else the repo root.
+//
+// This is the assertion that pins "the suite talks to the fixture, never to
+// wherever the app happens to be pointed": the dialog's `serverUrl` field is
+// compared to *this file's* value, so a spec that started reaching the
+// developer's workspace settings fails instead of passing.
+const TEST_SETTINGS_FILE = path.join(
+  (process.env.BENCHMARKIT_PATH_LOCATION || '').trim() || REPO_ROOT,
+  '.nojae',
+  'nojae-test-settings.json',
+)
+function testSettingsDocument() {
+  return JSON.parse(fs.readFileSync(TEST_SETTINGS_FILE, 'utf8'))
 }
 
 // The app's own spelling of a path — `os.path.realpath`'s answer, which spells
@@ -339,18 +350,21 @@ test('unsaved edits are reported when the switch closes their tab', async ({ pag
   await expect(notice).toContainText('1 tab closed with unsaved changes')
 })
 
-// The headline behaviour of the workspace-scoped model connection: the Settings
-// dialog means a *different* server per workspace, so it has to name a different
-// file and answer with different values on either side of a switch — and give
-// the original ones back on the way home. This is the manual check's first half
-// (spec section 10) made permanent.
+// The headline behaviour of the workspace-scoped model connection, seen through
+// the suite's own fixture: the Settings dialog means a *different* file per
+// workspace, so it has to name a different path and answer with different values
+// on either side of a switch — and give the original ones back on the way home.
 //
-// Nothing here generates and nothing is saved: the dialog is only ever read, and
-// the boot root's own values are compared to themselves after the round trip
-// rather than hardcoded, so the spec passes whatever model this machine has
-// configured. The scratch root is freshly seeded, so its dialog is the
-// not-configured case the lot calls D8: valid JSON, instruction sentences, and
-// the server's own note saying so — never a transport error quoting one.
+// The server under test runs with `BENCHMARKIT_TEST_SETTINGS` exported, so the
+// file in use at **both** roots is `nojae-test-settings.json`, and the boot
+// root's values are compared to that file's own bytes rather than to themselves:
+// the assertion that would have caught a suite silently talking to the
+// developer's workspace settings. Nothing is saved — a group-1 save is refused
+// in this mode, and the dialog is only ever read.
+//
+// The scratch root has no test settings file (the app never seeds one), so its
+// dialog is the `absent` state with the reader's own sentence — the state
+// production can never reach, because there the seed always creates the file.
 test('the settings dialog follows the workspace it is opened in', async ({
   page,
   request,
@@ -359,17 +373,18 @@ test('the settings dialog follows the workspace it is opened in', async ({
   bootRoot = original
   expect((await create(request, SCRATCH, true)).ok()).toBe(true)
   const scratchAbs = expectedPath(original, SCRATCH)
-  // The path the dialog is expected to name, per root — the same join the
-  // server builds it from, in the host's own spelling.
-  const settingsFile = (root) => path.join(root, '.nojae', 'nojae-settings.json')
+  // The path the dialog is expected to name, per root — the **test** file, which
+  // is the one in use while the switch is on, in the host's own spelling.
+  const settingsFile = (root) => path.join(root, '.nojae', 'nojae-test-settings.json')
   // The LLM section's own fields: the verifier section has a 'Server URL' of
   // its own, and `v-show` keeps it in the DOM, so an unscoped label is two
   // elements.
   const llmSection = page.locator('.settings-editor > section').first()
   const serverField = llmSection.getByLabel('Server URL')
-  const notConfigured = page.locator('.settings-dialog .alert-error', {
-    hasText: 'still holds the template',
-  })
+  // The LLM section's own note (the workspace file's report), not the dialog's
+  // top-level save errors — same scoping reason as the field above.
+  // `.first()` because the section renders other error lines further down.
+  const note = llmSection.locator('.alert-error').first()
   const hint = page.locator('.settings-hint')
   const openSettings = async () => {
     // The dialog renders from the payload it already holds and is filled by the
@@ -386,33 +401,91 @@ test('the settings dialog follows the workspace it is opened in', async ({
 
   await page.goto('/')
 
-  // 1. At the boot root: this root's file, named in the dialog, and its values.
+  // 1. At the boot root: the test file, named in the dialog, holding the values
+  // read from that same file off disk — not compared to themselves, which is the
+  // assertion that pins the suite onto its fixture.
   await openSettings()
-  await expect(hint).toContainText('.nojae/nojae-settings.json')
   expect(fold(await hint.innerText())).toContain(fold(settingsFile(original)))
+  expect(fold(await hint.innerText())).not.toContain(
+    fold(path.join(original, '.nojae', 'nojae-settings.json')),
+  )
   const bootServer = await serverField.inputValue()
-  // Whether *this* workspace is configured is the machine's business, so it is
-  // recorded and compared rather than assumed.
-  const bootNotConfigured = await notConfigured.count()
+  expect(bootServer).toBe(testSettingsDocument().serverUrl)
+  // A configured fixture answers no note at all.
+  await expect(note).toHaveCount(0)
   await page.locator('.settings-dialog').getByRole('button', { name: 'Cancel' }).click()
 
-  // 2. In the scratch root: its own path, and that workspace's own file — the
-  // template's sentence, reported as not configured rather than dialled (D8).
+  // 2. In the scratch root: its own path, and the `absent` state — the app never
+  // seeds a test settings file, so this workspace has none and the dialog says so
+  // rather than showing empty fields with no explanation.
   await setRoot(page, scratchAbs)
   await openSettings()
   expect(fold(await hint.innerText())).toContain(fold(settingsFile(scratchAbs)))
   expect(fold(await hint.innerText())).not.toContain(fold(settingsFile(original)))
-  await expect(serverField).toHaveValue(templateDocument().serverUrl)
-  await expect(notConfigured).toHaveCount(1)
-  expect(fold(await notConfigured.innerText())).toContain(fold(settingsFile(scratchAbs)))
+  await expect(serverField).toHaveValue('')
+  await expect(note).toHaveCount(1)
+  await expect(note).toContainText('there is no workspace settings file at')
+  expect(fold(await note.innerText())).toContain(fold(settingsFile(scratchAbs)))
   await page.locator('.settings-dialog').getByRole('button', { name: 'Cancel' }).click()
 
-  // 3. Home: the boot root's file is named again and its own values are back.
+  // 3. Home: the boot root's test file is named again and its own values are back.
   await setRoot(page, original)
   await openSettings()
   expect(fold(await hint.innerText())).toContain(fold(settingsFile(original)))
   await expect(serverField).toHaveValue(bootServer)
-  await expect(notConfigured).toHaveCount(bootNotConfigured)
+  await expect(note).toHaveCount(0)
   await page.locator('.settings-dialog').getByRole('button', { name: 'Cancel' }).click()
+})
+
+// A WorkBench reply at the boot root, so the suite is proven *configured* and
+// not merely readable: with the switch on, a mispointed or malformed fixture
+// refuses with the reader's own sentence naming the file, which is a far more
+// honest failure than a timeout. Nothing is asserted about the wording — the
+// endpoint is a real server, so only the shape of the stream is.
+test('the boot root streams a reply from the test settings file', async ({
+  page,
+  request,
+}) => {
+  bootRoot = await currentRoot(request)
+
+  await page.goto('/')
+  await page.getByRole('tab', { name: 'WorkBench' }).click()
+  await page.locator('.chat-textarea').fill('Reply with exactly one word.')
+  await page.locator('.chat-send').click()
+
+  // Both scoped to the WorkBench output column: tab views stay mounted through
+  // `v-show`, and the Benchmark tab renders `.question-card`s of its own.
+  const output = page.locator('.chat-output')
+  const error = output.locator('.error-line')
+  const replies = output.locator('.question-card')
+  await expect(replies).toHaveCount(1)
+  // Wait for the reply to **finish**: the composer swaps Send for Stop while one
+  // streams, so Send being back is the stream's own end. Leaving it in flight
+  // would make the next spec's working-location switch — or any other mutation —
+  // answer 409 for a reason that has nothing to do with what it asserts.
+  //
+  // The bound is the test's own, not the 30 s expect default: this is the only
+  // spec that streams, and it is the first thing to ask the model after the
+  // server booted, so a cold server's first reply carries its load/warm-up time
+  // — measured here at ~31 s against a 2 s warm one. Bounding that wait at 30 s
+  // is a flake that costs the *next* spec too: the reply is still in flight, so
+  // the shared afterEach's restore of the working location answers 409 and an
+  // unrelated spec fails. Nothing is weakened — the stream must still end, and
+  // the refusal below still fires well inside the bound. Kept under the test's
+  // own 120 s budget (playwright.config.js), which is the wait that actually
+  // fails the spec.
+  await expect(page.locator('.chat-send:not(.chat-stop)')).toBeVisible({
+    timeout: 90_000,
+  })
+  // A misconfigured fixture refuses with the reader's sentence on the error line
+  // rather than streaming; a real reply lands in the card. Checking the refusal
+  // first means a failure says which of the two happened.
+  await expect(error).toHaveCount(0)
+  const answer = replies.first().locator('.answer')
+  await expect
+    .poll(async () => (await answer.innerText()).trim().length)
+    .toBeGreaterThan(0)
+  // And the reply is the model's own, not a fragment of a cut stream.
+  await expect(replies.locator('.chat-truncated')).toHaveCount(0)
 })
 

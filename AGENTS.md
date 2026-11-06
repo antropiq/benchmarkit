@@ -102,8 +102,8 @@ Vite + Vue 3, plain JavaScript, Pico.css.
   `tools/nerd_icons.py`. Edit the tables and regenerate; never hand-edit the
   generated artifacts.
 
-Configuration — `.env` and the two hub declaration files — is edited from the UI
-and takes effect hot, so a change never needs an app restart.
+Configuration is edited from the UI and takes effect hot — except a hand-edit of
+`.env` or of the workspace's model-connection file, which waits for a restart.
 
 ## How a request flows
 
@@ -139,24 +139,27 @@ Measurement rules hold across every stream:
 
 | File | Role |
 |---|---|
-| `.env` | Run configuration: endpoint, key, prompt, sampling, set, verifier. |
-| `.env.test` | Test-only endpoint, same key set as the template. |
+| `.env` | Install-scoped run configuration: verifier, question set, the two hand-edited technical keys. |
+| `.nojae/nojae-settings.json` | This workspace's model connection and which language servers it activates — seeded from a committed template at the install root, written by the Settings dialog. |
+| `.env.test` | The e2e suite's app-level keys — the same set `.env` holds. |
+| `.nojae/nojae-test-settings.json` | The e2e suite's model connection — hand-authored, never seeded or written by the app, read only under the test switch. |
 | `resources/*.json` | Question sets — every file there is one selectable set. |
 | `results.json` | Run output, written once when a run ends. |
 | MCP connector declarations | Which connectors exist: `remote` (HTTP) or `local` (stdio) — the working location's file in the reserved folder, seeded from a committed template. |
 | Language-server declarations | Which servers exist: a stdio command and its workspace root — the working location's file in the reserved folder, hand-written from the seeded template (the committed example in `lsp_connectors/` is that template's source). |
-| Reserved workspace folder | This workspace's read/write policy, its agent-mode personas, its hub declarations, and the app-owned prompt-helper store. |
+| Reserved workspace folder | This workspace's read/write policy, its agent-mode personas, its hub declarations, and the two stores the app writes — prompt helpers and the model connection. |
 
 Those files may hold secrets, so they are gitignored and each has a committed
-template; the reserved folder's files have no template — the app seeds them.
-These rules tie them together:
+template; a reserved-folder file has no template beside it — the app seeds it
+from one kept outside the folder. These rules tie them together:
 
 - **`.env` is regenerated from a fixed template on every save** — fixed key set
   and order, empty optional keys commented out, hand-written extras lost. A new
   or renamed key means changing the template, the renderer and the committed
   example together.
 - **The declaration files are the only source of truth for what runs.** Their
-  `enable` flag is the switch; their secrets never leave the server. A value may
+  `enable` flag is the switch (a language server needs its id in the workspace's
+  model-connection file too); their secrets never leave the server. A value may
   reference an environment variable so one declaration works on every machine; an
   unresolved name is kept verbatim with a note, never blanked. `${PROJECT_ROOT}`
   is no environment variable: it answers from the app's own computed install
@@ -171,10 +174,10 @@ These rules tie them together:
   rather than silently dropped.
 - **The reserved folder is seeded, then read-only to the app**: its files are
   created only when absent, so an edited file is never clobbered, and they are
-  changed only outside the app — except the app's own prompt-helper store,
-  which it writes. The folder is hidden from the tree, from reads and from
-  git status; failed seeding is a reported note, never a refusal. Deleted files
-  land in its dated batches instead of vanishing.
+  changed only outside the app — except the two stores it writes, its prompt-helper
+  store and this workspace's model-connection file. The folder is hidden from the
+  tree, from reads and from git status; a failed seed is a note, never a refusal.
+  Deleted files land in its dated batches instead of vanishing.
 - **Path rules come from two levels, one verdict: the strictest match wins.** One
   level is the app's rules about files the app itself writes, active only while
   the working location is the app's own directory — so another project's config
@@ -229,9 +232,9 @@ These rules tie them together:
 - **This file feeds the chat**: when the working location carries it, it is
   injected into every chat turn and re-read per request. The model acts on it, so
   accuracy matters more than volume.
-- **Tests stay hermetic**: connectors and language servers can be disabled by an
-  environment flag, and a test patches a hub's declared file location through that
-  hub's own constants rather than a path it computed.
+- **Tests stay hermetic**: an environment flag disables the hubs, a test patches a
+  hub's declared file location through that hub's own constants, and
+  `tests/test_env_isolation.py` keeps a test from reading a real model connection.
 
 ## Gotchas
 

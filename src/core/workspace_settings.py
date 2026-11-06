@@ -42,6 +42,17 @@ handing the mapping to ``EndpointsConfig`` and trusting it:
   reader answers ``ok`` but *not configured*, and the caller says "not
   configured" with the file's path instead of making a transport call with a
   sentence.
+
+One switch decides **which file of this shape a process reads**: with
+``BENCHMARKIT_TEST_SETTINGS`` truthy, the file in use is the e2e suite's own
+``.nojae/nojae-test-settings.json`` — hand-authored, never seeded, never written
+(the writer refuses first thing in that mode), and with **no fallback** to the
+workspace file in either direction. That is what stops a spec benchmarking,
+chatting and grading against the developer's live server and key. Everything
+else — the seed, the reader, the state vocabulary — is the same code for both
+names: the read side resolves its path through :func:`workspace_settings_path`,
+so one seam moves every caller, and the sentences interpolate that path, so a
+refusal in test mode names the test file on its own.
 """
 
 import json
@@ -51,7 +62,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from src.config import PROJECT_ROOT, path_location
+from src.config import PROJECT_ROOT, env_flag, path_location
 
 # The reserved folder's name is not re-declared here: it comes from
 # ``mcp_connectors/policy_shared``, with the same ``sys.path`` fallback
@@ -74,6 +85,21 @@ POLICY_DIRNAME: str = shared.POLICY_DIRNAME
 #: ``agent-modes.json`` in the reserved folder. A module attribute so a test can
 #: move the lookup — the repo's ``mcphub.constants`` convention.
 WORKSPACE_SETTINGS_FILENAME = "nojae-settings.json"
+
+#: The e2e suite's own settings file: the same shape, and **never created,
+#: seeded or written by the app** (T-D4). One process-level switch decides
+#: which of the two names a process reads, so a spec can never reach the
+#: developer's live server and key through the workspace file. It has no
+#: committed template and no instruction sentences — a hand-authored file
+#: either holds a usable value or the reader says so — and a missing one makes
+#: the suite refuse to start rather than fall through to the workspace file
+#: (T-D3).
+WORKSPACE_TEST_SETTINGS_FILENAME = "nojae-test-settings.json"
+
+#: The env var naming that switch, read **per call** (T-D2) so the pytest suite
+#: can pin it off in ``tests/conftest.py`` and a unit test can flip it with
+#: ``monkeypatch.setenv`` without reloading this module.
+TEST_SETTINGS_KEY = "BENCHMARKIT_TEST_SETTINGS"
 
 #: The committed template the seed copies byte for byte, at the install root
 #: beside ``.env.example``: it is the committed template of a settings file, not
@@ -109,6 +135,16 @@ WORKSPACE_SETTINGS_KEYS: Dict[str, type] = {
     "maxToolIteration": int,
 }
 
+#: The test file's member table (T-D8): its own table, which **contains** the
+#: production one. The strict member check (D9) applies to it verbatim — a typo
+#: in a test member is ``failed``, never silently ignored, because a
+#: silently-defaulted sampler makes a green suite mean nothing. A test-only
+#: member is added **here**, never to ``WORKSPACE_SETTINGS_KEYS``: a production
+#: file must not gain a member the dialog and the template do not know. Today
+#: the extension is empty, so this is a stated seam with an invariant
+#: (``_self_check`` pins the subset) rather than a speculative feature.
+WORKSPACE_TEST_SETTINGS_KEYS: Dict[str, type] = {**WORKSPACE_SETTINGS_KEYS}
+
 #: The members whose template value is an instruction sentence rather than a
 #: value (D8). ``sysprompt`` and ``reasoning`` are absent here on purpose: their
 #: template text is a real, usable value, while these two cannot be sent
@@ -139,25 +175,74 @@ class WorkspaceSettingsFileError(Exception):
     """
 
 
-# -- the path ------------------------------------------------------------------
+# -- the mode and the path -----------------------------------------------------
+
+def test_settings_mode() -> bool:
+    """Whether this process is the e2e suite's, and so reads the test file.
+
+    One process-level switch (T-D1), answered by ``config.env_flag`` — the same
+    ``1/true/yes/on`` rule as ``BENCHMARKIT_DISABLE_MCP``. Read **per call**
+    (T-D2), never at import, so ``tests/conftest.py`` can pin it off for the
+    pytest suite and a unit test can flip it without reloading this module.
+
+    It changes only *which file is in use*: never the seed (T-D4) and never the
+    write side, which refuses in this mode (T-D5). There is no fallback in
+    either direction (T-D3) — with the switch on, an absent test file is the
+    ``absent`` state, so a suite can never silently reach the developer's key.
+    """
+    return env_flag(TEST_SETTINGS_KEY)
+
+
+def active_settings_filename() -> str:
+    """The settings file's name for the mode this process is in."""
+    return (
+        WORKSPACE_TEST_SETTINGS_FILENAME
+        if test_settings_mode()
+        else WORKSPACE_SETTINGS_FILENAME
+    )
+
+
+def active_settings_keys() -> Dict[str, type]:
+    """The member table for the mode this process is in (T-D8).
+
+    The reader and the routes' type lookups consult this; the writer always uses
+    ``WORKSPACE_SETTINGS_KEYS``, because the dialog owns the production members.
+    """
+    return (
+        WORKSPACE_TEST_SETTINGS_KEYS
+        if test_settings_mode()
+        else WORKSPACE_SETTINGS_KEYS
+    )
+
+
+def settings_file_path(root: str, filename: str) -> str:
+    """The one join: one level of the reserved folder under ``root``.
+
+    Every path in this module comes through here, so the folder, the two
+    filenames and the mode are the only things that decide where a settings
+    file lives — no caller hand-builds the path.
+    """
+    return os.path.join(root, POLICY_DIRNAME, filename)
+
 
 def workspace_settings_file_path(root: str) -> str:
-    """Where the settings file goes under ``root`` — one level of the reserved folder.
+    """Where the **production** settings file goes under ``root``.
 
-    ``workspace_settings_path()`` is the *active* root (what the loader reads);
-    this takes the root explicitly, because the workspace switch seeds the folder
-    it is moving to before ``path_location()`` is what the rest of the app sees.
+    Stays the production name whatever the mode: this is the seeder's path
+    (T-D4), and the workspace switch seeds the folder it is moving to before
+    ``path_location()`` is what the rest of the app sees.
     """
-    return os.path.join(root, POLICY_DIRNAME, WORKSPACE_SETTINGS_FILENAME)
+    return settings_file_path(root, WORKSPACE_SETTINGS_FILENAME)
 
 
 def workspace_settings_path() -> str:
-    """Where this workspace's settings file lives (absolute; it may not exist).
+    """Where the settings file **in use** lives (absolute; it may not exist).
 
-    Built per call out of module attributes, so a patched filename or a
-    switched working location moves the lookup the same way.
+    The loader's and the dialog's path, so it follows the mode. Built per call
+    out of module attributes, so a patched filename or a switched working
+    location moves the lookup the same way.
     """
-    return workspace_settings_file_path(path_location())
+    return settings_file_path(path_location(), active_settings_filename())
 
 
 # -- the messages --------------------------------------------------------------
@@ -179,9 +264,9 @@ def _kind_of(value: Any) -> str:
     return type(value).__name__  # pragma: no cover - json never produces this
 
 
-def _member_names() -> str:
-    """The approved members, listed the way a message points at them."""
-    return ", ".join(f"\"{name}\"" for name in WORKSPACE_SETTINGS_KEYS)
+def _member_names(table: Mapping[str, type]) -> str:
+    """The approved members of one table, listed the way a message points at them."""
+    return ", ".join(f"\"{name}\"" for name in table)
 
 
 # -- the one validation rule (D9) ----------------------------------------------
@@ -212,8 +297,13 @@ def _value_matches(expected: type, value: Any) -> bool:
     return False  # pragma: no cover - the table holds the five types above
 
 
-def _problem_of(payload: Mapping[str, Any]) -> Optional[str]:
+def _problem_of(payload: Mapping[str, Any], table: Mapping[str, type]) -> Optional[str]:
     """Why ``payload`` is not a usable set of members, or ``None`` when it is.
+
+    The **table in use** is an argument (T-D8): the reader picks it by mode, the
+    writer always the production one. The rule itself is the same for both
+    files — the test file is checked against a table that contains the
+    production one, so a typo there is ``failed`` too.
 
     One sentence at a time, in a fixed order (unknown members first, then the
     approved ones in table order), because the sentence goes into a state field
@@ -221,18 +311,18 @@ def _problem_of(payload: Mapping[str, Any]) -> Optional[str]:
     preview pane, and this file has none — the user reads one sentence, fixes
     it, retries.
     """
-    unknown = sorted(name for name in payload if name not in WORKSPACE_SETTINGS_KEYS)
+    unknown = sorted(name for name in payload if name not in table)
     if unknown:
         listed = ", ".join(f"\"{name}\"" for name in unknown)
-        return f"has an unknown member {listed}; it understands {_member_names()}"
-    for name, expected in WORKSPACE_SETTINGS_KEYS.items():
+        return f"has an unknown member {listed}; it understands {_member_names(table)}"
+    for name, expected in table.items():
         if name in payload and not _value_matches(expected, payload[name]):
             wanted = _TYPE_WORDS.get(expected, str(expected))
             return f"holds \"{name}\" as {_kind_of(payload[name])}, expected {wanted}"
     return None
 
 
-def _mergeable_members(payload: Any) -> Dict[str, Any]:
+def _mergeable_members(payload: Any, table: Mapping[str, type]) -> Dict[str, Any]:
     """The members of a current file that a save may carry over.
 
     Lenient by design, and that is the one place this module prefers repair to
@@ -247,8 +337,7 @@ def _mergeable_members(payload: Any) -> Dict[str, Any]:
     return {
         name: value
         for name, value in payload.items()
-        if name in WORKSPACE_SETTINGS_KEYS
-        and _value_matches(WORKSPACE_SETTINGS_KEYS[name], value)
+        if name in table and _value_matches(table[name], value)
     }
 
 
@@ -368,7 +457,13 @@ def _is_regular_file(path: str) -> bool:
 
 
 def _load(path: str) -> _Entry:
-    """Read, check and interpret one workspace's settings file — once per change."""
+    """Read, check and interpret one workspace's settings file — once per change.
+
+    The member table is the **one in use** (T-D8): the production file is checked
+    against ``WORKSPACE_SETTINGS_KEYS``, the test file against the table that
+    contains it. The sentences need no branch — they interpolate the resolved
+    path, so in test mode they already name ``nojae-test-settings.json``.
+    """
     try:
         text = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -410,7 +505,7 @@ def _load(path: str) -> _Entry:
             "not an object of members",
         )
 
-    problem = _problem_of(document)
+    problem = _problem_of(document, active_settings_keys())
     if problem is not None:
         return _Entry("failed", path, f"the workspace settings file {path} {problem}")
 
@@ -503,6 +598,20 @@ def _read_current(path: str) -> Any:
         return None
 
 
+def test_settings_write_refusal() -> str:
+    """The sentence for a write attempted in test mode (T-D5).
+
+    One builder, consulted by the writer and by the route that would otherwise
+    delete the file before reaching it, so the two can never disagree — and it
+    names the file through the same mode-aware path the reader quotes.
+    """
+    return (
+        f"{workspace_settings_path()} is the e2e suite's own settings file: it "
+        "is hand-authored and the app never writes it, so a save cannot change "
+        "what the suite talks to (nothing was written)"
+    )
+
+
 def save_workspace_settings(values: Mapping[str, Any]) -> None:
     """Write the given members to this workspace's file, keeping the others.
 
@@ -520,15 +629,27 @@ def save_workspace_settings(values: Mapping[str, Any]) -> None:
     same rule the reader applies, so a caller cannot put on disk the file the
     reader would refuse. An unwritable file raises the same error, because a save
     that did not land must not be reported as one that did.
+
+    **First act, before anything else** (T-D5): in test mode it raises, writing
+    nothing. The Settings dialog's group-1 save and ``post_lsp()``'s persistence
+    both land in that refusal, because a dialog save mid-suite would rewrite the
+    fixture the *next* spec depends on. The check lives here as well as at the
+    route that deletes before writing, so no caller can reach the writer.
+
+    The member table is always the **production** one: the writer owns the
+    dialog's members, and a test-only member is never written from here.
     """
-    problem = _problem_of(values)
+    if test_settings_mode():
+        raise WorkspaceSettingsFileError(test_settings_write_refusal())
+
+    problem = _problem_of(values, WORKSPACE_SETTINGS_KEYS)
     if problem is not None:
         raise WorkspaceSettingsFileError(
             f"the workspace settings save {problem} (nothing was written)"
         )
 
     path = workspace_settings_path()
-    merged = _mergeable_members(_read_current(path))
+    merged = _mergeable_members(_read_current(path), WORKSPACE_SETTINGS_KEYS)
     merged.update(values)
     text = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
 
@@ -674,16 +795,48 @@ def _self_check() -> None:
     added to one and not the other is a file that seeds fine and then reports
     itself malformed, or a typo accepted silently.
     """
-    for name in ("WORKSPACE_SETTINGS_FILENAME", "POLICY_DIRNAME"):
+    for name in (
+        "WORKSPACE_SETTINGS_FILENAME",
+        "WORKSPACE_TEST_SETTINGS_FILENAME",
+        "TEST_SETTINGS_KEY",
+        "POLICY_DIRNAME",
+    ):
         value = globals()[name]
         if not isinstance(value, str) or not value:
             raise ValueError(
                 f"workspace_settings.{name} must be a non-empty string, got {value!r}"
             )
+    # The two files are two files: one name for both would make the switch read
+    # the workspace's own live key from a spec (T-D1's whole reason for existing).
+    if WORKSPACE_TEST_SETTINGS_FILENAME == WORKSPACE_SETTINGS_FILENAME:
+        raise ValueError(
+            "workspace_settings.WORKSPACE_TEST_SETTINGS_FILENAME must differ "
+            f"from WORKSPACE_SETTINGS_FILENAME, got {WORKSPACE_SETTINGS_FILENAME!r}"
+        )
     if not isinstance(WORKSPACE_SETTINGS_KEYS, dict) or not WORKSPACE_SETTINGS_KEYS:
         raise ValueError(
             "workspace_settings.WORKSPACE_SETTINGS_KEYS must be a non-empty "
             f"member-to-type mapping, got {WORKSPACE_SETTINGS_KEYS!r}"
+        )
+    # T-D8: the test table is its own table **containing** the production one, so
+    # a test-only member never leaks into the file the dialog and the template
+    # know. A dropped member there means the test file silently rejects a
+    # production member the suite's own fixture holds.
+    if not isinstance(WORKSPACE_TEST_SETTINGS_KEYS, dict) or not WORKSPACE_TEST_SETTINGS_KEYS:
+        raise ValueError(
+            "workspace_settings.WORKSPACE_TEST_SETTINGS_KEYS must be a "
+            f"non-empty member-to-type mapping, got {WORKSPACE_TEST_SETTINGS_KEYS!r}"
+        )
+    lost = sorted(
+        f"{member}={WORKSPACE_SETTINGS_KEYS[member]!r}"
+        for member in WORKSPACE_SETTINGS_KEYS
+        if WORKSPACE_TEST_SETTINGS_KEYS.get(member) is not WORKSPACE_SETTINGS_KEYS[member]
+    )
+    if lost:
+        raise ValueError(
+            "workspace_settings.WORKSPACE_TEST_SETTINGS_KEYS must contain "
+            "workspace_settings.WORKSPACE_SETTINGS_KEYS with the same types: "
+            f"missing or retyped {', '.join(lost)}"
         )
     drifted = [
         f"{member}={declared!r}"
@@ -722,7 +875,7 @@ def _self_check() -> None:
             "workspace_settings.WORKSPACE_SETTINGS_KEYS must name the same "
             f"members: template only {extra}, table only {missing}"
         )
-    problem = _problem_of(raw)
+    problem = _problem_of(raw, WORKSPACE_SETTINGS_KEYS)
     if problem is not None:
         raise ValueError(
             f"workspace_settings.WORKSPACE_SETTINGS_TEMPLATE ({template}) "

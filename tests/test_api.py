@@ -677,6 +677,69 @@ class TestSettingsEndpoint:
         assert body["workspaceSettings"]["path"].startswith(str(second))
 
 
+class TestSettingsEndpointInTestMode:
+    """The e2e switch at API level (T-D3, T-D5): the dialog reads and refuses.
+
+    With ``BENCHMARKIT_TEST_SETTINGS`` truthy the file **in use** is the suite's
+    own hand-authored ``.nojae/nojae-test-settings.json``, so ``GET /api/settings``
+    names that path and a group-1 save is refused — the dialog cannot rewrite the
+    fixture the next spec depends on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def in_test_mode(self, monkeypatch, tmp_path):
+        from src import config as config_module
+        from src.core import workspace_settings as ws
+        from tests.conftest import neutralise_workspace_settings
+
+        for key in config_module.SETTING_KEYS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
+        neutralise_workspace_settings(monkeypatch, tmp_path,
+                                      serverUrl="http://dev-live:9/v1")
+        # The switch, flipped per test (T-D2): the production file above now
+        # answers nothing, because the file in use is the test one.
+        monkeypatch.setenv(ws.TEST_SETTINGS_KEY, "1")
+        ws.invalidate_workspace_settings()
+
+    def test_get_reports_the_test_file_path(self, client):
+        from src.core import workspace_settings as ws
+
+        body = client.get("/api/settings").json()
+        state = body["workspaceSettings"]
+        assert state["path"].endswith(ws.WORKSPACE_TEST_SETTINGS_FILENAME)
+        # The app never seeds the test file, so a workspace in this mode really
+        # can be `absent` — the state production cannot reach.
+        assert state["state"] == "absent"
+        assert state["message"]
+        assert ws.WORKSPACE_TEST_SETTINGS_FILENAME in state["message"]
+        # The production file's values answer nothing (T-D3, no fallback).
+        assert body["serverUrl"] == ""
+
+    def test_a_group_one_save_is_refused_and_neither_file_changes(self, client):
+        from src import config as config_module
+        from src.core import workspace_settings as ws
+
+        production = ws.workspace_settings_file_path(str(config_module.path_location()))
+        with open(production, encoding="utf-8") as handle:
+            before = handle.read()
+        test_file = Path(ws.workspace_settings_path())
+        test_file.parent.mkdir(parents=True, exist_ok=True)
+        test_file.write_text('{"serverUrl": "http://suite:9/v1"}\n', encoding="utf-8")
+
+        payload = TestSettingsEndpoint._payload()
+        response = client.post("/api/settings", json=payload)
+        assert response.status_code == 409
+        assert ws.WORKSPACE_TEST_SETTINGS_FILENAME in response.json()["detail"]
+
+        with open(production, encoding="utf-8") as handle:
+            assert handle.read() == before
+        assert test_file.read_text(encoding="utf-8") == '{"serverUrl": "http://suite:9/v1"}\n'
+        # And the refusal lands before the .env write too: one refusal, no
+        # half-applied save.
+        assert not config_module.ENV_PATH.exists()
+
+
 class TestEnvTrioParity:
     """AGENTS.md's trio rule, as a test: ``SETTING_KEYS``, ``_render_env()``
     and ``.env.example`` move together — ws-04 shrank all three the same way,

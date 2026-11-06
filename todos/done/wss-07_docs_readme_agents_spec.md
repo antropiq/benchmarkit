@@ -1,3 +1,8 @@
+# user notes
+
+This task was delayed and is now ready to be accomplish. 
+For more information read the docs/docs/nojae-test-settings-spec.md that as been adressed to fix the gap.
+
 # ws-07 — Docs last: the README, `AGENTS.md`, the spec's status
 
 **Spec:** §6 in full (README §2 table, the "all three are hot" sentence, the LSP
@@ -46,6 +51,11 @@ spec as it was hoped. If a done-file and the code disagree, the code wins; say s
    went, and the `LLM_DEBUG` line's new status (a managed key, hand-edited — it left
    the dialog; the README's key block already carries `#LLM_DEBUG=1` in a comment,
    adjust its wording only if it claims the dialog edits it).
+   Do **not** document `.env.test` as the endpoint's source: the e2e suite's model
+   connection is `.nojae/nojae-test-settings.json` at the working location, read only
+   under `BENCHMARKIT_TEST_SETTINGS` (`docs/nojae-test-settings-spec.md`), and the
+   README's "Setting up tests for benchmarkit" section already says so — one pointer
+   from the `.env` section is all this needs.
 4. **`AGENTS.md`** — four small edits, in the file's own voice, honouring its own
    rules (no line numbers, no counts, cut or shrink rather than append; net length
    roughly flat):
