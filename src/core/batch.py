@@ -290,6 +290,73 @@ def resolve_lot_dir(raw: Optional[str]) -> Tuple[str, Path]:
     return normalised, Path(resolved)
 
 
+def prefix_of(stem: str) -> str:
+    """The prefix part of a lot file stem (``doc-01-x`` -> ``doc-``).
+
+    The text up to and including the **first** ``-``: the naming convention is
+    ``<prefix><NN>-<slug>.md``, so the first separator always ends the prefix
+    (a stem with no ``-`` at all has no prefix and is not a lot file).
+    """
+    index = stem.find("-")
+    return stem[: index + 1] if index != -1 else ""
+
+
+def task_prefixes(raw_dir: Optional[str] = None) -> Dict[str, Any]:
+    """Every prefix that has at least one *task* in ``raw_dir``.
+
+    The dropdown's source: the batch dialog offers the prefixes the folder
+    actually holds instead of asking the user to type one. Same folder locks as
+    :func:`task_lot` (:func:`resolve_lot_dir`, one non-recursive ``scandir``,
+    symlinks refused), and the same definition of "belongs to a lot": a ``.md``
+    file whose stem splits into a prefix matching :data:`PREFIX_PATTERN` and a
+    task number. So a prefix appears here exactly when listing it would give a
+    non-empty lot.
+
+    A prefix whose only file is the ``NN == 0`` big picture is **not** offered
+    -- there would be nothing to run. ``hasLot`` still reports whether that file
+    is there, because the dialog's rule is to include it automatically.
+    """
+    normalised, folder = resolve_lot_dir(raw_dir)
+
+    try:
+        with os.scandir(folder) as scan:
+            entries = sorted(scan, key=lambda item: item.name)
+    except OSError as exc:
+        raise BatchListingError(
+            404, f"Batch folder does not exist: {raw_dir or DEFAULT_LOT_DIR}"
+        ) from exc
+
+    found: Dict[str, Dict[str, Any]] = {}
+    done_folder = False
+    for entry in entries:
+        if entry.is_dir():
+            if entry.name == DONE_SUBFOLDER:
+                done_folder = True
+            continue
+        name = entry.name
+        if not name.endswith(".md") or entry.is_symlink():
+            continue
+        stem = name[: -len(".md")]
+        prefix = prefix_of(stem)
+        if not prefix or not _PREFIX_RE.match(prefix):
+            continue
+        number = parse_task_number(stem, prefix)
+        if number is None:
+            continue
+        item = found.setdefault(prefix, {"prefix": prefix, "tasks": 0, "hasLot": False})
+        if number == 0:
+            item["hasLot"] = True
+        else:
+            item["tasks"] += 1
+
+    return {
+        "dir": normalised,
+        "workspace": str(Path(path_location()).resolve()),
+        "doneFolder": done_folder,
+        "prefixes": [item for item in found.values() if item["tasks"] > 0],
+    }
+
+
 def task_lot(prefix: str, raw_dir: Optional[str] = None) -> Dict[str, Any]:
     """List the task lot of ``prefix`` in ``raw_dir``: the endpoint's core.
 

@@ -216,6 +216,104 @@ class TestTaskListingEndpoint:
         assert body["truncated"] is False
 
 
+def prefixes(client: TestClient, dir: Optional[str] = None):
+    params: Dict[str, str] = {}
+    if dir is not None:
+        params["dir"] = dir
+    return client.get("/api/batch/prefixes", params=params)
+
+
+class TestPrefixListingEndpoint:
+    """The dropdown's source: one entry per prefix that has a task."""
+
+    def test_two_lots_are_two_entries_with_their_task_counts(
+        self, batch_client, tmp_path
+    ):
+        make_lot(
+            tmp_path,
+            [
+                "doc-00-big-picture.md",
+                "doc-01-a.md",
+                "doc-02-b.md",
+                "oth-01-c.md",
+            ],
+        )
+        response = prefixes(batch_client)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["dir"] == "todos"
+        assert body["workspace"] == str(tmp_path.resolve())
+        assert body["doneFolder"] is True
+        assert body["prefixes"] == [
+            {"prefix": "doc-", "tasks": 2, "hasLot": True},
+            {"prefix": "oth-", "tasks": 1, "hasLot": False},
+        ]
+
+    def test_a_prefix_offered_here_lists_a_non_empty_lot(
+        self, batch_client, tmp_path
+    ):
+        # The two endpoints must agree: an option that launches nothing would be
+        # a dead entry in the dropdown.
+        make_lot(tmp_path, ["doc-00-lot.md", "doc-01-a.md", "doc-02-b.md"])
+        offered = prefixes(batch_client).json()["prefixes"]
+        listed = listing(batch_client, "doc-").json()
+        assert [item["tasks"] for item in offered] == [len(listed["tasks"])]
+        assert listed["taskCount"] > 0
+
+    def test_a_lot_only_file_offers_nothing(self, batch_client, tmp_path):
+        # E13's shape: a 00 file alone is not a runnable lot, so the dialog must
+        # not offer a prefix whose Launch would do nothing.
+        make_lot(tmp_path, ["ed-00-big-picture.md"])
+        assert prefixes(batch_client).json()["prefixes"] == []
+
+    def test_numberless_and_unparsable_names_are_not_prefixes(
+        self, batch_client, tmp_path
+    ):
+        make_lot(
+            tmp_path,
+            ["ed-foo.md", "ed-1x.md", "notes.md", "README.txt", "zz-01-a.md"],
+        )
+        body = prefixes(batch_client).json()
+        # Only zz- is a task: `ed-foo`/`ed-1x` carry no usable number, `notes.md`
+        # has no separator at all (so no prefix), `README.txt` is not markdown.
+        # None of them is a lot file, so none of them is offered.
+        assert [item["prefix"] for item in body["prefixes"]] == ["zz-"]
+
+    def test_subfolders_are_not_descended_into(self, batch_client, tmp_path):
+        # done/ is where finished tasks go: listing it would offer a lot that is
+        # already over.
+        folder = make_lot(tmp_path, ["ed-01-a.md"])
+        (folder / "done" / "ed-02-b.md").write_text("# done\n", encoding="utf-8")
+        body = prefixes(batch_client).json()
+        assert body["prefixes"] == [{"prefix": "ed-", "tasks": 1, "hasLot": False}]
+
+    def test_a_symlinked_task_does_not_offer_its_prefix(
+        self, batch_client, tmp_path
+    ):
+        folder = make_lot(tmp_path, ["zz-00-real.md"])
+        (folder / "zz-01-link.md").symlink_to(folder / "zz-00-real.md")
+        # The real file is the 00 big picture, the only task is a symlink: nothing
+        # runnable, so nothing offered (same refusal as the task listing).
+        assert prefixes(batch_client).json()["prefixes"] == []
+
+    def test_missing_dir_returns_404(self, batch_client, tmp_path):
+        response = prefixes(batch_client, dir="nope")
+        assert response.status_code == 404
+
+    def test_dir_above_the_workspace_returns_422(self, batch_client, tmp_path):
+        assert prefixes(batch_client, dir="../secrets").status_code == 422
+
+    def test_dir_naming_a_file_returns_422(self, batch_client, tmp_path):
+        (tmp_path / "afile").write_text("x", encoding="utf-8")
+        assert prefixes(batch_client, dir="afile").status_code == 422
+
+    def test_nested_lot_dir_is_listed(self, batch_client, tmp_path):
+        make_lot(tmp_path, ["ed-01-a.md"], dir="work/todos")
+        body = prefixes(batch_client, dir="work/todos").json()
+        assert body["dir"] == "work/todos"
+        assert [item["prefix"] for item in body["prefixes"]] == ["ed-"]
+
+
 class TestListingPathGuards:
     @pytest.mark.parametrize(
         "prefix",
