@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import ApiKeyField from './ApiKeyField.vue'
 import { useBenchmark } from '../composables/useBenchmark'
 
@@ -89,6 +89,25 @@ function serverDetail(server) {
     .filter(Boolean)
     .join('\n')
 }
+
+// The workspace settings file's own report (D8/D9): ``failed`` carries its
+// sentence in ``error``, the still-holds-the-template-text state in
+// ``message``. The server's sentence already names the file and its path, so
+// the dialog shows it verbatim — adds nothing, translates nothing.
+const workspaceSettingsNote = computed(() => {
+  const block = state.workspaceSettings
+  if (!block) return null
+  if (block.state === 'failed') return block.error || null
+  if (block.state === 'ok' && !block.configured) return block.message || null
+  return null
+})
+
+// The file this dialog saves group 1 to, with the workspace path the server
+// reported — never a client-side guess (the same dialog means a different
+// server per workspace, so the user must see *which* workspace).
+const workspaceSettingsPath = computed(
+  () => state.workspaceSettings?.path || '',
+)
 </script>
 
 <template>
@@ -105,7 +124,11 @@ function serverDetail(server) {
       <h2 id="settings-title" class="settings-title">Settings</h2>
     </header>
     <p class="caption settings-hint">
-      Saved to the server-side <code>.env</code> file and used by the next run.
+      The model connection is saved to this workspace's
+      <code>.nojae/nojae-settings.json</code><template v-if="workspaceSettingsPath">
+      (<code>{{ workspaceSettingsPath }}</code>)</template>; the verifier and
+      the question set go to the server-side <code>.env</code>. Saving here
+      applies right away; editing either file by hand needs a server restart.
       Leave optional fields empty to omit them.
     </p>
 
@@ -137,6 +160,9 @@ function serverDetail(server) {
         <div class="settings-editor">
           <section v-show="activeSection === 'llm'">
             <h3 class="settings-section-title">LLM</h3>
+            <p v-if="workspaceSettingsNote" class="caption alert-error mcp-externals-error" role="alert">
+              {{ workspaceSettingsNote }}
+            </p>
             <label>
               Server URL
               <input
@@ -183,8 +209,7 @@ function serverDetail(server) {
             <label class="settings-vision">
               <input
                 type="checkbox"
-                :checked="state.settings.supportsVision === '1'"
-                @change="state.settings.supportsVision = $event.target.checked ? '1' : ''"
+                v-model="state.settings.supportsVision"
               />
               Endpoint supports image input (vision)
             </label>
@@ -192,21 +217,6 @@ function serverDetail(server) {
               Enables the image attach button in the WorkBench tab. Only check it
               when the model accepts image input; GIFs are sent as their first
               frame.
-            </p>
-            <label class="settings-vision">
-              <input
-                type="checkbox"
-                :checked="state.settings.llmDebug === '1'"
-                @change="state.settings.llmDebug = $event.target.checked ? '1' : ''"
-              />
-              Log LLM request internals (debug)
-            </label>
-            <p class="caption">
-              Writes every LLM request's payload and the client's debug output to
-              the server console, so a failed request shows the real upstream
-              error instead of a one-line summary. Applies to the next run or
-              chat message — it floods the console with request payloads, so
-              switch it back off once the failure is diagnosed.
             </p>
           </section>
 

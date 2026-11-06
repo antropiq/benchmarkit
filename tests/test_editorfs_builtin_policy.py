@@ -364,7 +364,10 @@ class TestRulesAreWrittenInThePatternLanguage:
             assert mode in shared.MODES
             assert isinstance(reason, str) and reason.strip()
 
-    def test_the_index_that_merges_them_is_their_position(self):
+    def test_the_index_that_merges_them_is_their_position(self, app_workspace):
+        # ``app_workspace`` because level A exists only while the working
+        # location *is* the install: with the location elsewhere the list is
+        # empty by design, and the index below would be a fact about nothing.
         assert [rule.index for rule in builtin_policy.builtin_rules(".env")] == [0]
         matched = [
             rule.pattern for rule in builtin_policy.builtin_rules(".env")
@@ -516,7 +519,7 @@ class TestTheVerdictIsWhatTheRoutesNowAnswerWith:
         assert verdict.level != shared.LEVEL_BUILTIN, rel
         assert verdict.level == shared.LEVEL_WORKSPACE or verdict.mode == shared.READ_WRITE
 
-    def test_the_apps_own_env_is_no_longer_refused_by_a_code_list(self):
+    def test_the_apps_own_env_is_no_longer_refused_by_a_code_list(self, app_workspace):
         """The inversion this task exists to make visible.
 
         Before pol-06, the app's ``.env`` was closed by a hardcoded ``.env``
@@ -524,6 +527,12 @@ class TestTheVerdictIsWhatTheRoutesNowAnswerWith:
         refusal is level A's rule — conditional on this workspace *being* the app,
         quoted by name when it fires, and loosened to a normal file the moment
         the location points elsewhere.
+
+        ``app_workspace`` states that condition instead of inheriting it: the
+        suite's autouse guard gives every test a throw-away working location (so
+        no test can read the developer's ``.nojae/nojae-settings.json``), and this
+        assertion is about the workspace *being* the install — the fact the file's
+        own fixture exists to declare.
         """
         with TestClient(create_app()) as client:
             read = client.get("/api/fs/file", params={"path": ".env"})

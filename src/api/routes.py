@@ -21,6 +21,7 @@ from src.api.events import EventBus, sse_format
 from src.config import (
     QUESTION_SET_DEFAULT,
     PATH_LOCATION_KEY,
+    TRUTHY_VALUES,
     agent_instructions_block,
     list_question_sets,
     load_endpoints_config,
@@ -29,7 +30,6 @@ from src.config import (
     max_tool_iteration,
     lsp_enabled_ids,
     path_location,
-    normalize_env_flag,
     default_path_location,
     save_settings,
     questions_path,
@@ -56,6 +56,7 @@ from src.core import prompt_helpers
 from src.core import termhub
 from src.core.termhub import policy as term_policy
 from src.core.termhub import drivers as term_drivers
+from src.core import workspace_settings
 from src.core.bench import run_benchmark
 from src.core import batch as batch_core
 from src.core.chat import stream_chat
@@ -63,7 +64,7 @@ from src.core.job import RunJob
 from src.core.llm import RunCancelled
 from src.core.llmkit.client import models_url
 from src.core.llmkit.sanitize import sanitize_content
-from src.core.models import EndpointsConfig
+from src.core.models import DEFAULT_LLM_SYSPROMPT, EndpointsConfig
 from src.core.utils import RESULTS_PATH
 
 
@@ -111,8 +112,11 @@ class SettingsIn(SettingsFieldsMixin):
     repeatPenalty: str = ""
     presencePenalty: str = ""
     reasoning: str = ""
-    supportsVision: str = ""
-    llmDebug: str = ""
+    # ``Union[bool, str]`` rather than ``str``: the dialog's checkbox sends a
+    # native boolean now (the workspace file's own type, D6), and
+    # ``_stringify_scalars`` passes a bool through untouched — a plain ``str``
+    # field would reject it before that pass meant anything.
+    supportsVision: Union[bool, str] = ""
     questionSet: str = ""
     verifier: VerifierSettingsIn = VerifierSettingsIn()
 
@@ -402,7 +406,7 @@ class ChatIn(BaseModel):
     # Size-capped with the very number the listing enforced when it handed the
     # body over, so the two sides cannot drift. Not otherwise validated as
     # trusted input: this is a single-user app and the same person already owns
-    # ``LLM_SYSPROMPT`` through the settings dialog, so a caller-chosen system
+    # the workspace's ``sysprompt``, so a caller-chosen system
     # block grants no new privilege.
     batchContext: Optional[str] = None
 
@@ -528,22 +532,33 @@ def _refuse_if_chat_streaming(what: str) -> None:
         )
 
 
-# Dialog field -> .env key, used for both directions of the settings API.
-SETTINGS_ENV_KEYS: Dict[str, str] = {
-    "serverUrl": "SERVER_URL",
-    "apiKey": "SERVER_URL_API_KEY",
-    "endpoint": "ENDPOINT",
-    "sysprompt": "LLM_SYSPROMPT",
-    "temp": "TEMPERATURE",
-    "topP": "TOP_P",
-    "topK": "TOP_K",
-    "minP": "MIN_P",
-    "repeatPenalty": "REPEAT_PENALTY",
-    "presencePenalty": "PRESENCE_PENALTY",
-    "reasoning": "REASONING",
-    "supportsVision": "SUPPORTS_VISION",
-    "llmDebug": "LLM_DEBUG",
+# Dialog field -> JSON member of the workspace's ``.nojae/nojae-settings.json``,
+# used for both directions of the settings API. Spec D7: the file keeps the
+# approved member names (``serverApiKey``, ``temperature``), the dialog keeps
+# its field names (``apiKey``, ``temp``), and this table is the only bridge.
+# The sibling of ``VERIFIER_ENV_KEYS`` below: group 1 reaches
+# ``core.workspace_settings``, the verifier block still reaches ``.env``.
+WORKSPACE_SETTING_KEYS: Dict[str, str] = {
+    "serverUrl": "serverUrl",
+    "apiKey": "serverApiKey",
+    "endpoint": "endpoint",
+    "sysprompt": "sysprompt",
+    "temp": "temperature",
+    "topP": "topP",
+    "topK": "topK",
+    "minP": "minP",
+    "repeatPenalty": "repeatPenalty",
+    "presencePenalty": "presencePenalty",
+    "reasoning": "reasoning",
+    "supportsVision": "supportsVision",
 }
+
+# What GET answers for a member the file does not hold — the spec key map's
+# "member absent means", as the payload type each member is read as: strings
+# stay empty strings, the vision flag is ``False``, sampling numbers are
+# ``null`` so the dialog shows an unset field and the request body omits it.
+_WORKSPACE_ABSENT: Dict[type, Any] = {str: "", bool: False, float: None, int: None}
+
 VERIFIER_ENV_KEYS: Dict[str, str] = {
     "serverUrl": "VERIFIER_AGENT_SERVERURL",
     "apiKey": "VERIFIER_AGENT_SERVERURL_API_KEY",
@@ -553,15 +568,112 @@ VERIFIER_ENV_KEYS: Dict[str, str] = {
 
 
 def _settings_json(values: Dict[str, str]) -> Dict[str, Any]:
-    """Shape raw env values into the settings dialog payload."""
-    data: Dict[str, Any] = {
-        field: values.get(key, "") for field, key in SETTINGS_ENV_KEYS.items()
-    }
+    """Shape both stores into the settings dialog's payload.
+
+    The types ws-05 reads: group 1 answers with the workspace file's **native
+    JSON values** — ``supportsVision`` is ``true``/``false``, the sampling
+    fields are numbers (``0.2``, ``20``) or ``null`` when the member is absent
+    (the file never holds ``"0.2"`` or ``"1"``, the dotenv wart D6 ends) —
+    while the verifier block and ``questionSet`` stay ``.env``'s strings. A
+    stored template instruction sentence reaches the dialog verbatim; the
+    ``workspaceSettings`` block beside it says the file is not configured
+    (D8) or malformed (D9) with the one sentence that names the path. An
+    absent ``sysprompt`` answers the built-in default, which is what the
+    model then receives.
+    """
+    workspace = workspace_settings.load_workspace_settings()
+    data: Dict[str, Any] = {}
+    for field, member in WORKSPACE_SETTING_KEYS.items():
+        value = workspace.get(member)
+        if value is None:
+            value = _WORKSPACE_ABSENT[workspace_settings.WORKSPACE_SETTINGS_KEYS[member]]
+        data[field] = value
+    data["sysprompt"] = workspace.get("sysprompt") or DEFAULT_LLM_SYSPROMPT
     data["questionSet"] = values.get("QUESTION_SET", "")
     data["verifier"] = {
         field: values.get(key, "") for field, key in VERIFIER_ENV_KEYS.items()
     }
+    data["workspaceSettings"] = workspace_settings.workspace_settings_state()
     return data
+
+
+def _workspace_values(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate the dialog's group-1 fields into native JSON members.
+
+    ``SettingsFieldsMixin`` stringified every scalar but a boolean, so this is
+    the seam where the strings end: each field is coerced through the type the
+    file's member map declares (number / integer / boolean / string) and the
+    file must never hold ``"0.2"`` or ``"1"``. An empty field **omits** the
+    member — "member absent means" is the spec key map, and the writer refuses
+    a ``""`` or ``null`` member. A numeric field that is not a number is
+    passed through as the raw string: the validation gate in
+    ``post_settings`` rejects it with the same pydantic field-error shape the
+    sampler enum produces, and the write below only happens once the gate has
+    passed, so an uncoercible value can never reach either disk.
+    """
+    values: Dict[str, Any] = {}
+    for field, member in WORKSPACE_SETTING_KEYS.items():
+        raw = payload.get(field)
+        if isinstance(raw, bool):
+            values[member] = raw
+            continue
+        text = (raw or "").strip()
+        if not text:
+            continue
+        expected = workspace_settings.WORKSPACE_SETTINGS_KEYS[member]
+        if expected is bool:
+            # The dialog's checkbox sends a native boolean (handled above);
+            # this pass exists for hand-written clients still sending the
+            # .env spellings ("1", "true", "on"), and an explicit
+            # off-spelling is an explicit ``false``.
+            values[member] = text.lower() in TRUTHY_VALUES
+        elif expected is int:
+            try:
+                number = float(text)
+            except ValueError:
+                values[member] = text
+                continue
+            values[member] = int(number) if number.is_integer() else text
+        elif expected is float:
+            try:
+                values[member] = float(text)
+            except ValueError:
+                values[member] = text
+        elif member == "reasoning" and text.lower() == "none":
+            # The dialog's "none" means *unset*, as it did for ``REASONING``
+            # in ``.env``: omit the member so the request body omits it.
+            continue
+        else:
+            values[member] = text
+    return values
+
+
+def _save_workspace_group_one(current: Dict[str, Any], values: Dict[str, Any]) -> None:
+    """Write the dialog's members, so a cleared field leaves its member absent.
+
+    ``save_workspace_settings`` preserves the members it was not given, which
+    is right for a partial writer like ``post_lsp`` and wrong for this dialog:
+    it owns every member in ``WORKSPACE_SETTING_KEYS``, so a field the user
+    cleared must clear, not carry over (spec key map: "member absent means").
+    When such a member stands in the file, the file is removed first and the
+    members that should survive — the two the dialog does not own
+    (``lspEnabled``, ``maxToolIteration``) plus the freshly written ones — go
+    through the writer in one save, which over an absent file writes exactly
+    the members it is given. The module stays the file's only writer and the
+    only formater of its bytes.
+    """
+    owned = set(WORKSPACE_SETTING_KEYS.values())
+    carried = {m: v for m, v in current.items() if m not in owned}
+    desired = {**carried, **values}
+    removals = (set(current) & owned) - set(values)
+    if not values and not removals:
+        # Nothing to save: a dialog that sent no group-1 values must not
+        # create a file an unconfigured workspace does not have.
+        return
+    if removals:
+        with suppress(FileNotFoundError):
+            os.remove(workspace_settings.workspace_settings_path())
+    workspace_settings.save_workspace_settings(desired)
 
 
 def _model_ids(payload: Any) -> List[str]:
@@ -614,18 +726,19 @@ def _context_window(server_url: str, api_key: str, model: str) -> Optional[int]:
 
 
 def _settings_env_values(settings: SettingsIn) -> Dict[str, str]:
-    """Convert a settings payload into the managed .env key/value mapping."""
+    """Convert a settings payload into the managed ``.env`` key/value mapping.
+
+    Only what ``.env`` still owns: the verifier block and the question-set
+    choice. Group 1 translates through :data:`WORKSPACE_SETTING_KEYS`, and
+    ``LLM_DEBUG`` is **not emitted at all** (spec section 7): the key is
+    hand-edited like ``BENCHMARKIT_PYTHON_ROOT``, and an always-emitted ``""``
+    here would win over the stored value in ``post_settings``'
+    ``{**load_settings(), ...}`` merge and switch the debug logging off on
+    every save. A field the dialog does not own keeps whatever the merge
+    beside the write carries forward.
+    """
     payload = settings.model_dump()
-    values: Dict[str, str] = {
-        key: (payload.get(field) or "").strip()
-        for field, key in SETTINGS_ENV_KEYS.items()
-    }
-    if values.get("REASONING", "").strip().lower() == "none":
-        values["REASONING"] = ""
-    # Boolean-ish keys: the dialog sends "1"/"" from a checkbox but hand-written
-    # clients may send "true"/"on", so both are normalised to the .env form.
-    values["SUPPORTS_VISION"] = normalize_env_flag(values.get("SUPPORTS_VISION"))
-    values["LLM_DEBUG"] = normalize_env_flag(values.get("LLM_DEBUG"))
+    values: Dict[str, str] = {}
     verifier = payload.get("verifier") or {}
     for field, key in VERIFIER_ENV_KEYS.items():
         values[key] = (verifier.get(field) or "").strip()
@@ -667,9 +780,9 @@ def _active_connector_ids() -> List[str]:
 def _active_server_ids() -> List[str]:
     """Language-server ids whose tools chat may use.
 
-    Both gates must agree: the id is listed in ``LSP_ENABLED`` (the .env
-    switch that lets a whole prepared config file stay dormant) *and* its
-    ``enable`` flag is true in ``.nojae/lsp-settings.json`` (the
+    Both gates must agree: the id is listed in ``lspEnabled`` (the workspace
+    settings-file switch that lets a whole prepared config file stay dormant)
+    *and* its ``enable`` flag is true in ``.nojae/lsp-settings.json`` (the
     MCP-externals precedent for file-declared entries).
     """
     enabled = set(lsp_enabled_ids())
@@ -836,7 +949,20 @@ def build_router(state: RunState) -> APIRouter:
     router = APIRouter(prefix="/api")
 
     def _load_config() -> EndpointsConfig:
+        """The configuration every model call is made with, or a refusal.
+
+        Two kinds of refusal, in the shape the client already renders: a
+        ``ValidationError`` from a sampler value pydantic rejects keeps the
+        422 field list, and the workspace settings file being absent, broken or
+        still the template's instruction text answers 422 with the one sentence
+        that names the file and its path (spec D8, D9). The second is why no
+        chat or benchmark request can dial a sentence as a URL or benchmark on
+        invented defaults: there is nothing to call until that file says what
+        to call.
+        """
         config, error = load_endpoints_config()
+        if isinstance(error, str):
+            raise HTTPException(status_code=422, detail=error)
         if error is not None:
             raise HTTPException(
                 status_code=422,
@@ -878,6 +1004,9 @@ def build_router(state: RunState) -> APIRouter:
 
     @router.get("/settings")
     def get_settings() -> Dict[str, Any]:
+        """The dialog's payload: group 1 from the workspace file, groups 2/3
+        from ``.env``, plus the file's own state block (see
+        :func:`_settings_json` for the payload types)."""
         return _settings_json(load_settings())
 
     @router.post("/settings")
@@ -889,24 +1018,32 @@ def build_router(state: RunState) -> APIRouter:
                 status_code=409,
                 detail="Cannot change settings while a benchmark run is in progress",
             )
-        env_values = _settings_env_values(settings)
-        # Settings keys not covered by this dialog (question set, MCP) are
-        # merged from the current values so saving here never drops them.
-        env_values = {**load_settings(), **env_values}
-        merged = {
+        workspace_values = _workspace_values(settings.model_dump())
+        # Settings keys not covered by this dialog (question set when unset,
+        # LLM_DEBUG, BENCHMARKIT_PYTHON_ROOT) are merged from the current
+        # values so saving here never drops them.
+        env_values = {**load_settings(), **_settings_env_values(settings)}
+        merged_env = {
             key: value
             for key, value in os.environ.items()
             if key not in env_values or env_values[key]
         }
-        merged.update({k: v for k, v in env_values.items() if v})
+        merged_env.update({k: v for k, v in env_values.items() if v})
+        current_workspace = workspace_settings.load_workspace_settings()
         try:
-            EndpointsConfig.from_env(merged)
+            # One gate before **either** write: the merged future state of
+            # both stores is validated exactly the way every later model call
+            # builds it, so a bad sampler value cannot reach either disk.
+            EndpointsConfig.from_workspace(
+                {**current_workspace, **workspace_values}, merged_env
+            )
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=json.loads(exc.json())) from exc
         # Note: keys that were set as real process environment variables before
         # startup keep precedence in the live process until restart; the file
         # is still updated. The file itself is regenerated from a fixed
         # template, so custom comments in .env are not preserved.
+        _save_workspace_group_one(current_workspace, workspace_values)
         save_settings(env_values)
         return _settings_json(load_settings())
 
@@ -1032,8 +1169,9 @@ def build_router(state: RunState) -> APIRouter:
 
         Toggles write the entry ``enable`` flag back to the workspace's
         ``.nojae/mcp-settings.json`` (the only activation source) and
-        start/stop the connector right away; only ``MAX_TOOL_ITERATION``
-        persists to ``.env``.
+        start/stop the connector right away; the shared MCP+LSP tool-loop cap
+        is ``maxToolIteration`` in the workspace's ``.nojae/nojae-settings.json``
+        — written as a real integer, the form the reader reads.
         """
         if state.status == "running":
             raise HTTPException(
@@ -1050,9 +1188,12 @@ def build_router(state: RunState) -> APIRouter:
                 detail=f"Unknown MCP connectors: {', '.join(unknown)}",
             )
         enabled = set(requested)
-        merged = dict(load_settings())
-        merged["MAX_TOOL_ITERATION"] = str(body.maxIterations)
-        save_settings(merged)
+        # The cap moved to the workspace's settings file with the rest of the
+        # tool-loop knobs (same writer call ``post_lsp`` uses), so the panel's
+        # save lands where ``config.max_tool_iteration()`` reads it.
+        workspace_settings.save_workspace_settings(
+            {"maxToolIteration": int(body.maxIterations)}
+        )
         write_errors = (
             set_externals_enabled({cid: cid in enabled for cid in connector_ids})
             if connector_ids
@@ -1122,7 +1263,7 @@ def build_router(state: RunState) -> APIRouter:
     ) -> Dict[str, Any]:
         """Language-server list (file scan + validation errors) + live status.
 
-        A server is active when its ``enable`` flag and ``LSP_ENABLED`` agree.
+        A server is active when its ``enable`` flag and ``lspEnabled`` agree.
         Secret material (``env``) is stripped.
         """
         manager = getattr(request.app.state, "lsp", None)
@@ -1163,12 +1304,14 @@ def build_router(state: RunState) -> APIRouter:
     def post_lsp(body: LspIn, request: Request) -> Dict[str, Any]:
         """Activate language servers for the Chat tab.
 
-        Activation writes both places: the ids persist to ``LSP_ENABLED`` in
-        ``.env`` and the ``enable`` flag is written back to
+        Activation writes both places: the ids persist as ``lspEnabled`` in the
+        workspace's ``.nojae/nojae-settings.json`` — a JSON array, the form the
+        reader reads — and the ``enable`` flag is written back to
         ``.nojae/lsp-settings.json`` (both must agree for a server to run, so
         a prepared config file can stay entirely dormant). Running servers are
         hot-started/stopped right away; ``maxIterations`` updates the shared
-        MCP+LSP tool-loop cap.
+        MCP+LSP tool-loop cap, which travels in the same file and so is written
+        by the same call.
         """
         if state.status == "running":
             raise HTTPException(
@@ -1185,10 +1328,18 @@ def build_router(state: RunState) -> APIRouter:
                 detail=f"Unknown LSP servers: {', '.join(unknown)}",
             )
         enabled = set(requested)
-        merged = dict(load_settings())
-        merged["LSP_ENABLED"] = ",".join(dict.fromkeys(requested))
-        merged["MAX_TOOL_ITERATION"] = str(body.maxIterations)
-        save_settings(merged)
+        # Both activation gate and cap live in the workspace's settings file now,
+        # as native JSON: ``lspEnabled`` is a real array (not the comma string the
+        # ``.env`` key held) and ``maxToolIteration`` a real integer. Writing them
+        # through the writer — not ``save_settings`` — is what keeps the toggles
+        # live the moment the readers moved to the file (spec D4: a dialog save is
+        # a caching invalidation, so the next request already sees these).
+        workspace_settings.save_workspace_settings(
+            {
+                "lspEnabled": list(dict.fromkeys(requested)),
+                "maxToolIteration": int(body.maxIterations),
+            }
+        )
         write_errors = (
             set_lsp_enabled({sid: sid in enabled for sid in known_ids})
             if known_ids
@@ -1252,7 +1403,7 @@ def build_router(state: RunState) -> APIRouter:
         file, so a hand-edited entry — a new server, a changed ``command``,
         another ``workspaceRoot`` — takes effect without restarting the web
         app. The two activation gates (the entry ``enable`` flag and
-        ``LSP_ENABLED``) are re-applied exactly as at startup, so a dormant
+        ``lspEnabled``) are re-applied exactly as at startup, so a dormant
         file stays dormant. Invalid entries never spawn: the valid ones come
         back up and the problems are reported in ``serversError``.
 
@@ -1335,6 +1486,22 @@ def build_router(state: RunState) -> APIRouter:
         """
         return lsp_settings_template_state(path_location())
 
+    def _workspace_settings_block() -> Dict[str, Any]:
+        """What the workspace's model-connection file looks like, **read-only**.
+
+        The seventh reserved-folder reader: the settings seed runs at the two
+        moments a folder becomes the working location, so a GET reports the file
+        instead of leaving one behind. Its ``state`` is the *reader's* vocabulary
+        (``ok`` / ``absent`` / ``failed``) rather than the seeder's, because the
+        usable/broken question is what the app bar has to render, and the two
+        unusable-but-not-broken cases (no file yet, still the template's
+        instruction text) come through ``message`` with the file's path.
+        ``GET /api/settings`` is where the same sentence reaches the dialog, and
+        a chat or benchmark request refuses with it — both belong to the task that
+        cuts the reads over, so nothing here reads the file's values yet.
+        """
+        return workspace_settings.workspace_settings_state()
+
     @router.get("/path-location")
     def get_path_location() -> Dict[str, Any]:
         """Effective working location of the MCP/LSP hubs.
@@ -1352,6 +1519,7 @@ def build_router(state: RunState) -> APIRouter:
             "mcpSettings": _mcp_settings_block(),
             "lspSettings": _lsp_settings_block(),
             "lspSettingsTemplate": _lsp_template_block(),
+            "workspaceSettings": _workspace_settings_block(),
         }
 
     @router.post("/path-location")
@@ -1436,6 +1604,27 @@ def build_router(state: RunState) -> APIRouter:
         # nothing, so a seeding hiccup cannot be mistaken for a hub failure
         # and cannot trip the rollback below.
         mcp_settings_block = ensure_mcp_settings_file(expanded)
+        # The workspace's model-connection file follows the MCP seed across the
+        # same exception to the "all seeds after the restarts" rule the three
+        # below still keep, for the same reason and with the same safety:
+        # ``lspEnabled`` is read *during* ``_restart_lsp_hub()``
+        # (``_active_server_ids()`` → ``config.lsp_enabled_ids()``), so seeding
+        # after would restart the hub over a folder with no settings file and
+        # leave the new workspace on **zero** language servers until the next
+        # restart — and, like the MCP one, ``ensure_workspace_settings_file``
+        # answers a dict and raises nothing, so a seeding hiccup cannot be
+        # mistaken for a hub failure and cannot trip the rollback below.
+        #
+        # Its cache is invalidated here too (spec D4), for the reason spelled out
+        # beside the modes invalidation below: the ``existing`` answer writes
+        # nothing, so it never reaches the invalidation inside the seeder, and an
+        # entry cached about the new root while it was only being browsed would
+        # otherwise outlive the switch. It sits on the same side of the restarts
+        # as the seed because the restart is the reader that ordering exists for.
+        workspace_settings_block = workspace_settings.ensure_workspace_settings_file(
+            expanded
+        )
+        workspace_settings.invalidate_workspace_settings()
         try:
             mcp = await _restart_mcp_hub(request)
             lsp = await _restart_lsp_hub(request)
@@ -1510,6 +1699,7 @@ def build_router(state: RunState) -> APIRouter:
                 "mcpSettings": mcp_settings_block,
                 "lspSettings": lsp_settings_file_state(expanded),
                 "lspSettingsTemplate": lsp_template_block,
+                "workspaceSettings": workspace_settings_block,
             }
         )
 

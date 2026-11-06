@@ -4,12 +4,12 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-from src.core.models import DEFAULT_LLM_SYSPROMPT, EndpointsConfig
+from src.core.models import EndpointsConfig
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_ROOT / ".env"
@@ -21,28 +21,18 @@ QUESTION_SET_DEFAULT = "legacy"
 # and LSP language servers alike (one knob, no split-brain).
 DEFAULT_MAX_TOOL_ITERATION = 25
 
-# Managed .env keys, in the order they are written to the file.
+# Managed .env keys, in the order they are written to the file. The model
+# connection left this list for the workspace's ``.nojae/nojae-settings.json``:
+# what is left is the install's own scope — the verifier agent, the question
+# set, the debug switch and the connector interpreter, the last two hand-edited
+# like ``BENCHMARKIT_PYTHON_ROOT`` itself.
 SETTING_KEYS: Tuple[str, ...] = (
-    "SERVER_URL",
-    "SERVER_URL_API_KEY",
-    "ENDPOINT",
-    "LLM_SYSPROMPT",
-    "TEMPERATURE",
-    "TOP_P",
-    "TOP_K",
-    "MIN_P",
-    "REPEAT_PENALTY",
-    "PRESENCE_PENALTY",
-    "REASONING",
-    "LLM_DEBUG",
-    "SUPPORTS_VISION",
     "QUESTION_SET",
+    "LLM_DEBUG",
     "VERIFIER_AGENT_SYSPROMPT",
     "VERIFIER_AGENT_SERVERURL",
     "VERIFIER_AGENT_SERVERURL_API_KEY",
     "VERIFIER_AGENT_ENDPOINT",
-    "MAX_TOOL_ITERATION",
-    "LSP_ENABLED",
     "BENCHMARKIT_PYTHON_ROOT",
 )
 
@@ -85,7 +75,10 @@ _RESERVED_ENV_NAMES: frozenset[str] = frozenset(
 )
 
 # Keys always written to .env; the others are commented out when empty.
-REQUIRED_SETTING_KEYS: Tuple[str, ...] = ("SERVER_URL", "ENDPOINT")
+# No key is always-written any more: the two this named were the group-1
+# endpoint pair, and that whole group now lives in the workspace's settings
+# file — which has its own committed template and no always-written member.
+REQUIRED_SETTING_KEYS: Tuple[str, ...] = ()
 
 # Environment variable holding the *working location* the MCP connectors and
 # language servers are pointed at. Both declaration files reference it
@@ -109,14 +102,18 @@ PATH_LOCATION_KEY = "BENCHMARKIT_PATH_LOCATION"
 # top is the request payload.
 #
 # The value lives in ``.env`` (a managed ``SETTING_KEYS`` key) rather than in
-# code so it can be flipped from the settings dialog, and it is applied to the
-# live process at startup and on every save — no restart needed.
+# code so it can be flipped without touching the code, and it is applied to the
+# live process at startup and on every settings save — which then simply
+# re-applies the value the file holds, because the settings dialog stopped
+# carrying the switch (spec section 7). Hand-edit it like
+# ``BENCHMARKIT_PYTHON_ROOT``.
 LLM_DEBUG_KEY = "LLM_DEBUG"
 
 # The name this switch had while the calls went through litellm. It lives here
-# only as the fallback in ``llm_debug_enabled`` (the precedent
-# ``max_tool_iteration`` sets with ``MAX_MCP_ITERATION``), so a hand-written
-# ``.env`` keeps working until the dialog rewrites that file from the template.
+# only as the fallback in ``llm_debug_enabled``, so a hand-written ``.env``
+# keeps working until the dialog rewrites that file from the template — the
+# key itself is a ``.env`` key either way, which is what makes the fallback
+# last exactly as long as the file that needs it.
 LEGACY_LLM_DEBUG_KEY = "LITELLM_DEBUG"
 
 TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
@@ -125,17 +122,6 @@ TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 def env_flag(key: str) -> bool:
     """True when an env var is set to a truthy value (1/true/yes/on)."""
     return (os.environ.get(key) or "").strip().lower() in TRUTHY_VALUES
-
-
-def normalize_env_flag(raw: Optional[str]) -> str:
-    """Normalise a flag-ish submitted value to the ``.env`` form ("1" or "").
-
-    Used by the settings API for the boolean-ish keys: any truthy spelling
-    (1/true/yes/on) becomes the canonical ``1``, and anything else — including
-    the explicit off spellings (0/false/no/off) and an empty field — becomes
-    "", which ``save_settings`` writes as a commented-out line.
-    """
-    return "1" if (raw or "").strip().lower() in TRUTHY_VALUES else ""
 
 
 def llm_debug_enabled() -> bool:
@@ -205,8 +191,10 @@ def apply_llm_debug() -> bool:
     """Raise the in-house LLM client's logger to DEBUG when ``LLM_DEBUG`` is on.
 
     Called at app startup (right after the .env is read) and again on every
-    settings save, so flipping the switch takes effect without restarting the
-    server. The off path is just as explicit: the level goes back to ``NOTSET``
+    settings save, where it re-applies the value the file holds — the dialog
+    stopped carrying the switch, so a hand-edit lands on the next save or
+    restart, not by itself. The off path is just as explicit: the level goes
+    back to ``NOTSET``
     — which inherits WARNING from the root logger, exactly where it stood
     before the switch was ever on — and the handler comes off, so a process
     never stays chatty (nor silent) after the flag is cleared.
@@ -390,14 +378,78 @@ def load_questions(path: Optional[Path] = None) -> List[Dict[str, Any]]:
     return data.get("questions", [])
 
 
-def load_endpoints_config() -> Tuple[Optional[EndpointsConfig], Optional[ValidationError]]:
-    """Build and validate the endpoints config from the environment.
+def workspace_settings_refusal() -> Optional[str]:
+    """The one sentence naming why this workspace's model connection is unusable.
 
-    Returns ``(config, None)`` on success or ``(None, error)`` when the
-    environment is invalid.
+    ``None`` when the file parsed and holds real values. Otherwise the reader's
+    own sentence for the three unusable states — no file, malformed file, still
+    the template's instruction text — each of which names the file and its path:
+    ``error`` carries it for a **failed** read, ``message`` for the two
+    unusable-but-not-broken ones.
+
+    This is the single builder of that sentence (spec D9). ``routes._load_config``
+    turns it into the refusal a chat or benchmark request answers with, and
+    **ws-04's ``GET /api/settings`` must reuse this function** rather than write
+    a second sentence, so the dialog and the refusal can never disagree about
+    what is wrong with the file.
     """
+    # Local import: ``workspace_settings`` reads ``path_location`` *from* this
+    # module, so a module-level import here would be a cycle — the same
+    # cycle-avoidance every other caller of this module's bottom rung states.
+    from src.core import workspace_settings
+
+    state = workspace_settings.workspace_settings_state()
+    if state["state"] == "failed":
+        return state["error"] or f"the workspace settings file {state['path']} cannot be used"
+    if state["state"] != "ok":
+        return state["message"] or f"there is no workspace settings file at {state['path']} yet"
+    if not state["configured"]:
+        return state["message"] or (
+            f"the workspace settings file {state['path']} still holds the "
+            "template's text; set them in the Settings dialog"
+        )
+    return None
+
+
+def load_endpoints_config() -> Tuple[
+    Optional[EndpointsConfig], Optional[Union[ValidationError, str]]
+]:
+    """Build and validate the endpoints config from the two stores it lives in.
+
+    Group 1 (the model connection) comes from the workspace's
+    ``.nojae/nojae-settings.json``, the verifier block from the environment —
+    the one place the two meet, which is why the file's *state* is decided here
+    too:
+
+    * ``(config, None)`` — the file parsed and the sampler values validated;
+    * ``(None, ValidationError)`` — a value pydantic rejects;
+    * ``(None, sentence)`` — the file is **absent**, **malformed** or still
+      holds the template's instruction text (spec D8, D9). The sentence names
+      the file and its path, and it is the one the Settings dialog shows: it
+      comes from :func:`workspace_settings_refusal` above, so a chat or
+      benchmark refusal and ws-04's ``GET /api/settings`` cannot disagree about
+      what is wrong.
+
+    Never a silent default. A caller that benchmarked on defaults here would
+    measure the defaults, not the model — and the alternative, dialling the
+    template's instruction sentence as a URL, makes a transport error quote a
+    sentence back at the user.
+    """
+    # Local import, for the reason every caller of this module's bottom rung
+    # has: ``workspace_settings`` reads ``path_location`` *from* this module,
+    # so a module-level import here would be a cycle.
+    from src.core import workspace_settings
+
+    refusal = workspace_settings_refusal()
+    if refusal is not None:
+        return None, refusal
     try:
-        return EndpointsConfig.from_env(), None
+        return (
+            EndpointsConfig.from_workspace(
+                workspace_settings.load_workspace_settings(), os.environ
+            ),
+            None,
+        )
     except ValidationError as exc:
         return None, exc
 
@@ -407,12 +459,12 @@ def load_settings() -> Dict[str, str]:
 
     ``os.environ`` already reflects the .env file loaded at startup (real
     environment variables keep precedence) and is refreshed on every save.
-    ``QUESTION_SET`` and ``LLM_SYSPROMPT`` resolve to their defaults when unset.
+    ``QUESTION_SET`` resolves to its default when unset; every other managed
+    key answers empty, because the two values that used to default here moved
+    to the workspace's settings file, which defaults them itself.
     """
     defaults = {
         "QUESTION_SET": QUESTION_SET_DEFAULT,
-        "LLM_SYSPROMPT": DEFAULT_LLM_SYSPROMPT,
-        "MAX_TOOL_ITERATION": str(DEFAULT_MAX_TOOL_ITERATION),
     }
     return {
         key: os.environ.get(key) or defaults.get(key, "")
@@ -424,7 +476,8 @@ def save_settings(values: Dict[str, str]) -> None:
     """Persist managed settings to the .env file and refresh ``os.environ``.
 
     Empty optional values are written as commented-out lines and removed from
-    the environment; required keys are always written. The file is regenerated
+    the environment (``REQUIRED_SETTING_KEYS`` is empty, so no key is
+    always-written). The file is regenerated
     from a fixed template mirroring ``.env.example``. ``QUESTION_SET`` always
     resolves to ``QUESTION_SET_DEFAULT`` when unset, so it is never written
     as a commented-out line.
@@ -468,22 +521,7 @@ def _render_env(values: Dict[str, str]) -> str:
         "# Benchmark'it configuration (managed by the settings dialog).",
         "# Real environment variables take precedence over the values defined here.",
         "",
-        "# Target LLM endpoint",
-        line("SERVER_URL"),
-        line("SERVER_URL_API_KEY"),
-        line("ENDPOINT"),
-        "# Set to 1 when the model accepts image input (enables Chat image attach)",
-        line("SUPPORTS_VISION"),
-        line("LLM_SYSPROMPT"),
-        "",
-        "# Sampling parameters (optional)",
-        line("TEMPERATURE"),
-        line("TOP_P"),
-        line("TOP_K"),
-        line("MIN_P"),
-        line("REPEAT_PENALTY"),
-        line("PRESENCE_PENALTY"),
-        line("REASONING"),
+        "# Benchmark question set (resources/<name>.json)",
         line("QUESTION_SET"),
         "",
         "# LLM_DEBUG=1 logs every request's payload (URL, model, body) to the",
@@ -504,12 +542,13 @@ def _render_env(values: Dict[str, str]) -> str:
         "# mcp_connectors/mcp-settings.default.json when a folder becomes the",
         "# working location, their per-entry ``enable`` flag is the single",
         "# source of truth, no .env key is involved.",
-        "# LSP language servers (Chat tab only) — ids of the servers in",
-        "# .nojae/lsp-settings.json to activate on top of their",
-        "# per-entry ``enable`` flag (both must agree).",
-        line("LSP_ENABLED"),
-        "# Cap on the tool loop of one chat reply, MCP + LSP together.",
-        line("MAX_TOOL_ITERATION"),
+        "# The model connection for this workspace — server, key, model id,",
+        "# system prompt, sampling, the vision flag, the LSP ids to activate",
+        "# and the cap on one chat reply's tool loop — lives only in",
+        "# .nojae/nojae-settings.json at the working location: seeded from",
+        "# nojae-settings.default.json when a folder becomes the working",
+        "# location, written by the Settings dialog, a hand-edit there needs a",
+        "# server restart, no .env key is involved.",
         "",
         "# Absolute path to the python interpreter the stdio connectors run",
         "# on (the console and fedit commands in .nojae/mcp-settings.json",
@@ -522,39 +561,51 @@ def _render_env(values: Dict[str, str]) -> str:
 
 
 def max_tool_iteration() -> int:
-    """Tool-iteration cap for one chat reply; invalid or unset values fall
-    back to ``DEFAULT_MAX_TOOL_ITERATION``.
+    """Tool-iteration cap for one chat reply; absent or out of range falls
+    back to ``DEFAULT_MAX_TOOL_ITERATION`` / ``1``.
 
-    The key was renamed ``MAX_TOOL_ITERATION`` because the cap covers the
-    whole tool loop of one chat reply — MCP connectors and LSP language
-    servers share the single counter (and the UI's progress gauge).
-    ``MAX_MCP_ITERATION`` is still honoured so an existing .env keeps working.
+    The cap covers the whole tool loop of one chat reply — MCP connectors and
+    LSP language servers share the single counter (and the UI's progress
+    gauge) — so it is one knob, whatever hub a reply is using. Its value is
+    ``maxToolIteration`` in the workspace's ``.nojae/nojae-settings.json``,
+    read through the typed accessor: it left ``.env`` with the rest of group 1,
+    and with it went the hand-written-``.env`` escape hatch that used to
+    override the key, because the file that held the key no longer exists.
     """
-    raw = (
-        os.environ.get("MAX_TOOL_ITERATION", "")
-        or os.environ.get("MAX_MCP_ITERATION", "")
-    ).strip()
-    if not raw:
+    # Local import: ``workspace_settings`` reads ``path_location`` *from* this
+    # module, so a module-level import here would be a cycle.
+    from src.core import workspace_settings
+
+    raw = workspace_settings.workspace_setting("maxToolIteration")
+    if raw is None:
         return DEFAULT_MAX_TOOL_ITERATION
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return DEFAULT_MAX_TOOL_ITERATION
+    return max(1, int(raw))
 
 
 def lsp_enabled_ids() -> List[str]:
-    """Language-server ids activated for the Chat tab from ``LSP_ENABLED``.
+    """Language-server ids activated for the Chat tab.
 
-    Comma-separated, deduplicated, order-preserving; empty entries ignored.
-    A server is only actually started when this list contains its id *and*
-    its ``enable`` flag is true in ``.nojae/lsp-settings.json`` — the env key
-    lets a whole prepared config file stay dormant.
+    They are ``lspEnabled`` in the workspace's ``.nojae/nojae-settings.json``:
+    an array of strings, so the file already holds a list and there is nothing
+    to split. Duplicates drop and the file's order is kept, which is the order
+    the hub starts servers in; a value the reader could not check answers no id
+    at all rather than a partial list.
+
+    A server is only actually started when this list contains its id *and* its
+    ``enable`` flag is true in ``.nojae/lsp-settings.json`` — the two gates let
+    a whole prepared config file stay dormant.
     """
+    # Local import, same cycle-avoidance reason as ``max_tool_iteration``.
+    from src.core import workspace_settings
+
+    raw = workspace_settings.workspace_setting("lspEnabled")
     ids: List[str] = []
-    for part in os.environ.get("LSP_ENABLED", "").split(","):
-        part = part.strip()
-        if part and part not in ids:
-            ids.append(part)
+    if not isinstance(raw, list):
+        return ids
+    for part in raw:
+        entry = part.strip() if isinstance(part, str) else ""
+        if entry and entry not in ids:
+            ids.append(entry)
     return ids
 
 

@@ -304,10 +304,17 @@ class TestSettingsEndpoint:
     @pytest.fixture(autouse=True)
     def isolated_settings_env(self, monkeypatch, tmp_path):
         from src import config as config_module
+        from tests.conftest import neutralise_workspace_settings
 
         for key in config_module.SETTING_KEYS:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
+        # The ``.env`` wipe never reached the workspace store: a settings test
+        # must also own the ``.nojae/nojae-settings.json`` its POST writes and
+        # its GET reads (it is group 1's home since the split). The write runs
+        # before the app boots, so the boot seed finds an existing file and
+        # leaves this one alone (exclusive create, D11).
+        neutralise_workspace_settings(monkeypatch, tmp_path)
 
     @staticmethod
     def _payload(**overrides):
@@ -333,28 +340,52 @@ class TestSettingsEndpoint:
         payload.update(overrides)
         return payload
 
-    def test_get_returns_env_values(self, client, monkeypatch):
-        monkeypatch.setenv("SERVER_URL", "http://x/v1")
-        monkeypatch.setenv("SERVER_URL_API_KEY", "sk-target")
-        monkeypatch.setenv("LLM_SYSPROMPT", "Answer concisely.")
+    def test_get_returns_values_from_both_stores(self, client, monkeypatch):
+        """Group 1 answers from the workspace file, groups 2/3 from ``.env``."""
         monkeypatch.setenv("VERIFIER_AGENT_SYSPROMPT", "verify!")
         monkeypatch.setenv("VERIFIER_AGENT_SERVERURL_API_KEY", "sk-judge")
         body = client.get("/api/settings").json()
-        assert body["serverUrl"] == "http://x/v1"
-        assert body["apiKey"] == "sk-target"
-        assert body["endpoint"] == ""
-        assert body["sysprompt"] == "Answer concisely."
+        # The fixture's own workspace file (conftest helper), not the env.
+        assert body["serverUrl"] == "http://test-server:8080/v1"
+        assert body["endpoint"] == "test-model"
+        # The state block beside the values (D9's report point): one shape to
+        # switch on, carrying the same sentence a chat request would refuse with.
+        state = body["workspaceSettings"]
+        assert set(state) == {"state", "path", "error", "configured", "message"}
+        assert state["state"] == "ok"
+        assert state["configured"] is True
         assert body["verifier"]["sysprompt"] == "verify!"
         assert body["verifier"]["apiKey"] == "sk-judge"
 
+    def test_get_answers_native_json_types_for_group_one(self, client):
+        """The payload types ws-05 reads: numbers are numbers, never strings.
+
+        The dotenv wart D6 ends here: the file holds ``0.2`` and the dialog is
+        answered ``0.2``, while the vision flag is a real boolean.
+        """
+        body = client.get("/api/settings").json()
+        assert body["temp"] == 0.2
+        assert not isinstance(body["temp"], str)
+        assert body["topK"] == 20
+        assert body["supportsVision"] is False
+        assert body["questionSet"] == "legacy"
+
     def test_get_empty_when_nothing_set(self, client):
+        from src.core import workspace_settings
         from src.core.models import DEFAULT_LLM_SYSPROMPT
 
+        os.remove(workspace_settings.workspace_settings_path())
+        workspace_settings.invalidate_workspace_settings()
         body = client.get("/api/settings").json()
         assert body["serverUrl"] == ""
         assert body["apiKey"] == ""
-        # Unset LLM_SYSPROMPT resolves to the built-in default, like QUESTION_SET.
+        # An absent member means what the spec key map says: no sampling
+        # number at all (null), and the prompt falls back to the built-in
+        # default — which is what the model then receives.
+        assert body["temp"] is None
+        assert body["supportsVision"] is False
         assert body["sysprompt"] == DEFAULT_LLM_SYSPROMPT
+        assert body["workspaceSettings"]["state"] == "absent"
         assert body["verifier"] == {
             "serverUrl": "",
             "apiKey": "",
@@ -362,102 +393,149 @@ class TestSettingsEndpoint:
             "sysprompt": "",
         }
 
-    def test_save_writes_file_and_environ(self, client):
+    def test_save_writes_group_one_to_the_workspace_file_and_two_to_env(
+        self, client
+    ):
         from dotenv import dotenv_values
 
         from src import config as config_module
+        from src.core import workspace_settings
 
         response = client.post("/api/settings", json=self._payload())
         assert response.status_code == 200
         assert response.json()["endpoint"] == "model-a"
+        assert response.json()["temp"] == 0.2
+        assert response.json()["topP"] is None
 
-        import os
+        # The workspace file holds group 1 and nothing of the verifier's.
+        path = workspace_settings.workspace_settings_path()
+        with open(path, encoding="utf-8") as handle:
+            stored = json.load(handle)
+        assert stored["serverUrl"] == "http://target:8080/v1"
+        assert stored["serverApiKey"] == "secret-key"
+        assert stored["endpoint"] == "model-a"
+        assert stored["sysprompt"] == "Answer briefly."
+        assert stored["temperature"] == 0.2
+        assert stored["reasoning"] == "low"
+        # A cleared numeric field leaves its member **absent** in the file —
+        # not ``null``, not ``""``, not the value the file held before.
+        assert "topP" not in stored
+        assert "topK" not in stored
+        assert "SUPPORTS_VISION" not in stored
+        with open(path, encoding="utf-8") as handle:
+            assert "judge" not in handle.read()
 
-        assert os.environ["SERVER_URL"] == "http://target:8080/v1"
-        assert os.environ["SERVER_URL_API_KEY"] == "secret-key"
-        assert os.environ["LLM_SYSPROMPT"] == "Answer briefly."
-        assert os.environ["VERIFIER_AGENT_SERVERURL_API_KEY"] == "judge-key"
-        assert os.environ["REASONING"] == "low"
-        assert "TOP_P" not in os.environ
-
+        # .env holds the verifier and nothing of group 1's.
         file_values = dotenv_values(config_module.ENV_PATH)
-        assert file_values["SERVER_URL"] == "http://target:8080/v1"
-        assert file_values["SERVER_URL_API_KEY"] == "secret-key"
-        assert file_values["LLM_SYSPROMPT"] == "Answer briefly."
         assert file_values["VERIFIER_AGENT_SERVERURL_API_KEY"] == "judge-key"
         # The quoted sysprompt must survive the .env round-trip verbatim.
         assert file_values["VERIFIER_AGENT_SYSPROMPT"] == 'Say "true" or "false" only.'
-        assert file_values.get("TOP_P") is None
         text = config_module.ENV_PATH.read_text(encoding="utf-8")
-        assert "#TOP_P=" in text
+        assert "target:8080" not in text
+        assert "secret-key" not in text
+        assert "TEMPERATURE" not in text
+        assert "SUPPORTS_VISION" not in text
 
-    def test_save_removes_emptied_optional_key(self, client, monkeypatch):
-        from src import config as config_module
+        # The live environment carries the verifier half as its only managed
+        # names: ``load_settings`` — the managed ``.env`` view — cannot even
+        # answer a group-1 key any more (a leftover in the ambient environment
+        # is dead bytes, D2, and reading it is the config suite's test).
+        assert os.environ["VERIFIER_AGENT_SERVERURL_API_KEY"] == "judge-key"
+        assert "SERVER_URL" not in config_module.load_settings()
+        assert "REASONING" not in config_module.load_settings()
+        assert "TOP_P" not in config_module.load_settings()
 
-        monkeypatch.setenv("TEMPERATURE", "0.5")
+    def test_save_cleared_field_removes_a_member_the_file_held(self, client):
+        """The dialog owns every group-1 member, so clearing one clears it.
+
+        ``save_workspace_settings`` carries members over when they are not
+        given — right for ``post_lsp``, wrong here. The fixture's file holds
+        the template's ``temperature: 0.2``; a save with an empty ``temp``
+        must leave the member absent, and the next GET must answer ``null``.
+        """
+        from src.core import workspace_settings
+
         response = client.post("/api/settings", json=self._payload(temp=""))
         assert response.status_code == 200
-        import os
+        with open(workspace_settings.workspace_settings_path(), encoding="utf-8") as f:
+            stored = json.load(f)
+        assert "temperature" not in stored
+        assert response.json()["temp"] is None
+        # The members the dialog does not own survived the rebuild.
+        assert stored["maxToolIteration"] == 300
+        assert stored["lspEnabled"] == []
 
-        assert "TEMPERATURE" not in os.environ
-        text = config_module.ENV_PATH.read_text(encoding="utf-8")
-        assert "#TEMPERATURE=" in text
+    def test_save_supports_vision_is_a_native_boolean(self, client):
+        from src.core import workspace_settings
 
-    def test_save_normalizes_supports_vision(self, client):
-        import os
-
-        from dotenv import dotenv_values
-
-        from src import config as config_module
-
+        # Interim until ws-05 sends a real boolean: the checkbox still sends
+        # the .env spellings, and they become a real ``true`` in the file.
         response = client.post(
             "/api/settings", json=self._payload(supportsVision="true")
         )
         assert response.status_code == 200
-        assert response.json()["supportsVision"] == "1"
-        assert os.environ["SUPPORTS_VISION"] == "1"
-        assert dotenv_values(config_module.ENV_PATH)["SUPPORTS_VISION"] == "1"
+        assert response.json()["supportsVision"] is True
+        with open(workspace_settings.workspace_settings_path(), encoding="utf-8") as f:
+            assert json.load(f)["supportsVision"] is True
 
-    def test_save_normalizes_llm_debug_and_applies_it(self, client, monkeypatch):
-        """The debug switch round-trips and is pushed onto the live process."""
+        # An empty box omits the member — absent means false, not ``"0"``.
+        response = client.post(
+            "/api/settings", json=self._payload(supportsVision="")
+        )
+        assert response.status_code == 200
+        assert response.json()["supportsVision"] is False
+        with open(workspace_settings.workspace_settings_path(), encoding="utf-8") as f:
+            assert "supportsVision" not in json.load(f)
+
+    def test_llm_debug_survives_a_save_that_never_mentions_it(
+        self, client, monkeypatch
+    ):
+        """The dialog no longer carries ``LLM_DEBUG`` (spec section 7) — and a
+        save must not switch it off.
+
+        The trap this pins: ``_settings_env_values`` once *always* emitted the
+        key, and the ``{**load_settings(), **env_values}`` merge let the
+        emitted ``""`` win over the stored value — so every settings save
+        commented ``LLM_DEBUG`` out and popped it from the environment. The key
+        is hand-edited like ``BENCHMARKIT_PYTHON_ROOT`` now; a save that never
+        mentions it re-applies the value the file still has.
+        """
         import os
 
         from dotenv import dotenv_values
 
         from src import config as config_module
 
+        monkeypatch.setenv(config_module.LLM_DEBUG_KEY, "1")
         applied = []
         monkeypatch.setattr(
             config_module, "apply_llm_debug", lambda: applied.append(True)
         )
-        response = client.post(
-            "/api/settings", json=self._payload(llmDebug="true")
-        )
+        response = client.post("/api/settings", json=self._payload())
         assert response.status_code == 200
-        # "true" from a hand-written client becomes the canonical .env form.
-        assert response.json()["llmDebug"] == "1"
-        assert os.environ["LLM_DEBUG"] == "1"
-        assert dotenv_values(config_module.ENV_PATH)["LLM_DEBUG"] == "1"
-        # Reloading the dialog reads the same field back, so the box is still
-        # ticked after a save.
-        assert client.get("/api/settings").json()["llmDebug"] == "1"
-        # Saving re-applies the switch, so no restart is needed to get debug
-        # output on the console.
+        # Stored, live in the environment, and re-applied to the process —
+        # without the dialog ever naming the key.
+        assert dotenv_values(config_module.ENV_PATH)[config_module.LLM_DEBUG_KEY] == "1"
+        assert os.environ[config_module.LLM_DEBUG_KEY] == "1"
         assert applied == [True]
+        # The field is gone from the API in both directions.
+        assert "llmDebug" not in response.json()
+        assert "llmDebug" not in client.get("/api/settings").json()
 
     def test_save_unticked_debug_clears_the_legacy_key_too(self, client, monkeypatch):
         """A save ends the fallback, because the file it writes no longer holds it.
 
-        Boot loaded the legacy key from a hand-written .env; unticking the box
-        must switch the logging off *now*, not only after a restart that never
-        reads that key again.
+        Boot loaded the legacy key from a hand-written .env; the next save must
+        switch the logging off *now*, not only after a restart that never reads
+        that key again — the dialog no longer carries the switch, so "a save"
+        is any settings save, not one that unticks a box.
         """
         import os
 
         from src import config as config_module
 
         monkeypatch.setenv(config_module.LEGACY_LLM_DEBUG_KEY, "1")
-        response = client.post("/api/settings", json=self._payload(llmDebug=""))
+        response = client.post("/api/settings", json=self._payload())
         assert response.status_code == 200
         assert config_module.LEGACY_LLM_DEBUG_KEY not in os.environ
         assert "LLM_DEBUG" not in os.environ
@@ -466,43 +544,50 @@ class TestSettingsEndpoint:
         assert "#LLM_DEBUG=" in text
         assert config_module.LEGACY_LLM_DEBUG_KEY not in text
 
-    def test_save_unsets_blank_supports_vision(self, client, monkeypatch):
-        import os
-
+    def test_save_emptied_sysprompt_answers_the_default(self, client, monkeypatch):
         from src import config as config_module
-
-        monkeypatch.setenv("SUPPORTS_VISION", "1")
-        response = client.post("/api/settings", json=self._payload(supportsVision=""))
-        assert response.status_code == 200
-        assert "SUPPORTS_VISION" not in os.environ
-        text = config_module.ENV_PATH.read_text(encoding="utf-8")
-        assert "#SUPPORTS_VISION=" in text
-
-    def test_save_emptied_llm_sysprompt_falls_back_to_default(self, client, monkeypatch):
-        from src import config as config_module
+        from src.core import workspace_settings
         from src.core.models import DEFAULT_LLM_SYSPROMPT
 
         assert client.post("/api/settings", json=self._payload()).status_code == 200
         response = client.post("/api/settings", json=self._payload(sysprompt=""))
         assert response.status_code == 200
-        import os
-
-        assert "LLM_SYSPROMPT" not in os.environ
+        with open(workspace_settings.workspace_settings_path(), encoding="utf-8") as f:
+            assert "sysprompt" not in json.load(f)
         text = config_module.ENV_PATH.read_text(encoding="utf-8")
-        assert "#LLM_SYSPROMPT=" in text
-        # An unset LLM_SYSPROMPT is reported back as the built-in default.
+        assert "LLM_SYSPROMPT" not in text
+        assert "LLM_SYSPROMPT" not in config_module.load_settings()
+        # An absent sysprompt is reported back as the built-in default, which
+        # is what the model then receives.
         assert response.json()["sysprompt"] == DEFAULT_LLM_SYSPROMPT
 
     def test_save_invalid_value_returns_422(self, client):
+        """The gate runs before **either** write (spec section 5)."""
         from src import config as config_module
+        from src.core import workspace_settings
 
+        path = workspace_settings.workspace_settings_path()
+        with open(path, encoding="utf-8") as handle:
+            before = handle.read()
         response = client.post("/api/settings", json=self._payload(temp="abc"))
         assert response.status_code == 422
         assert not config_module.ENV_PATH.exists()
+        with open(path, encoding="utf-8") as handle:
+            assert handle.read() == before
 
     def test_save_invalid_reasoning_returns_422(self, client):
+        """A bad ``reasoning`` reaches **neither** disk: one gate, both stores."""
+        from src import config as config_module
+        from src.core import workspace_settings
+
+        path = workspace_settings.workspace_settings_path()
+        with open(path, encoding="utf-8") as handle:
+            before = handle.read()
         response = client.post("/api/settings", json=self._payload(reasoning="ultra"))
         assert response.status_code == 422
+        assert not config_module.ENV_PATH.exists()
+        with open(path, encoding="utf-8") as handle:
+            assert handle.read() == before
 
     def test_save_while_running_returns_409(self, client):
         client.app.state.run_state.status = "running"
@@ -511,6 +596,8 @@ class TestSettingsEndpoint:
         client.app.state.run_state.status = "idle"
 
     def test_saved_settings_are_used_by_config_endpoint(self, client, monkeypatch):
+        """Read-your-write across the split: the POST writes what the model
+        call reads (spec section 5, the acceptance this whole task exists for)."""
         from src import config as config_module
 
         monkeypatch.setattr(
@@ -523,7 +610,7 @@ class TestSettingsEndpoint:
         assert body["verifierConfigured"] is True
 
     def test_save_accepts_json_numbers_and_nulls(self, client):
-        import os
+        from src.core import workspace_settings
 
         payload = {
             "serverUrl": "http://target:8080/v1",
@@ -536,18 +623,130 @@ class TestSettingsEndpoint:
         }
         response = client.post("/api/settings", json=payload)
         assert response.status_code == 200
-        assert os.environ["TEMPERATURE"] == "0.2"
-        assert os.environ["TOP_K"] == "20"
-        assert "TOP_P" not in os.environ
-        assert os.environ["ENDPOINT"] == "model-a"
+        # Numbers arrive as strings through the tolerant mixin and are stored
+        # as native JSON again — the file never holds "0.2" or "20".
+        with open(workspace_settings.workspace_settings_path(), encoding="utf-8") as f:
+            stored = json.load(f)
+        assert stored["temperature"] == 0.2
+        assert stored["topK"] == 20
+        assert "topP" not in stored
+        assert stored["endpoint"] == "model-a"
+        assert "ENDPOINT" not in routes.load_settings()
 
     def test_save_reasoning_none_is_omitted(self, client):
-        import os
+        from src.core import workspace_settings
 
         payload = self._payload(reasoning="none")
         response = client.post("/api/settings", json=payload)
         assert response.status_code == 200
-        assert "REASONING" not in os.environ
+        with open(workspace_settings.workspace_settings_path(), encoding="utf-8") as f:
+            assert "reasoning" not in json.load(f)
+        assert response.json()["reasoning"] == ""
+
+    def test_get_reflects_the_second_workspace_after_a_switch(self, hub_client, tmp_path):
+        """D4's cache invalidation at API level: two roots, one per file.
+
+        The first workspace's saved values must not answer after the app bar
+        has moved to the second one — the cached read is keyed per resolved
+        path and the switch invalidates it (ws-02 placed the seed +
+        invalidation, this proves the settings API follows).
+        """
+        from tests.conftest import write_workspace_settings
+
+        first = tmp_path / "ws-first"
+        first.mkdir()
+        write_workspace_settings(first, serverUrl="http://one.example/v1")
+        second = tmp_path / "ws-second"
+        second.mkdir()
+        write_workspace_settings(second, serverUrl="http://two.example/v1")
+
+        assert (
+            hub_client.post("/api/path-location", json={"path": str(first)}).status_code
+            == 200
+        )
+        assert hub_client.get("/api/settings").json()["serverUrl"] == "http://one.example/v1"
+
+        assert (
+            hub_client.post(
+                "/api/path-location", json={"path": str(second)}
+            ).status_code
+            == 200
+        )
+        body = hub_client.get("/api/settings").json()
+        assert body["serverUrl"] == "http://two.example/v1"
+        assert body["workspaceSettings"]["path"].startswith(str(second))
+
+
+class TestEnvTrioParity:
+    """AGENTS.md's trio rule, as a test: ``SETTING_KEYS``, ``_render_env()``
+    and ``.env.example`` move together — ws-04 shrank all three the same way,
+    and none of them may name a group-1 key any more.
+    """
+
+    # The names the model connection used to live under in ``.env`` — dead
+    # bytes now (spec D2), rendered by nothing.
+    GROUP_ONE_ENV_NAMES = (
+        "SERVER_URL",
+        "SERVER_URL_API_KEY",
+        "ENDPOINT",
+        "LLM_SYSPROMPT",
+        "TEMPERATURE",
+        "TOP_P",
+        "TOP_K",
+        "MIN_P",
+        "REPEAT_PENALTY",
+        "PRESENCE_PENALTY",
+        "REASONING",
+        "SUPPORTS_VISION",
+        "LSP_ENABLED",
+        "MAX_TOOL_ITERATION",
+    )
+
+    @staticmethod
+    def _managed_keys(text: str):
+        """The ``KEY=``/``#KEY=`` names a file or render mentions, line by line."""
+        names = set()
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if line.startswith("#"):
+                line = line[1:]
+            name, sep, _value = line.partition("=")
+            if sep and name.replace("_", "").isalnum() and name == name.upper():
+                names.add(name)
+        return names
+
+    def test_every_managed_key_is_rendered_and_exemplified(self):
+        from src.config import PROJECT_ROOT, SETTING_KEYS, _render_env
+
+        rendered = _render_env({key: "x" for key in SETTING_KEYS})
+        assert self._managed_keys(rendered) == set(SETTING_KEYS)
+        example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+        assert set(SETTING_KEYS) <= self._managed_keys(example)
+
+    def test_no_group_one_key_in_any_of_the_three(self):
+        from src.config import PROJECT_ROOT, SETTING_KEYS, _render_env
+
+        rendered = _render_env({})
+        example = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
+        for name in self.GROUP_ONE_ENV_NAMES:
+            assert name not in SETTING_KEYS
+            assert name not in self._managed_keys(rendered)
+            assert name not in self._managed_keys(example)
+
+    def test_the_pointer_comment_names_the_moved_store(self):
+        from src.config import PROJECT_ROOT, _render_env
+
+        for text in (
+            _render_env({}),
+            (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8"),
+        ):
+            assert ".nojae/nojae-settings.json" in text
+            assert "nojae-settings.default.json" in text
+
+    def test_required_setting_keys_is_empty(self):
+        from src.config import REQUIRED_SETTING_KEYS
+
+        assert REQUIRED_SETTING_KEYS == ()
 
 
 class TestModelsEndpoint:

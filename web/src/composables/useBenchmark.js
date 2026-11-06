@@ -43,6 +43,13 @@ const state = reactive({
   settingsLoading: false,
   settingsSaving: false,
   settingsError: null,
+  // The workspace model-connection file's own state (``.nojae/nojae-settings.json``,
+  // the twin of ``mcpExternalsError``'s file): ``{state, path, error, configured,
+  // message}`` straight off ``GET``/``POST /api/settings``. Only the block is
+  // kept -- the wording is the server's sentence, which already names the file
+  // and its path, so the dialog shows it and translates nothing. ``path`` is
+  // also what the dialog's hint line names as the file it edits.
+  workspaceSettings: null,
   questionSets: [],
   questionSetsLoading: false,
   questionSetsError: null,
@@ -494,6 +501,7 @@ export function useBenchmark() {
         return
       }
       state.settings = body
+      state.workspaceSettings = body.workspaceSettings || null
       state.benchmarkModels = []
       state.verifierModels = []
       state.benchmarkModelsError = null
@@ -625,6 +633,7 @@ export function useBenchmark() {
         return
       }
       state.settings = body
+      state.workspaceSettings = body.workspaceSettings || null
       state.settingsOpen = false
       await loadConfig()
     } catch (exc) {

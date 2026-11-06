@@ -340,10 +340,10 @@ class TestTheEndpoints:
     ):
         """The first of am-03's two entry points: a brand-new workspace opened
         at boot ends up with exactly the files of the reserved folder — the
-        policy, the modes, the prompt helpers, the MCP declaration, and the
-        LSP template (never the LSP declaration, which is hand-written) — and
-        nothing else."""
-        from src.core import lsphub, mcphub
+        policy, the modes, the prompt helpers, the MCP declaration, the LSP
+        template (never the LSP declaration, which is hand-written), and the
+        workspace settings — and nothing else."""
+        from src.core import lsphub, mcphub, workspace_settings
 
         target = tmp_path / "booted-project"
         target.mkdir()
@@ -365,6 +365,9 @@ class TestTheEndpoints:
             folder / lsphub.constants.LSP_SETTINGS_TEMPLATE_FILENAME
         ).is_file()
         assert not (folder / lsphub.constants.LSP_SETTINGS_FILENAME).is_file()
+        assert (
+            folder / workspace_settings.WORKSPACE_SETTINGS_FILENAME
+        ).is_file()
         assert sorted(name.name for name in folder.iterdir()) == sorted(
             [
                 editorfs_constants.POLICY_FILENAME,
@@ -372,6 +375,7 @@ class TestTheEndpoints:
                 prompt_helpers.PROMPT_HELPERS_FILENAME,
                 mcphub.constants.MCP_SETTINGS_FILENAME,
                 lsphub.constants.LSP_SETTINGS_TEMPLATE_FILENAME,
+                workspace_settings.WORKSPACE_SETTINGS_FILENAME,
             ]
         )
         assert sorted(os.listdir(target)) == sorted(

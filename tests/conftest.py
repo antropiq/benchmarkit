@@ -13,6 +13,7 @@ import shutil
 import tempfile
 import threading
 from pathlib import Path
+from typing import Any
 from typing import Iterator
 from typing import Callable
 from typing import cast
@@ -402,20 +403,65 @@ def _no_trash_of_its_own(monkeypatch: pytest.MonkeyPatch,
 
 @pytest.fixture(autouse=True)
 def _no_legacy_tool_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the tool-loop cap deterministic.
+    """Keep the tool-loop cap deterministic for the ``.env`` half.
 
-    ``create_app()`` loads the developer's own ``.env`` once, so a legacy
-    ``MAX_MCP_ITERATION`` (still honoured as a fallback by
-    ``config.max_tool_iteration()``) or an ``LSP_ENABLED`` list would
-    otherwise leak into every test and depend on the machine it runs on.
+    ``create_app()`` loads the developer's own ``.env`` once, so a key this file
+    *used* to own would leak into every test and depend on the machine it runs
+    on. ``MAX_TOOL_ITERATION`` and ``LSP_ENABLED`` are the two that moved out of
+    ``.env`` into the workspace's ``.nojae/nojae-settings.json`` (so a stale
+    entry in a developer's ``.env`` is now read by nothing); clearing them anyway
+    is what keeps this fixture honest while the ``.env`` template still renders
+    them, and the leak that move opens — the file itself — is closed by
+    :func:`_no_workspace_settings_leak` below.
     ``MCP_ENABLED`` is gone from the config entirely (connectors activate only
     through their ``enable`` flag in ``mcp-settings.json``); clearing it keeps a
     stale entry in a developer's ``.env`` from confusing the suite.
     """
     monkeypatch.delenv("MAX_TOOL_ITERATION", raising=False)
-    monkeypatch.delenv("MAX_MCP_ITERATION", raising=False)
     monkeypatch.delenv("LSP_ENABLED", raising=False)
     monkeypatch.delenv("MCP_ENABLED", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_workspace_settings_leak(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[None]:
+    """Point the workspace settings file at a throw-away location for every test.
+
+    The model connection (server, key, sampling, ``lspEnabled``, the tool-loop
+    cap) lives in ``<working location>/.nojae/nojae-settings.json`` now, so the
+    suite's ``SETTING_KEYS`` wipe loops no longer stand between a test and the
+    developer's own file — live server URL and real API key and every test that
+    reads group 1 would answer with them. Nothing replaces those loops for this
+    store, so the guard is the *location*: unless a test names its own working
+    location, it gets a fresh folder under its ``tmp_path`` rather than this
+    checkout, and the settings lookup can only find a file that test wrote.
+
+    A test that picks its own location (the folder's own style,
+    ``monkeypatch.setenv("BENCHMARKIT_PATH_LOCATION", str(tmp_path))``) overrides
+    this, because its own fixture or body runs later; one that deliberately
+    clears the key asks for the boot default and gets it. ``tests/conftest`` is
+    the only place this is done, and ``tests/test_env_isolation.py`` is the
+    invariant stated as a test rather than trusted as a fixture.
+
+    The throw-away root is a **sibling** of ``tmp_path`` rather than a folder
+    inside it: several suites pin that a workspace they point at stayed empty
+    (``assert list(workspace.iterdir()) == []`` is how "a reader never writes"
+    is checked), so a guard folder of the fixture's own would falsify the very
+    assertion those tests exist to make.
+    """
+    from src import config as config_module
+    from src.core import workspace_settings
+
+    root = workspace_settings_guard_root(tmp_path)
+    root.mkdir(exist_ok=True)
+    monkeypatch.setenv(config_module.PATH_LOCATION_KEY, str(root))
+    # The cache is keyed on the resolved path, so it must be empty on both sides
+    # of a test: an entry made about another workspace's file must never answer
+    # here, and one made here must never answer there.
+    workspace_settings.invalidate_workspace_settings()
+    yield
+    workspace_settings.invalidate_workspace_settings()
 
 
 @pytest.fixture(autouse=True)
@@ -463,6 +509,77 @@ def _no_debug_switch_leak(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     # that behind would silence a logger that now has nowhere to write.
     logger.propagate = propagate or len(kept) != len(handlers)
     llmkit_client.debug_enabled = hook
+
+
+def workspace_settings_guard_root(tmp_path: Path) -> Path:
+    """The throw-away working location :func:`_no_workspace_settings_leak` pins."""
+    return tmp_path.parent / f"{tmp_path.name}-workspace"
+
+
+def write_workspace_settings(
+    root: Path, **members: Any
+) -> Path:
+    """Write ``root/.nojae/nojae-settings.json`` from the template plus overrides.
+
+    The suite's way of saying "this workspace's model connection is these
+    values": the committed template supplies every member (so a test never
+    hand-assembles a document the reader might reject), and ``members`` replaces
+    whichever ones the test is about. ``serverUrl``/``endpoint`` default to real
+    values, because the template's are instruction sentences and a reader would
+    report the file *not configured* (spec D8).
+
+    The path is built from the module's own ``POLICY_DIRNAME`` /
+    ``WORKSPACE_SETTINGS_FILENAME`` — never a literal — and the settings cache is
+    invalidated so the write answers immediately (D4: a hand-write is not a
+    restart).
+    """
+    import json
+
+    from src.core import workspace_settings
+
+    raw: Dict[str, Any] = json.loads(
+        workspace_settings.WORKSPACE_SETTINGS_TEMPLATE.read_text(encoding="utf-8")
+    )
+    raw["serverUrl"] = "http://test-server:8080/v1"
+    raw["endpoint"] = "test-model"
+    raw.update(members)
+    folder = root / workspace_settings.POLICY_DIRNAME
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / workspace_settings.WORKSPACE_SETTINGS_FILENAME
+    path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+    workspace_settings.invalidate_workspace_settings()
+    return path
+
+
+def neutralise_workspace_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    absent: bool = False,
+    **members: Any,
+) -> Path:
+    """Point the workspace settings lookup at ``tmp_path``, on a file it owns.
+
+    The twin of what this file does for ``.env`` (``monkeypatch.setattr(
+    config_module, "ENV_PATH", tmp_path / ".env")`` beside the ``SETTING_KEYS``
+    wipe): a test that wants to know what group 1 answers must first make sure it
+    is asking about a file **it** created. The autouse
+    :func:`_no_workspace_settings_leak` already moves the location for every
+    test; this is the same move for a test or fixture that owns its own root,
+    plus the write of the file it will read.
+
+    By default that write is a *configured* document (``:func:`write_workspace_settings`
+    — the template plus ``members``), because a test about values needs values:
+    the seed alone would answer "not configured" (D8). ``absent=True`` writes no
+    file at all, which is how a test asks what an unconfigured workspace answers.
+    """
+    from src import config as config_module
+    from src.core import workspace_settings
+
+    monkeypatch.setenv(config_module.PATH_LOCATION_KEY, str(tmp_path))
+    workspace_settings.invalidate_workspace_settings()
+    if not absent:
+        write_workspace_settings(tmp_path, **members)
+    return tmp_path
 
 
 @pytest.fixture(autouse=True)

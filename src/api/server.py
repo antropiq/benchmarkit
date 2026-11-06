@@ -33,6 +33,7 @@ from src.core.editorfs import mutate as editorfs_mutate, policy_seed
 from src.core.termhub import TerminalHub
 from src.core import agent_modes
 from src.core import prompt_helpers
+from src.core import workspace_settings
 from src.config import lsp_enabled_ids
 
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
@@ -170,6 +171,37 @@ def _seed_lsp_template() -> Dict[str, Any]:
     return result
 
 
+def _seed_workspace_settings() -> Dict[str, Any]:
+    """Leave the workspace's model-connection file behind; never raise.
+
+    The workspace's ``.nojae/nojae-settings.json`` is seeded the same way as the
+    four above: exclusive create from the committed template, so a workspace
+    travels with its own model the way ``mcp-settings.json`` travels with its
+    connectors. Same contract as the MCP seed, and the same *ordering* reason:
+    ``lspEnabled`` is read during the lifespan's first language-server scan once
+    the reads are cut over (the next task), so this lands before that scan — the
+    alternative would boot a workspace on **zero** language servers until the next
+    restart.
+
+    Same reserved folder, so this runs after the seeds that create it and is a
+    plain file write in the usual case. Failure is a note in the log (and, on the
+    switch, in the payload), never a boot failure: a workspace with no settings
+    file simply has no model connection yet, and the Settings dialog says so.
+    """
+    try:
+        result = workspace_settings.ensure_workspace_settings_file(path_location())
+    except Exception as exc:  # noqa: BLE001 — boot must survive anything here
+        _log.warning("could not seed the workspace settings file: %s", exc)
+        return {"state": "failed", "path": None, "error": str(exc)}
+    if result["state"] == "failed":
+        _log.warning(
+            "could not seed the workspace settings file at %s: %s",
+            result["path"],
+            result["error"],
+        )
+    return result
+
+
 def _sweep_trash() -> None:
     """Expire old trash batches — including the pre-``.nojae`` ones in ``logs/``.
 
@@ -250,6 +282,18 @@ def create_app() -> FastAPI:
     # servers. Nothing scans the template, so — unlike the MCP seed — its
     # ordering against the lifespan's first server scan carries no rule.
     _seed_lsp_template()
+    # And the workspace's model-connection file. It carries the same ordering rule
+    # as the MCP seed above and for the same reason: ``lspEnabled`` is read
+    # *during* the lifespan's first language-server scan below, so this must land
+    # before that scan or a workspace boots on zero language servers until the
+    # next restart. (That scan does not consult this file yet — the reads are cut
+    # over by the next task — so today the seed only leaves the bytes; the
+    # ordering is placed now so it is already right when they move.) Same reserved
+    # folder, same contract: a note in the log, never a boot failure; a workspace
+    # with no settings file has no model connection yet, and the Settings dialog
+    # says so rather than making a transport call with the template's instruction
+    # text.
+    _seed_workspace_settings()
     # And drain the trash of whichever location that is, plus the legacy
     # ``logs/trash`` batches the pre-``.nojae`` code wrote here. Age is the only
     # signal for a batch nobody addresses any more, and a boot is the one moment
@@ -279,8 +323,9 @@ def create_app() -> FastAPI:
             [] if os.environ.get("BENCHMARKIT_DISABLE_LSP") else all_servers()[0]
         )
         # Two gates must agree for a server to run: its ``enable`` flag in
-        # .nojae/lsp-settings.json and the LSP_ENABLED key in .env, so a
-        # prepared config file can stay entirely dormant.
+        # .nojae/lsp-settings.json and ``lspEnabled`` in the workspace's
+        # .nojae/nojae-settings.json, so a prepared config file can stay
+        # entirely dormant.
         active_ids = {
             server["id"] for server in servers if server["enable"]
         } & set(lsp_enabled_ids())

@@ -83,12 +83,13 @@ class EndpointsConfig(SamplingParams):
     def from_env(cls, env: Optional[Mapping[str, str]] = None) -> "EndpointsConfig":
         """Build the configuration from environment variables.
 
-        Recognized keys: ``SERVER_URL``, ``SERVER_URL_API_KEY``,
-        ``ENDPOINT``, ``LLM_SYSPROMPT``,
-        ``TEMPERATURE``, ``TOP_P``, ``TOP_K``, ``MIN_P``, ``REPEAT_PENALTY``,
-        ``PRESENCE_PENALTY``, ``REASONING``, ``SUPPORTS_VISION`` and the
-        ``VERIFIER_AGENT_*`` block (``SYSPROMPT``, ``SERVERURL``,
-        ``SERVERURL_API_KEY``, ``ENDPOINT``).
+        Reads only what ``.env`` still owns: the ``VERIFIER_AGENT_*`` block
+        (``SYSPROMPT``, ``SERVERURL``, ``SERVERURL_API_KEY``, ``ENDPOINT``).
+        The model connection — server, key, model id, prompt, sampling, the
+        vision flag — is group 1 and lives in the workspace's
+        ``.nojae/nojae-settings.json``, so it is read by
+        :meth:`from_workspace` and never from here: a group-1 name left in
+        ``.env`` is read by nothing (no fallback, no warning).
         """
         source: Mapping[str, str] = os.environ if env is None else env
 
@@ -98,21 +99,7 @@ class EndpointsConfig(SamplingParams):
                 value = value.strip()
             return value or None
 
-        data: Dict[str, Any] = {
-            "serverUrl": get("SERVER_URL") or "",
-            "apiKey": get("SERVER_URL_API_KEY") or "",
-            "endpoint": get("ENDPOINT"),
-            "sysprompt": get("LLM_SYSPROMPT") or DEFAULT_LLM_SYSPROMPT,
-            "temp": get("TEMPERATURE"),
-            "top-p": get("TOP_P"),
-            "top-k": get("TOP_K"),
-            "min-p": get("MIN_P"),
-            "repeat-penalty": get("REPEAT_PENALTY"),
-            "presence-penalty": get("PRESENCE_PENALTY"),
-            "reasoning": get("REASONING"),
-            "supports_vision": (get("SUPPORTS_VISION") or "").lower()
-            in {"1", "true", "yes", "on"},
-        }
+        data: Dict[str, Any] = {}
         verifier = {
             "sysprompt": get("VERIFIER_AGENT_SYSPROMPT") or "",
             "serverUrl": get("VERIFIER_AGENT_SERVERURL") or "",
@@ -121,6 +108,57 @@ class EndpointsConfig(SamplingParams):
         }
         if any(verifier.values()):
             data["verifierAgent"] = verifier
+        return cls.model_validate(data)
+
+    @classmethod
+    def from_workspace(
+        cls,
+        workspace: Mapping[str, Any],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> "EndpointsConfig":
+        """Build the configuration from the two stores it now lives in.
+
+        ``workspace`` is the mapping ``core.workspace_settings`` read from
+        ``<working location>/.nojae/nojae-settings.json``; ``env`` is the
+        ``.env`` mapping (``os.environ`` when omitted) supplying the verifier
+        block. Group 1 is passed to pydantic **as the file holds it** — native
+        ``True`` / ``0.2`` / ``20`` — because ``SamplingParams`` already
+        coerces numbers and validates ``reasoning``, so this builder needs no
+        string-parsing shim of its own (spec D6). Every member name of that
+        file is already a field name of this model, which is why there is no
+        member-to-field table here.
+
+        A member *absent* means what the spec's key map says it means, not
+        "off" or "zero": an absent ``temperature`` stays ``None`` so
+        ``to_kwargs()`` omits it from the request body, an absent
+        ``supportsVision`` is ``False``, an absent ``sysprompt`` is
+        ``DEFAULT_LLM_SYSPROMPT``. An empty mapping is therefore a valid
+        configuration with no server and no model — which is how a workspace
+        whose file is absent or malformed reaches a caller that has already
+        decided to refuse (the reader reports that state; this builder does
+        not second-guess it).
+        """
+        def member(name: str, default: Any = None) -> Any:
+            value = workspace.get(name)
+            if isinstance(value, str):
+                value = value.strip()
+            return default if value is None else value
+
+        data: Dict[str, Any] = {
+            "serverUrl": member("serverUrl", ""),
+            "apiKey": member("serverApiKey", ""),
+            "endpoint": member("endpoint"),
+            "sysprompt": member("sysprompt") or DEFAULT_LLM_SYSPROMPT,
+            "supports_vision": bool(member("supportsVision", False)),
+            "temperature": member("temperature"),
+            "top_p": member("topP"),
+            "top_k": member("topK"),
+            "min_p": member("minP"),
+            "repeat_penalty": member("repeatPenalty"),
+            "presence_penalty": member("presencePenalty"),
+            "reasoning": member("reasoning"),
+        }
+        data.update(cls.from_env(env).model_dump(include={"verifierAgent"}))
         return cls.model_validate(data)
 
     def model_list(self) -> List[str]:

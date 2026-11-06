@@ -718,16 +718,20 @@ class TestLocalReachRefusal:
 
 
 class TestMcpEnvHelpers:
-    def test_max_tool_iteration_default_and_fallbacks(self, monkeypatch):
-        monkeypatch.delenv("MAX_TOOL_ITERATION", raising=False)
-        monkeypatch.delenv("MAX_MCP_ITERATION", raising=False)
-        assert max_tool_iteration() == 25
-        monkeypatch.setenv("MAX_TOOL_ITERATION", "7")
+    def test_max_tool_iteration_comes_from_the_workspace_file(self, monkeypatch, tmp_path):
+        """The cap reads the settings file, not the env (its env names are dead).
+
+        The env-key cases that used to live here moved to
+        ``tests/test_config.py::TestWorkspaceSourcedConfigHelpers`` when the cap
+        left ``.env`` for ``.nojae/nojae-settings.json``; what stays is that a
+        MCP-facing caller sees the file's value.
+        """
+        from tests.conftest import neutralise_workspace_settings
+
+        neutralise_workspace_settings(monkeypatch, tmp_path, maxToolIteration=7)
+        monkeypatch.setenv("MAX_TOOL_ITERATION", "99")
+        monkeypatch.setenv("MAX_MCP_ITERATION", "99")
         assert max_tool_iteration() == 7
-        monkeypatch.setenv("MAX_TOOL_ITERATION", "nope")
-        assert max_tool_iteration() == 25
-        monkeypatch.setenv("MAX_TOOL_ITERATION", "0")
-        assert max_tool_iteration() == 1
 
 
 class TestConnectorEnvironment:
@@ -789,9 +793,14 @@ class FakeManager:
 def mcp_client(monkeypatch, tmp_path):
     from src import config as config_module
 
+    from tests.conftest import neutralise_workspace_settings
+
     for key in config_module.SETTING_KEYS:
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("MAX_TOOL_ITERATION", "25")
+    # The tool-loop cap is ``maxToolIteration`` in the workspace file now; pin it
+    # to 25 here so the ``maxIterations == 25`` assertions below stay meaningful
+    # (the template's own value is 300, and the boot seed would write that).
+    neutralise_workspace_settings(monkeypatch, tmp_path, maxToolIteration=25)
     monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
     # Point the hub at a temp declaration file, so the developer's own
     # mcp_connectors/mcp-settings.json stays untouched. No file is written: the
@@ -917,12 +926,15 @@ class TestMcpEndpoints:
         assert "ctx7sk-secret-value" not in response.text
         assert "CONTEXT7_API_KEY" not in response.text
 
-    def test_post_writes_enable_back_and_only_the_cap_to_env(self, mcp_client, tmp_path):
+    def test_post_writes_enable_back_and_the_cap_to_the_workspace_file(
+        self, mcp_client, tmp_path
+    ):
         import os
 
         from dotenv import dotenv_values
 
         from src import config as config_module
+        from src.core import workspace_settings
 
         path = self._externals_file(tmp_path)
         client, _ = mcp_client
@@ -935,7 +947,11 @@ class TestMcpEndpoints:
         assert "MCP_ENABLED" not in os.environ
         file_values = dotenv_values(config_module.ENV_PATH)
         assert "MCP_ENABLED" not in file_values
-        assert file_values["MAX_TOOL_ITERATION"] == "9"
+        # The tool-loop cap is a workspace-file member now (group 1 left
+        # .env): written as a real integer where the reader reads it, never
+        # rendered by the .env template again.
+        assert workspace_settings.workspace_setting("maxToolIteration") == 9
+        assert "MAX_TOOL_ITERATION" not in file_values
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["context7"]["enable"] is True
         assert data["chrome-devtools"]["enable"] is False

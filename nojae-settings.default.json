@@ -1,0 +1,16 @@
+{
+  "serverUrl": "Put here the url of your OpenAI-compatible server (do not omit /v1 at the end)",
+  "serverApiKey": "Put here the api key if your server needs one (leave blank otherwise)",
+  "endpoint": "Put here the model id to send requests to, exactly as your server names it",
+  "supportsVision": false,
+  "sysprompt": "You are a helpful assistant.",
+  "temperature": 0.2,
+  "topP": 0.95,
+  "topK": 20,
+  "minP": 0,
+  "repeatPenalty": 1.0,
+  "presencePenalty": 0,
+  "reasoning": "off",
+  "lspEnabled": [],
+  "maxToolIteration": 300
+}

@@ -2086,12 +2086,17 @@ class TestLocalReachRefusal:
         from src import config as config_module
         from src.core import mcphub
 
+        from tests.conftest import neutralise_workspace_settings
+
         marker = tmp_path / "spawned.flag"
         monkeypatch.delenv("BENCHMARKIT_DISABLE_LSP", raising=False)
         for key in config_module.SETTING_KEYS:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
-        monkeypatch.setenv("LSP_ENABLED", "pyright")
+        # ``lspEnabled`` is read from the workspace file during the lifespan's
+        # scan, so the pyright gate opens only from there — the old ``LSP_ENABLED``
+        # env key would now be read by nothing.
+        neutralise_workspace_settings(monkeypatch, tmp_path, lspEnabled=["pyright"])
         monkeypatch.setattr(
             lsp_constants, "guardrails_speak_here", lambda prefixes=None: False
         )
@@ -2472,9 +2477,18 @@ class FakeLspManager:
 def lsp_client(monkeypatch, tmp_path):
     from src import config as config_module
 
+    from tests.conftest import neutralise_workspace_settings
+
     for key in config_module.SETTING_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(config_module, "ENV_PATH", tmp_path / ".env")
+    # This class owns its own workspace root, so the model-connection file is
+    # pinned here too: the tool-loop cap at 25 (the template's 300 would make
+    # the ``maxIterations == 25`` assertion below accidental) and no server
+    # activated, so the two-gate tests start from a known state.
+    neutralise_workspace_settings(
+        monkeypatch, tmp_path, maxToolIteration=25, lspEnabled=[]
+    )
     # Point the hub at a temp declaration file (fake servers), so the real
     # .nojae/lsp-settings.json stays untouched.
     servers_dir = tmp_path / "lsp_connectors"
@@ -2538,24 +2552,33 @@ class TestLspEndpoints:
         assert "do-not-leak" not in text
         assert "SECRET" not in text
 
-    def test_active_requires_both_gates(self, lsp_client, monkeypatch):
-        import os
+    def test_active_requires_both_gates(self, lsp_client, tmp_path):
+        from tests.conftest import write_workspace_settings
 
         client, _ = lsp_client
-        monkeypatch.setenv("LSP_ENABLED", "pyright")
+        write_workspace_settings(tmp_path, lspEnabled=["pyright"])
         body = client.get("/api/lsp").json()
         by_id = {s["id"]: s for s in body["servers"]}
         assert by_id["pyright"]["active"] is True
         assert by_id["vue"]["active"] is False  # enable flag still false
-        monkeypatch.setenv("LSP_ENABLED", "vue")
+        # The env key is dead bytes now: only the file's array opens the gate.
+        write_workspace_settings(tmp_path, lspEnabled=[])
         body = client.get("/api/lsp").json()
         assert {s["id"]: s["active"] for s in body["servers"]} == {
             "pyright": False,
             "vue": False,
         }
 
-    def test_post_persists_to_env_file_and_writes_enable_back(self, lsp_client):
+    def test_post_persists_lsp_enabled_as_a_json_array_and_reconciles_live(
+        self, lsp_client, tmp_path
+    ):
+        from src import config as config_module
+
+        from src.core import workspace_settings
+        from tests.conftest import write_workspace_settings
+
         client, _ = lsp_client
+        write_workspace_settings(tmp_path)  # the file the POST merges into
         response = client.post(
             "/api/lsp", json={"enabled": ["pyright"], "maxIterations": 7}
         )
@@ -2563,24 +2586,44 @@ class TestLspEndpoints:
         body = response.json()
         assert [s["id"] for s in body["servers"] if s["active"]] == ["pyright"]
         assert body["maxIterations"] == 7
-        assert os.environ["LSP_ENABLED"] == "pyright"
-        assert os.environ["MAX_TOOL_ITERATION"] == "7"
-        from src import config as config_module
-
-        file_values = dotenv_values(config_module.ENV_PATH)
-        assert file_values["LSP_ENABLED"] == "pyright"
+        # Persisted to the workspace file, as native JSON — not the .env comma
+        # string: ``lspEnabled`` is a real array, ``maxToolIteration`` an integer.
+        stored = json.loads(
+            (
+                tmp_path
+                / workspace_settings.POLICY_DIRNAME
+                / workspace_settings.WORKSPACE_SETTINGS_FILENAME
+            ).read_text(encoding="utf-8")
+        )
+        assert stored["lspEnabled"] == ["pyright"]
+        assert stored["maxToolIteration"] == 7
+        # The POST wrote nothing to .env's now-dead keys.
+        env_values = dotenv_values(config_module.ENV_PATH)
+        assert env_values.get("LSP_ENABLED") is None
+        assert env_values.get("MAX_TOOL_ITERATION") is None
         # enable flag written back for every declared server, both gates move.
         data = json.loads(lsp_constants.LSP_SETTINGS_PATH.read_text(encoding="utf-8"))
         assert data["pyright"]["enable"] is True
         assert data["vue"]["enable"] is False
         assert data["pyright"]["env"] == {"SECRET": "do-not-leak"}  # keys kept
 
-    def test_post_empty_list_deactivates_all(self, lsp_client):
+    def test_post_empty_list_deactivates_all(self, lsp_client, tmp_path):
+        from src.core import workspace_settings
+        from tests.conftest import write_workspace_settings
+
         client, _ = lsp_client
+        write_workspace_settings(tmp_path)
         client.post("/api/lsp", json={"enabled": ["pyright", "vue"]})
         response = client.post("/api/lsp", json={"enabled": []})
         assert response.status_code == 200
-        assert "LSP_ENABLED" not in os.environ
+        stored = json.loads(
+            (
+                tmp_path
+                / workspace_settings.POLICY_DIRNAME
+                / workspace_settings.WORKSPACE_SETTINGS_FILENAME
+            ).read_text(encoding="utf-8")
+        )
+        assert stored["lspEnabled"] == []
         assert not [s for s in response.json()["servers"] if s["active"]]
         data = json.loads(lsp_constants.LSP_SETTINGS_PATH.read_text(encoding="utf-8"))
         assert data["pyright"]["enable"] is False
@@ -2629,13 +2672,15 @@ class TestLspEndpoints:
         assert by_id["vue"]["status"] == "stopped"
 
     def test_restart_rereads_the_file_and_reapplies_the_gate(
-        self, lsp_client, monkeypatch
+        self, lsp_client, tmp_path, monkeypatch
     ):
+        from tests.conftest import write_workspace_settings
+
         client, app = lsp_client
         # The hub under test is a fake, so spawning is allowed here: the
         # autouse switch would otherwise blank the scan (tested separately).
         monkeypatch.delenv("BENCHMARKIT_DISABLE_LSP", raising=False)
-        monkeypatch.setenv("LSP_ENABLED", "pyright")
+        write_workspace_settings(tmp_path, lspEnabled=["pyright"])
         hub = FakeLspManager()
         app.state.lsp = hub
 
@@ -2654,7 +2699,7 @@ class TestLspEndpoints:
     def test_restart_keeps_a_dormant_file_dormant(self, lsp_client, monkeypatch):
         client, app = lsp_client
         monkeypatch.delenv("BENCHMARKIT_DISABLE_LSP", raising=False)
-        monkeypatch.delenv("LSP_ENABLED", raising=False)  # env gate closed
+        # The fixture's file holds ``lspEnabled: []`` — the gate closed.
         hub = FakeLspManager()
         app.state.lsp = hub
         client.post("/api/lsp/restart")
@@ -2662,11 +2707,13 @@ class TestLspEndpoints:
         assert [server["id"] for server in servers] == ["pyright", "vue"]
         assert enabled_ids == []
 
-    def test_restart_honours_the_disable_switch(self, lsp_client, monkeypatch):
+    def test_restart_honours_the_disable_switch(self, lsp_client, tmp_path, monkeypatch):
         # BENCHMARKIT_DISABLE_LSP keeps the endpoints alive but spawns
         # nothing — the same rule as the app lifespan (tests rely on it).
+        from tests.conftest import write_workspace_settings
+
         client, app = lsp_client
-        monkeypatch.setenv("LSP_ENABLED", "pyright")
+        write_workspace_settings(tmp_path, lspEnabled=["pyright"])
         hub = FakeLspManager()
         app.state.lsp = hub
         client.post("/api/lsp/restart")
@@ -2698,10 +2745,12 @@ class TestLspEndpoints:
 
 
 class TestActiveServerIds:
-    def test_both_gates_must_agree(self, lsp_client, monkeypatch):
-        monkeypatch.setenv("LSP_ENABLED", "pyright,vue")
+    def test_both_gates_must_agree(self, lsp_client, tmp_path):
+        from tests.conftest import write_workspace_settings
+
+        write_workspace_settings(tmp_path, lspEnabled=["pyright", "vue"])
         assert routes._active_server_ids() == ["pyright"]
-        monkeypatch.delenv("LSP_ENABLED")
+        write_workspace_settings(tmp_path, lspEnabled=[])
         assert routes._active_server_ids() == []
 
 
@@ -2742,10 +2791,14 @@ class TestChatLspWiring:
         monkeypatch.setattr(routes, "stream_chat", fake_stream)
         return captured
 
-    def test_lsp_only_keeps_one_shared_iteration_cap(self, lsp_client, monkeypatch):
+    def test_lsp_only_keeps_one_shared_iteration_cap(self, lsp_client, tmp_path, monkeypatch):
+        from tests.conftest import write_workspace_settings
+
         client, app = lsp_client
-        monkeypatch.setenv("LSP_ENABLED", "pyright")
-        monkeypatch.setenv("MAX_TOOL_ITERATION", "9")
+        # The gate and the cap both come from the workspace file now.
+        write_workspace_settings(
+            tmp_path, lspEnabled=["pyright"], maxToolIteration=9
+        )
 
         class Hub(FakeLspManager):
             def active_tool_defs(self, ids):
@@ -2840,14 +2893,14 @@ class TestChatLspWiring:
             },
         )
         assert response.status_code == 200
-        # ...but LSP_ENABLED is empty, so no server id ever reaches the hub.
+        # ...but the file's ``lspEnabled`` is empty, so no id reaches the hub.
         assert hub.ids == []
 
-    def test_body_filter_intersects_the_activated_set(self, lsp_client, monkeypatch):
-        client, app = lsp_client
-        import os
+    def test_body_filter_intersects_the_activated_set(self, lsp_client, tmp_path, monkeypatch):
+        from tests.conftest import write_workspace_settings
 
-        os.environ["LSP_ENABLED"] = "pyright,vue"
+        client, app = lsp_client
+        write_workspace_settings(tmp_path, lspEnabled=["pyright", "vue"])
 
         class Hub(FakeLspManager):
             def active_tool_defs(self, ids):

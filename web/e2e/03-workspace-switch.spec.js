@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 // The working location is what every workspace-relative path in the app is
 // measured from, so moving it invalidates all of them at once — including the
@@ -58,6 +59,19 @@ function removeScratch(root) {
 // value only has to *reach* the root, its spelling is the host's.
 function expectedPath(root, rel) {
   return path.join(root, rel).replaceAll(path.sep, '/')
+}
+
+// The committed template the seed copies byte for byte, read from the install
+// (this file's own `../../..`, the way `playwright.config.js` locates the repo).
+// Its `serverUrl` is an instruction sentence, which is exactly what a freshly
+// seeded workspace's Settings dialog answers with — the not-configured state
+// the lot calls D8. Read from the checkout rather than hardcoded so the spec
+// follows the template instead of pinning its wording.
+const REPO_ROOT = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))))
+function templateDocument() {
+  return JSON.parse(
+    fs.readFileSync(path.join(REPO_ROOT, 'nojae-settings.default.json'), 'utf8'),
+  )
 }
 
 // The app's own spelling of a path — `os.path.realpath`'s answer, which spells
@@ -125,15 +139,17 @@ test('a switch closes the tabs of the root it leaves', async ({ page, request })
   await setRoot(page, scratchAbs)
 
   // The acceptance for the reserved folder's seeding, on the real switch and the
-  // real disk: a brand-new workspace ends up with exactly the five files the
-  // app seeds there — the policy (pol-05), the agent-modes file (am-03), the
+  // real disk: a brand-new workspace ends up with exactly the six files the app
+  // seeds there — the policy (pol-05), the agent-modes file (am-03), the
   // prompt-helpers file (mbl-02/mbl-03), the MCP declaration (from the
-  // committed template) and the LSP *template* only (the declaration itself is
-  // hand-written, so it must not appear here) — and nothing else.
+  // committed template), the workspace settings file (ws-02, from
+  // `nojae-settings.default.json`) and the LSP *template* only (the declaration
+  // itself is hand-written, so it must not appear here) — and nothing else.
   expect(fs.readdirSync(path.join(scratchAbs, '.nojae')).sort()).toEqual([
     'agent-modes.json',
     'lsp-settings.template.json',
     'mcp-settings.json',
+    'nojae-settings.json',
     'prompt-helpers.json',
     'read-write-policy.json',
   ])
@@ -322,3 +338,81 @@ test('unsaved edits are reported when the switch closes their tab', async ({ pag
   const notice = page.locator('.editor-notice--warn').first()
   await expect(notice).toContainText('1 tab closed with unsaved changes')
 })
+
+// The headline behaviour of the workspace-scoped model connection: the Settings
+// dialog means a *different* server per workspace, so it has to name a different
+// file and answer with different values on either side of a switch — and give
+// the original ones back on the way home. This is the manual check's first half
+// (spec section 10) made permanent.
+//
+// Nothing here generates and nothing is saved: the dialog is only ever read, and
+// the boot root's own values are compared to themselves after the round trip
+// rather than hardcoded, so the spec passes whatever model this machine has
+// configured. The scratch root is freshly seeded, so its dialog is the
+// not-configured case the lot calls D8: valid JSON, instruction sentences, and
+// the server's own note saying so — never a transport error quoting one.
+test('the settings dialog follows the workspace it is opened in', async ({
+  page,
+  request,
+}) => {
+  const original = await currentRoot(request)
+  bootRoot = original
+  expect((await create(request, SCRATCH, true)).ok()).toBe(true)
+  const scratchAbs = expectedPath(original, SCRATCH)
+  // The path the dialog is expected to name, per root — the same join the
+  // server builds it from, in the host's own spelling.
+  const settingsFile = (root) => path.join(root, '.nojae', 'nojae-settings.json')
+  // The LLM section's own fields: the verifier section has a 'Server URL' of
+  // its own, and `v-show` keeps it in the DOM, so an unscoped label is two
+  // elements.
+  const llmSection = page.locator('.settings-editor > section').first()
+  const serverField = llmSection.getByLabel('Server URL')
+  const notConfigured = page.locator('.settings-dialog .alert-error', {
+    hasText: 'still holds the template',
+  })
+  const hint = page.locator('.settings-hint')
+  const openSettings = async () => {
+    // The dialog renders from the payload it already holds and is filled by the
+    // GET it fires on open, so the *response* is the moment the new workspace's
+    // values are on screen — the same reason the bullets spec above awaits its
+    // own reload. Asserting before it would read the previous workspace.
+    const loaded = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/settings',
+    )
+    await page.getByRole('button', { name: 'Open settings' }).click()
+    await loaded
+    await expect(hint).toBeVisible()
+  }
+
+  await page.goto('/')
+
+  // 1. At the boot root: this root's file, named in the dialog, and its values.
+  await openSettings()
+  await expect(hint).toContainText('.nojae/nojae-settings.json')
+  expect(fold(await hint.innerText())).toContain(fold(settingsFile(original)))
+  const bootServer = await serverField.inputValue()
+  // Whether *this* workspace is configured is the machine's business, so it is
+  // recorded and compared rather than assumed.
+  const bootNotConfigured = await notConfigured.count()
+  await page.locator('.settings-dialog').getByRole('button', { name: 'Cancel' }).click()
+
+  // 2. In the scratch root: its own path, and that workspace's own file — the
+  // template's sentence, reported as not configured rather than dialled (D8).
+  await setRoot(page, scratchAbs)
+  await openSettings()
+  expect(fold(await hint.innerText())).toContain(fold(settingsFile(scratchAbs)))
+  expect(fold(await hint.innerText())).not.toContain(fold(settingsFile(original)))
+  await expect(serverField).toHaveValue(templateDocument().serverUrl)
+  await expect(notConfigured).toHaveCount(1)
+  expect(fold(await notConfigured.innerText())).toContain(fold(settingsFile(scratchAbs)))
+  await page.locator('.settings-dialog').getByRole('button', { name: 'Cancel' }).click()
+
+  // 3. Home: the boot root's file is named again and its own values are back.
+  await setRoot(page, original)
+  await openSettings()
+  expect(fold(await hint.innerText())).toContain(fold(settingsFile(original)))
+  await expect(serverField).toHaveValue(bootServer)
+  await expect(notConfigured).toHaveCount(bootNotConfigured)
+  await page.locator('.settings-dialog').getByRole('button', { name: 'Cancel' }).click()
+})
+

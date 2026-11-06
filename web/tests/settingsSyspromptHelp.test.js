@@ -22,8 +22,10 @@ function llmSettings() {
     apiKey: '',
     endpoint: 'model-a',
     sysprompt: 'Answer concisely.',
-    temp: '', topP: '', topK: '', minP: '', repeatPenalty: '', presencePenalty: '',
-    reasoning: '', supportsVision: '', llmDebug: '', questionSet: 'legacy',
+    // The payload shape since the workspace-file split: sampling fields are
+    // numbers or null, the vision flag a boolean, and no debug field at all.
+    temp: 0.2, topP: null, topK: null, minP: null, repeatPenalty: null, presencePenalty: null,
+    reasoning: '', supportsVision: false, questionSet: 'legacy',
     verifier: { serverUrl: '', apiKey: '', endpoint: '', sysprompt: '' },
   }
 }

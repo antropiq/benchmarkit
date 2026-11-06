@@ -1955,12 +1955,15 @@ class TestAgentModeToolGate:
         )
         assert kwargs == {}
 
-    def test_mode_none_keeps_the_pre_feature_call_shape(self, hubs, monkeypatch):
+    def test_mode_none_keeps_the_pre_feature_call_shape(self, hubs, tmp_path, monkeypatch):
         # The regression guard: every call site that existed before the feature
         # (and every existing test in this file) sees exactly the kwargs it saw
         # then — same keys, same merged tool list, same cap.
+        from tests.conftest import neutralise_workspace_settings
+
         client, _mcp, _lsp = hubs
-        monkeypatch.setenv("MAX_TOOL_ITERATION", "7")
+        # The cap is the workspace file's ``maxToolIteration`` now, not the env key.
+        neutralise_workspace_settings(monkeypatch, tmp_path, maxToolIteration=7)
         request = self._request(client.app)
         without = routes._chat_tool_kwargs(request)
         with_mode = routes._chat_tool_kwargs(request, mode=self._mode(True, True))
