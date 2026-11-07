@@ -96,6 +96,16 @@ const fold = (p) => p.replaceAll('\\', '/')
 // location, and Set is an apply, so the bar shows the new root as soon as the
 // server has answered.
 //
+// The wait is for the **response**, not for the field. Polling the field alone
+// waits for nothing: `fill()` has already put `target` there, so the poll is
+// satisfied on its first attempt whether or not the server has answered, and
+// the switch is still in flight when the helper returns. That is what made the
+// seeding assertion below race: the route seeds the MCP declaration and the
+// workspace settings *before* the two hub restarts and the other four reserved-
+// folder files *after* them, so a caller that did not wait for the answer read
+// the folder mid-switch and found exactly those two. The response is the last
+// thing the route produces, so it is the one moment all six seeds are on disk.
+//
 // `target` is always absolute: the route refuses anything else with 422, so a
 // relative one would leave the location exactly where it was while the page
 // looked like it had moved. The assertion folds the separators on both sides —
@@ -107,7 +117,18 @@ async function setRoot(page, target) {
   await field.fill(target)
   const button = page.locator('.appbar-location-set')
   await expect(button).toBeEnabled()
+  // Armed before the click, so the response it resolves on cannot be missed.
+  const applied = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/path-location' &&
+      response.request().method() === 'POST',
+  )
   await button.click()
+  // A refused switch leaves the field holding what was typed, so the poll below
+  // would pass anyway and the spec would fail later, somewhere else, for a
+  // reason that names nothing. Say which refusal this was.
+  const res = await applied
+  expect(res.ok(), `the working-location switch failed: ${await res.text()}`).toBe(true)
   await expect
     .poll(async () => fold(await field.inputValue()))
     .toContain(fold(target))
