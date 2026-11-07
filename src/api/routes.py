@@ -2195,6 +2195,22 @@ def build_router(state: RunState) -> APIRouter:
         except batch_core.BatchListingError as exc:
             raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
+    @router.get("/batch/prefixes")
+    def get_batch_prefixes(dir: str = "") -> Dict[str, Any]:
+        """Every task prefix available in the workspace's ``dir``.
+
+        The batch dialog's dropdown: it lists the lots the folder actually
+        holds, so a prefix is chosen rather than typed. One ``scandir`` of the
+        same folder ``GET /api/batch/tasks`` lists, with the same three locks
+        and the same "is a lot file" rule -- so a prefix is offered exactly when
+        listing it would return a non-empty lot. No file content is read here
+        either (B13): names only.
+        """
+        try:
+            return batch_core.task_prefixes(dir)
+        except batch_core.BatchListingError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
     @router.get("/agent-modes")
     def get_agent_modes() -> Dict[str, Any]:
         """The agent modes this workspace offers, **read-only** (am-06).
