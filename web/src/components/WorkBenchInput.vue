@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import BatchProgressBar from './BatchProgressBar.vue'
+import AgentModesDialog from './AgentModesDialog.vue'
 import MemoryBullets from './MemoryBullets.vue'
 import RegistrationMemoryDlg from './RegistrationMemoryDlg.vue'
 import {
@@ -107,6 +108,51 @@ const modeFindingsLine = computed(() => findingsLine())
 
 function onModeChange(event) {
   setAgentMode(event.target.value)
+}
+
+// --- The modes editor (the pencil beside the dropdown; eds-07) ---------------
+
+// One button, one card: the pencil opens `AgentModesDialog`, which reads the
+// modes **file** through its own document route rather than through the
+// dropdown's verdict — so it stays reachable when the dropdown's list failed to
+// load, which is precisely when a broken file needs fixing.
+const modesDialogOpen = ref(false)
+
+// D10's enablement, the dropdown's own window and nothing wider:
+//  * inert while a reply streams — the same window in which the Editor's writes
+//    are refused, and an editor whose Save will be refused is worse than no
+//    editor;
+//  * inert while a lot runs — the lot was launched on the modes the file had
+//    then, so the pencil joins the rule that makes the `<select>` inert for a
+//    running lot, and never one of its own;
+//  * live with a failed list — deliberately not gated on `agentModes.loaded`.
+// The click guard is the same verdict, not a second rule: a synthetic or
+// keyboard activation cannot open the card in the window it must not open in.
+//
+// Not `modeSelectDisabled(batch.active)`: that predicate carries the D7 lock
+// too, and a locked *conversation* is no reason to refuse an edit of the
+// workspace's file — a save made while locked is exactly the case D9's
+// `resetDecisionAfterSave` handles by leaving the selection where it is.
+const pencilDisabled = computed(() => batch.active || streaming.value)
+// Naming: neither string may contain the select's own accessible name, or the
+// two controls in this column would answer the same `getByLabel` query (the
+// pinned e2e spec asks for "Agent mode" and expects exactly the select). The
+// wording is the composer's own — "modes", the short affordance the other
+// buttons use ("Save session (JSON)"), and the disabled reason the batch
+// button already states in the same row.
+const pencilTitle = computed(() =>
+  pencilDisabled.value
+    ? 'Available when no reply is streaming and no batch runs'
+    : 'Edit modes',
+)
+
+function openModesDialog() {
+  if (pencilDisabled.value) return
+  modesDialogOpen.value = true
+}
+
+function closeModesDialog() {
+  modesDialogOpen.value = false
 }
 
 // --- Image attach (the hidden file input below, driven by the icon button) ---
@@ -417,45 +463,70 @@ onBeforeUnmount(() => {
               <path d="m17 15 3 3-3 3" />
             </svg>
           </button>
-          <!-- The agent mode this conversation answers as (am-07). Rendered
-               only once the list loaded: a control that cannot be used is worse
-               than no control, and with a failed fetch the payload omits
-               `agentMode`, so the server's own default applies — exactly the
-               pre-feature behaviour. It sits in the left action group, after the
-               buttons, so the memory bullets stay centered as the layout
-               promises. Inert while a batch runs: the lot is one job executed
-               under one mode the runner pins for the whole run (D13), so the
-               dropdown can neither change it mid-lot nor pretend it owns it. -->
-          <div
-            v-if="agentModes.loaded || agentModes.notice"
-            class="chat-mode-col"
-          >
-            <select
-              v-if="agentModes.loaded"
-              class="chat-mode-select"
-              :value="agentModes.current"
-              :disabled="modeSelectDisabled(batch.active)"
-              :title="modeTitle"
-              aria-label="Agent mode"
-              @change="onModeChange"
-            >
-              <option
-                v-for="mode in agentModes.modes"
-                :key="mode.id"
-                :value="mode.id"
-                :disabled="modeOptionDisabled(mode.id)"
-                :title="modeHint(mode.id)"
+          <!-- The agent mode this conversation answers as (am-07), and the
+               pencil that edits it (eds-07). The **column** always renders: the
+               pencil is useful whatever the dropdown's verdict, and a modes
+               file whose list could not be loaded is precisely the one worth
+               opening. The `<select>` inside it is still rendered only once the
+               list loaded — a control that cannot be used is worse than no
+               control, and with a failed fetch the payload omits `agentMode`, so
+               the server's own default applies (the pre-feature behaviour). The
+               column sits in the left action group, after the buttons, so the
+               memory bullets stay centered as the layout promises. The select is
+               inert while a batch runs: the lot is one job executed under one
+               mode the runner pins for the whole run (D13), so the dropdown can
+               neither change it mid-lot nor pretend it owns it. -->
+          <div class="chat-mode-col">
+            <div class="chat-mode-row">
+              <select
+                v-if="agentModes.loaded"
+                class="chat-mode-select"
+                :value="agentModes.current"
+                :disabled="modeSelectDisabled(batch.active)"
+                :title="modeTitle"
+                aria-label="Agent mode"
+                @change="onModeChange"
               >
-                {{ mode.label }}
-              </option>
-            </select>
+                <option
+                  v-for="mode in agentModes.modes"
+                  :key="mode.id"
+                  :value="mode.id"
+                  :disabled="modeOptionDisabled(mode.id)"
+                  :title="modeHint(mode.id)"
+                >
+                  {{ mode.label }}
+                </option>
+              </select>
+              <!-- The pencil (eds-07): this workspace's modes editor, immediately
+                   after the select and on its line, drawn with the glyph the app
+                   already uses for "Edit and resend". It opens the card that
+                   edits the modes **file**, so it is *not* gated on the dropdown
+                   having loaded — a file whose list could not be loaded is
+                   exactly the one worth opening. Its accessible name deliberately
+                   does not contain the select's ("Agent mode"), so the two
+                   controls stay distinguishable to a query and to a reader. -->
+              <button
+                class="icon-btn chat-mode-edit"
+                type="button"
+                :disabled="pencilDisabled"
+                aria-label="Edit modes"
+                :title="pencilTitle"
+                @click="openModesDialog"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
+            </div>
             <!-- The two quiet lines this control can carry, never a modal and
                  never a banner: a session asked for a mode this workspace does
                  not have (its substitution is said out loud, not chosen
                  silently), or the hand-edited modes file has findings the server
                  could not use (D11 — the defaults still answer, and the fix
-                 lives outside the app). A notice may outlive a failed fetch, so
-                 the column renders for it even without the select. -->
+                 lives outside the app). It is also the slot D9's skipped reset
+                 speaks through, so it renders with or without the select: the
+                 column is there for the pencil whatever the list's verdict. -->
             <p v-if="agentModes.notice" class="chat-mode-findings" role="status">
               {{ agentModes.notice }}
             </p>
@@ -564,6 +635,23 @@ onBeforeUnmount(() => {
       :open="dialogOpen"
       :index="dialogIndex"
       @close="dialogOpen = false"
+    />
+    <!-- The modes editor, mounted where it is used (the way the bullet dialog
+         above is): `batchActive` is D10's enablement, handed to the card so its
+         Save says the same thing the pencil already did.
+
+         `v-if` rather than an always-mounted card: a closed `<dialog>` is still
+         in the DOM, and this one is labelled "Agent modes" — a substring of the
+         select's own accessible name, which the pinned e2e spec queries
+         (`getByLabel('Agent mode')` must answer exactly the select, and a second
+         match is a strict-mode failure). Mounting it only while open keeps the
+         closed card out of every such query, and the card's own watch runs with
+         `immediate`, so mounting it *is* opening it. -->
+    <AgentModesDialog
+      v-if="modesDialogOpen"
+      :open="modesDialogOpen"
+      :batch-active="batch.active"
+      @close="closeModesDialog"
     />
   </div>
 </template>

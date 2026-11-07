@@ -944,7 +944,12 @@ body {
 /* Pico renders <dialog> as the full-viewport overlay; the card itself is the
    inner <article> (already centered, capped at calc(100vh - 2rem), scrollable).
    Only nudge Pico's defaults here — never size the dialog element itself. */
-.settings-dialog > article {
+.settings-dialog > article,
+/* The agent-modes editor (AgentModesDialog.vue) is this card with another
+   subject: same fixed size (switching a tab must never resize the dialog), same
+   two-column body, same footer. It therefore shares the rule instead of
+   restating it — see the agent-modes block below for what it adds. */
+.agent-modes-dialog > article {
   /* Fixed card size so switching sections never resizes the dialog; the
      editor column scrolls instead. Clamped to the viewport on small screens. */
   width: 900px;
@@ -1131,6 +1136,124 @@ body {
   .settings-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* -- agent-modes dialog --------------------------------------------------------
+
+   The modes editor (AgentModesDialog.vue) is the Settings card with another
+   subject, so almost nothing is declared here: its `<article>` shares the
+   settings card rule above, and its body, nav, editor column and footer carry
+   the `settings-*` classes and are laid out by those rules. What follows is only
+   what this card has and Settings does not — the create affordance in the nav,
+   the stacked finding lines, the two hub switches, the in-place delete confirm —
+   plus the colours that mark a tab whose entry holds Save. No size is repeated
+   and the `<dialog>` element is never sized (see the settings card note). */
+
+/* The hint paragraph above the two-column body: Pico's own paragraph margin
+   would add to the card's header spacing, so it is the section gap here. */
+.agent-modes-hint {
+  margin: 0 0 var(--bi-space-2);
+}
+
+/* One finding per line: the dialog renders a list of findings inside a single
+   `<p>`, and each is a `<span>` — without this they would run together as one
+   sentence, which is the opposite of what a list of errors is for. */
+.agent-modes-finding {
+  display: block;
+}
+
+/* The lines the card can say about the file as a whole (a conflict, "saving
+   will create this file", the loader's file-level findings). They sit between
+   the hint and the body, so each keeps one tight margin. */
+.agent-modes-conflict,
+.agent-modes-creates-file,
+.agent-modes-file-findings,
+.agent-modes-file-notes,
+.agent-modes-server-findings {
+  margin: 0 0 var(--bi-space-1);
+}
+
+/* The nav's create affordance, under the tab list: a labelled field and one
+   button, both as narrow as the column they sit in. */
+.agent-modes-nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bi-space-1);
+}
+
+.agent-modes-create {
+  margin: var(--bi-space-1) 0 0;
+  font-size: 0.82rem;
+}
+
+/* Both rules below are scoped through `.settings-nav button` on purpose: the
+   card reuses the settings nav, whose selector weighs (0,1,1) and would
+   otherwise out-rank a bare class here — a Create that looked like an inert
+   tab, and a broken tab whose red never arrived. */
+
+/* Create is an *action*, not another tab: it keeps the nav's width but gets a
+   filled surface and a visible edge, so the list above it stays the list. */
+.settings-nav button.agent-modes-create-button {
+  margin-top: var(--bi-space-1);
+  border-color: var(--bi-border);
+  background-color: var(--bi-surface-2);
+  color: var(--bi-icon);
+  font-size: 0.85rem;
+  text-align: center;
+}
+
+.settings-nav button.agent-modes-create-button:hover:not(:disabled) {
+  border-color: var(--pico-muted-color);
+}
+
+/* A tab whose entry blocks Save. The tab stays clickable — D3 wants the user to
+   *reach* the broken entry, not be blocked from it — so the mark is colour, not
+   a disabled control. It also wins over the active tab's primary colour: an
+   entry that holds Save is the more important thing to say about that tab. */
+.settings-nav button.agent-modes-tab--broken {
+  color: var(--bi-danger);
+  border-color: color-mix(in srgb, var(--bi-danger) 45%, transparent);
+}
+
+/* The two hub switches side by side, each reading as a sentence rather than a
+   checkbox in a column. */
+.agent-modes-switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bi-space-2);
+}
+
+.agent-modes-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+/* A finding printed under the field it names: it belongs to that field, so it
+   must not look like a paragraph of prose between two fields. */
+.agent-modes-field-finding {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+}
+
+/* The delete affordance, at the end of a mode tab: the button, the refusal
+   sentence when the entry is the default, and the confirm asked *in place*
+   (this card is already the modal, so nothing nests inside it). */
+.agent-modes-delete {
+  margin-top: var(--bi-space-2);
+}
+
+.agent-modes-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--bi-space-1);
+  margin-top: var(--bi-space-1);
+}
+
+.agent-modes-delete-yes {
+  width: auto;
+  margin: 0;
 }
 
 /* -- tab navigation (centered in the application bar) ------------------------- */
@@ -1646,6 +1769,24 @@ input.appbar-location-input {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* The select and its pencil, on one line (eds-07). The row exists so the two
+   stay adjacent while the quiet lines keep the column below them; with the list
+   unloaded the select is absent and the row holds the pencil alone, which is
+   what keeps the editor reachable when the file is broken. */
+.chat-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+/* The pencil that opens the modes editor. `.icon-btn` gives it the composer's
+   button size and its disabled look; all that is left to say is that it must
+   never be squeezed by a long label in the select beside it. */
+.chat-mode-edit {
+  flex: 0 0 auto;
 }
 
 .chat-mode-select {

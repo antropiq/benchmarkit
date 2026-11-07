@@ -1,6 +1,27 @@
 # Agent modes: editing `.nojae/agent-modes.json` from the composer
 
-**Status**: draft spec, open questions at the end. Implementation not started.
+**Status**: **landed** by lot `eds-` (`todos/done/eds-01_document_read.md` …
+`todos/done/eds-10_docs_last.md`) — D2's document read is
+`agent_modes.read_agent_modes_document()` plus the caps constants it publishes
+(eds-01, `tests/test_agent_modes.py`); D3/D6/D7/D8's writer is
+`src/core/agent_modes_write.py` with the backup callable injected by its route
+(eds-02, `tests/test_agent_modes_write.py`); §5's two routes are
+`routes.get_agent_modes_document` / `routes.post_agent_modes_save`, with the
+rewritten verb guards in
+`tests/test_write_surface_isolation.py::TestTheAgentModesRoutesStayPinnedToTheirPaths`
+(eds-03) and the tool, connector, LSP, shell and model-client reach guards in the
+same file (eds-04, whose `TestTheGuardsActuallyFail` poisons each one); the
+dialog's rules are the plain draft functions in
+`web/src/composables/useAgentModes.js` (eds-05, `web/tests/agentModes.test.js`);
+§5's modal is `web/src/components/AgentModesDialog.vue` (eds-06,
+`web/tests/agentModesDialog.test.js`); the pencil and the card styles are in
+`WorkBenchInput.vue`'s `.chat-mode-col` and `styles/theme.css` (eds-07,
+`web/tests/agentModesPencil.test.js`); §5's acceptance list is
+`web/e2e/04-agent-modes.spec.js` on a scratch root (eds-08) and the cross-task
+sweep is eds-09. §6's sentences are in the README and `AGENTS.md` (eds-10). This
+document is the lot's authority and its historical record — it was annotated, and
+is not to be revised: its present-tense descriptions of the modes file as
+hand-edited-only describe the state the lot started from.
 
 **Surface**: one new modal (`AgentModesDialog`) reached by one new pencil button
 beside the composer's mode dropdown; one new **browser-only** read route and one

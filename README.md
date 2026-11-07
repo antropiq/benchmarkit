@@ -230,9 +230,10 @@ exists to prevent: a green run measured against someone else's server.
 
 ## 2. Configuring the app
 
-Four files hold everything. The two hub declaration files are **hot**: a change
-is picked up by **Settings → Refresh MCP** / **Refresh LSP**, or by the toggles
-in the Settings dialog, without an app restart. `.env` and
+Four files hold the settings and the declarations. The two hub declaration files
+are **hot**: a change is picked up by **Settings → Refresh MCP** /
+**Refresh LSP**, or by the toggles in the Settings dialog, without an app
+restart. `.env` and
 `.nojae/nojae-settings.json` follow the other rule: a save from the dialog is
 live at once, a hand-edit needs a server restart.
 
@@ -253,6 +254,14 @@ and leaves the LSP *template* beside it, a copy of
 `lsp_connectors/lsp_servers.example.json`. No seed ever overwrites an existing
 file. The LSP declaration is never seeded as a working file — its entries name
 machine-local paths — you write it yourself from the template.
+
+The workspace's agent-modes file, `.nojae/agent-modes.json`, is seeded the same
+way and is not in that table because it declares nothing that runs: it holds the
+personas the composer's modes send to the model, and the app writes it from the
+pencil beside the mode dropdown. Like the hub declarations it is **hot** — the
+modes are re-read whenever the file changes, so a hand-edit outside the app needs
+no restart either. Like every other file of that folder it stays out of the
+Editor's tree — `.nojae` is reserved — so the pencil is the app's own way in.
 
 ### The MCP setup file — `.nojae/mcp-settings.json`
 
@@ -574,8 +583,16 @@ servers — the mode that implements, and leaves the tree compiling and tested),
 which turns a spec into a numbered lot of task files and is defined by the app.
 A mode replaces the persona sent to the model and decides whether a whole tool
 hub reaches it at all; it can only ever narrow what Settings already allows. The
-editable modes live in `<working location>/.nojae/agent-modes.json`, seeded for
-you and edited outside the app.
+**pencil** beside that dropdown edits the modes file itself —
+`<working location>/.nojae/agent-modes.json` — as fields instead of JSON: per mode
+a label, the two hub switches and the persona (with a button that puts
+benchmarkit's own persona back for the three it ships), plus create, delete and
+this workspace's default, with the app's caps enforced as you type. The app-owned
+**Todo builder** is not in it — the app defines that mode, and the file never
+declares it. Saving writes the whole file, the bytes it replaced going to the
+app's backup folder, and the dropdown reloads from that answer. The file stays
+editable outside the app too: one that changed there since the dialog read it is
+reported as a conflict rather than overwritten.
 
 **Batch mode** works through a folder of task files — `todos/` by default, files
 named `01-slug.md`, `02-slug.md`, …, with `00-…` as the lot's big picture, which

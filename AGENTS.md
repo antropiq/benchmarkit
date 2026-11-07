@@ -118,8 +118,9 @@ The exact route list belongs to the API module; what matters architecturally:
   the reserved folder's mode file that replaces the configured system prompt for
   chat (never for the benchmark) and may switch a whole hub off. A mode only ever
   narrows what settings and the conversation already allow; it never grants
-  anything. This file is injected into every chat turn whatever the mode, and one
-  mode is app-owned and not editable from that file.
+  anything. This file is injected into every chat turn whatever the mode. The mode
+  file is edited from the composer, and the one app-owned mode is defined by the
+  app — absent from that file and from its editor alike.
 
 ### SSE is the UI's only source of truth
 
@@ -147,7 +148,7 @@ Measurement rules hold across every stream:
 | `results.json` | Run output, written once when a run ends. |
 | MCP connector declarations | Which connectors exist: `remote` (HTTP) or `local` (stdio) — the working location's file in the reserved folder, seeded from a committed template. |
 | Language-server declarations | Which servers exist: a stdio command and its workspace root — the working location's file in the reserved folder, hand-written from the seeded template (the committed example in `lsp_connectors/` is that template's source). |
-| Reserved workspace folder | This workspace's read/write policy, its agent-mode personas, its hub declarations, and the two stores the app writes — prompt helpers and the model connection. |
+| Reserved workspace folder | This workspace's read/write policy, its hub declarations, and the stores the app writes — prompt helpers, the model connection and the agent-mode personas. |
 
 Those files may hold secrets, so they are gitignored and each has a committed
 template; a reserved-folder file has no template beside it — the app seeds it
@@ -172,12 +173,13 @@ from one kept outside the folder. These rules tie them together:
   app holds is relative to it, so moving it invalidates them all at once: cached
   views are discarded rather than re-negotiated, and unsaved work is reported
   rather than silently dropped.
-- **The reserved folder is seeded, then read-only to the app**: its files are
-  created only when absent, so an edited file is never clobbered, and they are
-  changed only outside the app — except the two stores it writes, its prompt-helper
-  store and this workspace's model-connection file. The folder is hidden from the
-  tree, from reads and from git status; a failed seed is a note, never a refusal.
-  Deleted files land in its dated batches instead of vanishing.
+- **The reserved folder is seeded, then read-only to the app**: its
+  **declarations** are created only when absent and changed only outside the app,
+  while its **stores** — the prompt helpers, this workspace's model connection and
+  the agent-mode personas — are written by the app through their own routes and
+  never through a path. The folder is hidden from the tree, from reads and from git
+  status; a failed seed is a note, never a refusal. No write destroys bytes: a
+  save backs up what it replaces, a delete moves the file into a dated batch.
 - **Path rules come from two levels, one verdict: the strictest match wins.** One
   level is the app's rules about files the app itself writes, active only while
   the working location is the app's own directory — so another project's config
@@ -219,9 +221,11 @@ from one kept outside the folder. These rules tie them together:
   own deny-list. `tests/test_write_surface_isolation.py` asserts that instead of
   trusting this sentence: no connector, tool or chat path reaches a write route,
   and the terminal is never a tool.
-- **The Editor's write surface is the browser's alone**, and it is refused while
-  a chat reply streams. Batch mode lists its lot of task files through the shared
-  path policy but never reads or writes their contents — only the connectors do.
+- **Every write surface is the browser's alone** — the Editor's file routes and
+  the purpose-built routes that write a reserved-folder store — and each is
+  refused while a chat reply streams. Batch mode lists its lot of task files
+  through the shared path policy but never reads or writes their contents — only
+  the connectors do.
 - **A lot runs every task in one mode, pinned at launch** — the workspace's coding
   mode, never whatever the composer currently has selected, so moving that choice
   mid-lot reaches no task. A workspace with no such mode falls back to the
