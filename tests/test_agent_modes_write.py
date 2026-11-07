@@ -461,15 +461,17 @@ class TestRefusalsLeaveTheDiskAlone:
 
     def test_a_key_outside_the_id_pattern_is_refused(self, workspace: Path):
         write_modes(workspace, modes_json(agents=GOOD_AGENTS))
+        before = modes_path(workspace).read_bytes()
         agents = {**copy.deepcopy(GOOD_AGENTS), "Bad Id": entry(label="Nope")}
 
         error = refused(lambda: save(body(agents), token_of(workspace)),
                         writer.AgentModesDocumentInvalid)
 
         assert any("Bad Id" in item["message"] for item in error.findings)
-        assert modes_path(workspace).read_bytes() == (
-            modes_json(agents=GOOD_AGENTS).encode("utf-8")
-        )
+        # The bytes the hand-editor's file held, read back rather than re-encoded:
+        # ``write_modes`` plants through text mode, so on Windows the planted file
+        # carries CRLF, and "left alone" means these bytes, not a spelling.
+        assert modes_path(workspace).read_bytes() == before
 
     def test_a_mode_id_over_the_length_cap_is_refused(self, workspace: Path,
                                                       monkeypatch: pytest.MonkeyPatch):
@@ -714,7 +716,14 @@ class TestTheMtimeGuard:
                                                                  backups: Path):
         write_modes(workspace, modes_json(agents=GOOD_AGENTS))
         token = token_of(workspace)
-        os.utime(modes_path(workspace), ns=(int(token) + 1, int(token) + 1))
+        # The disk has to move by an amount *this* filesystem can record: a
+        # volume stores mtime at its own granularity (100 ns on NTFS, 1 ns on
+        # ext4), so a one-nanosecond forward is rounded straight back to the
+        # stamp the token already holds and there is no stale save to refuse.
+        # One second is a movement either kind of volume can hold.
+        moved = int(token) + 1_000_000_000
+        os.utime(modes_path(workspace), ns=(moved, moved))
+        assert token_of(workspace) != token  # the premise: the disk really moved
 
         refused(lambda: save(body(GOOD_AGENTS), token), writer.AgentModesSaveConflict)
 
@@ -825,6 +834,7 @@ class TestTheBackup:
 
     def test_a_second_save_keeps_two_copies(self, workspace: Path, backups: Path):
         path = write_modes(workspace, modes_json(agents=GOOD_AGENTS))
+        before = path.read_bytes()
         first = save(body(GOOD_AGENTS), token_of(workspace))
         save(body({"solo": entry(label="Solo")}, default="solo"),
              first["source"]["mtime"])
@@ -832,7 +842,11 @@ class TestTheBackup:
         copies = editorfs.files.list_backups(path)
         assert len(copies) == 2
         # Oldest first: what the hand-edited file held, then what the first save wrote.
-        assert Path(copies[0]).read_bytes() == modes_json(agents=GOOD_AGENTS).encode("utf-8")
+        # The bytes the hand-edited file held, read off the disk rather than
+        # re-encoded: ``write_modes`` plants through text mode, so on Windows the
+        # planted file carries CRLF, and the chain's promise is to hold *those*
+        # bytes, not a re-rendered spelling of the same document.
+        assert Path(copies[0]).read_bytes() == before
         assert b'"architect"' in Path(copies[1]).read_bytes()
         assert b'"solo"' in path.read_bytes()
 

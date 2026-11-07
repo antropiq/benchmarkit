@@ -519,7 +519,11 @@ class TestTheTwoEntryPoints:
         target = tmp_path / "owned-root"
         seeded_path(target).parent.mkdir(parents=True)
         own = configured_document("http://127.0.0.1:1234/v1")
-        seeded_path(target).write_text(own, encoding="utf-8")
+        # ``newline=""``: the planted bytes are the bytes the assertion names.
+        # Default text mode rewrites ``\n`` to the host's line ending on
+        # Windows, so the restart would read a file that is not the one this
+        # test wrote and the byte comparison fails on that platform alone.
+        seeded_path(target).write_text(own, encoding="utf-8", newline="")
 
         response = client.post("/api/path-location", json={"path": str(target)})
         assert response.status_code == 200

@@ -22,6 +22,9 @@ The seeded bytes are the committed example
 substituted at seed time on purpose: its ``${NAME}`` references resolve on
 *every read* (:func:`mcphub.validation.expand_env`), so one seeded template
 stays correct after a workspace switch and on a different machine.
+The copy is made **as bytes** — read with ``read_bytes`` and written through a
+binary handle — because a text-mode write on Windows turns every ``\n`` of the
+example into ``\r\n``, and the copy would no longer be the example's bytes.
 
 Like the MCP seed there is **no cache to invalidate**: the hub re-scans the
 declaration file on every load, and the template is never read by the hub
@@ -84,7 +87,7 @@ def lsp_settings_file_path(root: str) -> str:
     return os.path.join(root, constants.POLICY_DIRNAME, constants.LSP_SETTINGS_FILENAME)
 
 
-def default_lsp_settings_text() -> str:
+def default_lsp_settings_bytes() -> bytes:
     """The example's bytes, read fresh through the hub's ``constants``.
 
     The one place that touches the example. Read at call time (no cache, no
@@ -92,7 +95,7 @@ def default_lsp_settings_text() -> str:
     pins a missing example — moves the lookup like every other hub path.
     """
     template = constants.LSP_SETTINGS_TEMPLATE
-    return template.read_text(encoding="utf-8")
+    return template.read_bytes()
 
 
 def ensure_lsp_settings_template(root: str) -> Dict[str, Any]:
@@ -122,7 +125,7 @@ def _ensure_lsp_settings_template(root: str) -> Dict[str, Any]:
     # The example first, the destination second: an example that cannot be
     # read must leave no half-seeded file behind at the workspace.
     try:
-        text = default_lsp_settings_text()
+        data = default_lsp_settings_bytes()
     except OSError as exc:
         return _state_dict(
             "failed", constants.LSP_SETTINGS_TEMPLATE,
@@ -162,8 +165,8 @@ def _ensure_lsp_settings_template(root: str) -> Dict[str, Any]:
         return _state_dict("failed", path, exc.strerror or str(exc))
 
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
     except OSError as exc:
         _discard_seeded_file(path)
         return _state_dict("failed", path, exc.strerror or str(exc))

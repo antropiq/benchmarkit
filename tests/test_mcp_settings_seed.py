@@ -72,9 +72,17 @@ class TestTheSeedLands:
         assert errors == []
         assert [connector["id"] for connector in connectors] == ["console", "fedit"]
         console = connectors[0]
+        # The declaration spells a path by joining tokens with ``/``, and
+        # ``${PROJECT_ROOT}`` answers as the install root's own text, so the
+        # resolved script element is that text followed by the template's
+        # slash. Expansion is substitution, never a path rewrite (the rule
+        # ``tests/test_mcp.py`` pins), so the expected element is spelled the
+        # way the template spells it — same as the expansion test below.
+        from src.config import PROJECT_ROOT
+
         assert console["command"] == [
             "/opt/py/python",
-            f"{str(constants.MCP_CONNECTORS_DIR)}/console_mcp.py",
+            f"{PROJECT_ROOT}/mcp_connectors/console_mcp.py",
             "--root-dir",
             str(workspace),
             "--transport",

@@ -287,6 +287,10 @@ class TestPrefixListingEndpoint:
         body = prefixes(batch_client).json()
         assert body["prefixes"] == [{"prefix": "ed-", "tasks": 1, "hasLot": False}]
 
+    @pytest.mark.requires_symlink(
+        "a symlinked lot task is never offered as a runnable prefix: the "
+        "prefix listing skips it the same way the task listing does"
+    )
     def test_a_symlinked_task_does_not_offer_its_prefix(
         self, batch_client, tmp_path
     ):
