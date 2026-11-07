@@ -17,6 +17,7 @@ that cannot mean anything against a stand-in.
 """
 
 import ast
+import copy
 import json
 import os
 import re
@@ -144,6 +145,31 @@ def write_modes(root: Path, text: str) -> Path:
 
 def resolved() -> Dict[str, Any]:
     return agent_modes.resolve_modes()
+
+
+def doc_read() -> Dict[str, Any]:
+    """The editor's read of the workspace's modes file (eds-01)."""
+    return agent_modes.read_agent_modes_document()
+
+
+def entry_of(payload: Dict[str, Any], key: str) -> Dict[str, Any]:
+    """One entry of the document read, by its raw key."""
+    for item in payload["entries"]:
+        if item["key"] == key:
+            return item
+    raise AssertionError(
+        f"no entry {key!r} in {[item['key'] for item in payload['entries']]}"
+    )
+
+
+def doc_errors(payload: Dict[str, Any]) -> List[str]:
+    return [f.message for f in payload["findings"]
+            if f.kind == agent_modes.KIND_ERROR]
+
+
+def doc_notes(payload: Dict[str, Any]) -> List[str]:
+    return [f.message for f in payload["findings"]
+            if f.kind == agent_modes.KIND_NOTE]
 
 
 def ids() -> List[str]:
@@ -644,6 +670,334 @@ class TestReservedMode:
         assert '"m2", "m3", "m4"' in message
 
 
+class TestTheDocumentRead:
+    """eds-01 — the editor's read: *what does my file say*, not *what can I select*.
+
+    ``resolve_modes`` answers the dropdown's question and deliberately loses data
+    on the way (a broken entry is dropped as a unit, the built-in fallback fills
+    the gap, the app-owned mode is appended). A dialog fed by that answer would
+    show three modes for a file that holds four and save back three, so this read
+    is a second one beside it: the file's own entries, in the file's own order,
+    nothing added and nothing dropped. These tests are the difference between the
+    two answers, pinned entry by entry.
+    """
+
+    def test_a_well_formed_file_answers_its_own_entries_in_its_own_order(
+        self, workspace: Path
+    ):
+        shuffled = {key: GOOD_AGENTS[key] for key in ("architect", "chat", "code")}
+        write_modes(workspace, modes_json(shuffled, default="architect"))
+        payload = doc_read()
+        assert [item["key"] for item in payload["entries"]] == [
+            "architect", "chat", "code"]
+        assert payload["default"] == "architect"
+        assert payload["findings"] == []
+        assert payload["source"]["exists"] is True
+        assert payload["source"]["loaded"] is True
+
+    def test_the_persona_is_verbatim_and_in_the_form_the_file_wrote(
+        self, workspace: Path
+    ):
+        """The dropdown's read joins a persona into one string; this one must not."""
+        lines = ["You are working in Code mode.", "  - Use the tools.  ", "- Prove it."]
+        write_modes(workspace, modes_json(
+            {"code": entry(label="Code", mcptools=True, systemMessage=lines)},
+            default="code"))
+        persona = entry_of(doc_read(), "code")["fields"]["systemMessage"]
+        assert persona == lines
+        agent_modes.invalidate_agent_modes_cache()
+        write_modes(workspace, modes_json(
+            {"code": entry(label="Code", mcptools=True, systemMessage="a\nb")},
+            default="code"))
+        assert entry_of(doc_read(), "code")["fields"]["systemMessage"] == "a\nb"
+
+    def test_the_built_in_fallback_and_the_app_owned_mode_never_appear(
+        self, workspace: Path
+    ):
+        """The whole point of the second read: nothing is added to the file's list."""
+        write_modes(workspace, modes_json({"solo": entry(mcptools=True)},
+                                          default="solo"))
+        payload = doc_read()
+        assert [item["key"] for item in payload["entries"]] == ["solo"]
+        for absent in ("chat", "code", "architect", "todoBuilder"):
+            assert absent not in [item["key"] for item in payload["entries"]]
+        # And the dropdown's read answers its own list beside it, unchanged: the
+        # two answers coexist rather than one replacing the other.
+        assert ids() == ["solo", "todoBuilder"]
+
+    def test_an_entry_the_loader_drops_is_present_with_its_finding(self,
+                                                                   workspace: Path):
+        """D2's failure mode, refused: a broken entry is the one an editor must see."""
+        agents = copy.deepcopy(GOOD_AGENTS)  # a shallow copy would edit GOOD_AGENTS
+        agents["code"]["mcptool"] = True  # the classic misspelling
+        write_modes(workspace, modes_json(agents))
+        payload = doc_read()
+        assert [item["key"] for item in payload["entries"]] == [
+            "chat", "code", "architect"]
+        broken = entry_of(payload, "code")
+        assert broken["hasForm"] is True
+        assert any(message.startswith("agents.code.mcptool:")
+                   for message in [f.message for f in broken["findings"]])
+        # The dropdown's read drops it; the document read does not.
+        assert "code" not in ids()
+
+    def test_a_field_finding_reaches_the_entry_it_names(self, workspace: Path):
+        write_modes(workspace, modes_json({
+            "code": entry(label="Code", mcptools=1, lsptools=False),
+            "chat": entry(label="Chat", mcptools=True),
+        }, default="chat"))
+        payload = doc_read()
+        messages = [f.message for f in entry_of(payload, "code")["findings"]]
+        assert messages == ['agents.code.mcptools: is a number, not a boolean: '
+                            'write "mcptools": true or "mcptools": false']
+        assert entry_of(payload, "chat")["findings"] == []
+
+    def test_an_entry_that_is_not_an_object_gets_a_tab_with_no_form(self,
+                                                                    workspace: Path):
+        write_modes(workspace, modes_json({
+            "code": "just a string",
+            "chat": entry(label="Chat", mcptools=True),
+        }, default="chat"))
+        payload = doc_read()
+        broken = entry_of(payload, "code")
+        assert broken["hasForm"] is False
+        assert broken["fields"] == {}
+        assert any(message.startswith("agents.code:") for message in doc_errors(payload))
+
+    def test_a_key_outside_the_id_pattern_is_listed_with_no_form(self, workspace: Path):
+        write_modes(workspace, modes_json({
+            "Bad ID": entry(label="Bad", mcptools=True),
+            "chat": entry(label="Chat", mcptools=True),
+        }, default="chat"))
+        payload = doc_read()
+        broken = entry_of(payload, "Bad ID")
+        assert broken["hasForm"] is False
+        assert any(message.startswith("agents.Bad ID:") for message in doc_errors(payload))
+        # The dropdown's read refuses the entry outright; this one reports it.
+        assert "Bad ID" not in ids()
+
+    def test_a_finding_about_one_entry_does_not_leak_into_a_longer_id(self,
+                                                                     workspace: Path):
+        """The match is on the pointer *and* its boundary, not on a shared prefix."""
+        write_modes(workspace, modes_json({
+            "code": entry(label="Code", mcptools=True),
+            "codeX": entry(label="Code X", mcptools="yes"),
+        }, default="code"))
+        payload = doc_read()
+        assert entry_of(payload, "code")["findings"] == []
+        assert any(message.startswith("agents.codeX.mcptools:")
+                   for message in [f.message for f in entry_of(payload, "codeX")["findings"]])
+
+    def test_an_entry_naming_a_reserved_id_is_a_note_and_gets_no_tab(self,
+                                                                     workspace: Path):
+        agents = dict(GOOD_AGENTS)
+        agents["todoBuilder"] = entry(label="Mine", mcptools=False,
+                                      systemMessage="my own lot rules")
+        write_modes(workspace, modes_json(agents))
+        payload = doc_read()
+        assert [item["key"] for item in payload["entries"]] == [
+            "chat", "code", "architect"]
+        notes = doc_notes(payload)
+        assert len(notes) == 1
+        assert notes[0].startswith("agents.todoBuilder:")
+        assert '"todoBuilder" is defined by benchmarkit' in notes[0]
+        # A note, not an error: it must not hold up the save (D4).
+        assert doc_errors(payload) == []
+
+    def test_the_default_is_reported_as_written_even_when_it_is_refused(
+        self, workspace: Path
+    ):
+        write_modes(workspace, modes_json(GOOD_AGENTS, default="ghost"))
+        payload = doc_read()
+        assert payload["default"] == "ghost"
+        assert any('"default" is "ghost"' in message for message in doc_errors(payload))
+        # The dropdown's read repairs it to a selectable mode; the document read
+        # shows what the file actually says, which is what the dialog blocks on.
+        assert resolved()["default"] == "code"
+
+    def test_a_missing_default_is_none_and_stays_distinguishable(self, workspace: Path):
+        write_modes(workspace, modes_json(GOOD_AGENTS, default=None))
+        payload = doc_read()
+        assert payload["default"] is None
+        assert any('no "default" key' in message for message in doc_errors(payload))
+
+    def test_an_absent_file_is_a_draft_not_a_problem(self, workspace: Path):
+        payload = doc_read()
+        assert payload["source"]["exists"] is False
+        assert payload["source"]["loaded"] is False
+        assert payload["source"]["mtime"] is None
+        assert payload["entries"] == []
+        assert payload["findings"] == []
+        assert payload["default"] is None
+        assert "readme" not in payload
+        # The one case where the built-in document is a legitimate draft (D3).
+        assert payload["defaults"]["default"] == "code"
+        assert list(payload["defaults"]["agents"]) == ["chat", "code", "architect"]
+
+    @pytest.mark.parametrize("body", [
+        '{"version": 1, "agents": {"code": {',       # not valid JSON
+        '"chat"',                                    # root is a string
+        "[1, 2]",                                    # root is a list
+        "null",                                      # root is null
+    ])
+    def test_a_file_that_cannot_be_read_answers_its_finding_and_no_entries(
+        self, workspace: Path, body: str
+    ):
+        write_modes(workspace, body)
+        payload = doc_read()
+        assert payload["source"]["exists"] is True
+        assert payload["source"]["loaded"] is False
+        assert payload["entries"] == []
+        assert len(payload["findings"]) == 1
+        assert payload["findings"][0].kind == agent_modes.KIND_ERROR
+
+    @pytest.mark.parametrize("body", [
+        # no version key
+        json.dumps({"default": "code", "agents": GOOD_AGENTS}, indent=2),
+        # a version this app does not understand
+        modes_json(GOOD_AGENTS, version=2),
+        # a boolean is not a number
+        modes_json(GOOD_AGENTS, version=True),
+        # agents is not an object
+        json.dumps({"version": 1, "default": "code", "agents": [1, 2]}, indent=2),
+    ])
+    def test_a_file_whose_vocabulary_is_in_question_keeps_no_entries(
+        self, workspace: Path, body: str
+    ):
+        write_modes(workspace, body)
+        payload = doc_read()
+        assert payload["source"]["loaded"] is False
+        assert payload["entries"] == []
+        assert len(payload["findings"]) == 1
+        # The file's own keys are still readable while the finding is fixed.
+        assert payload["default"] == "code"
+
+    def test_a_folder_at_the_path_says_so_rather_than_claiming_absence(
+        self, workspace: Path
+    ):
+        folder = workspace / agent_modes.POLICY_DIRNAME
+        folder.mkdir()
+        (folder / agent_modes.AGENT_MODES_FILENAME).mkdir()
+        payload = doc_read()
+        assert payload["source"]["exists"] is True
+        assert payload["source"]["loaded"] is False
+        assert payload["entries"] == []
+        assert any("is a folder, not a file" in message for message in doc_errors(payload))
+
+    def test_the_mtime_is_the_files_and_a_rewrite_moves_it(self, workspace: Path):
+        """The token eds-02's save guard compares, and the guard needs it to move."""
+        path = write_modes(workspace, modes_json(GOOD_AGENTS))
+        first = doc_read()["source"]["mtime"]
+        assert first == str(path.stat().st_mtime_ns)
+        future = path.stat().st_mtime_ns + 1_000_000_000
+        os.utime(path, ns=(future, future))
+        second = doc_read()["source"]["mtime"]
+        assert second == str(future)
+        assert second != first
+
+    def test_the_document_read_is_not_cached(self, workspace: Path):
+        """A cached mtime would hand out a stale token and defeat the conflict guard."""
+        first = modes_json({"code": entry(label="One", mcptools=True)}, default="code")
+        second = modes_json({"code": entry(label="Two", mcptools=True)}, default="code")
+        assert len(first) == len(second)  # a size-only cache would miss the edit
+        path = write_modes(workspace, first)
+        assert mode_of("code").label == "One"  # the reader has now cached an entry
+        stamp = path.stat().st_mtime_ns
+        path.write_text(second, encoding="utf-8")
+        os.utime(path, ns=(stamp, stamp))  # same (mtime_ns, size): the cache's stamp holds
+
+        assert entry_of(doc_read(), "code")["fields"]["label"] == "Two"
+        assert mode_of("code").label == "One"  # the reader is still answering cached
+
+    def test_the_readme_survives_in_the_shape_the_file_wrote(self, workspace: Path):
+        write_modes(workspace, modes_json(GOOD_AGENTS, readme=["one", "two"]))
+        assert doc_read()["readme"] == ["one", "two"]
+        agent_modes.invalidate_agent_modes_cache()
+        write_modes(workspace, modes_json(GOOD_AGENTS, readme="one string"))
+        assert doc_read()["readme"] == "one string"
+        agent_modes.invalidate_agent_modes_cache()
+        write_modes(workspace, modes_json(GOOD_AGENTS, readme=42))
+        assert doc_read()["readme"] == 42
+
+    def test_a_file_with_no_readme_has_no_readme_key(self, workspace: Path):
+        """Absent and null must stay two answers — the writer preserves one and
+        writes none for the other."""
+        write_modes(workspace, modes_json(GOOD_AGENTS))
+        assert "readme" not in doc_read()
+
+        agent_modes.invalidate_agent_modes_cache()
+        hand_written = json.loads(modes_json(GOOD_AGENTS))
+        hand_written["readme"] = None  # the key is there, its value is null
+        write_modes(workspace, json.dumps(hand_written, indent=2))
+        payload = doc_read()
+        assert "readme" in payload
+        assert payload["readme"] is None
+
+    def test_the_caps_carry_every_number_the_form_enforces(self, workspace: Path):
+        caps = doc_read()["caps"]
+        assert caps == {
+            "maxModes": agent_modes.MAX_MODES,
+            "maxIdChars": agent_modes.MAX_MODE_ID_CHARS,
+            "idPattern": agent_modes.MODE_ID_PATTERN,
+            "maxLabelChars": agent_modes.MAX_MODE_LABEL_CHARS,
+            "maxPersonaBytes": agent_modes.MAX_MODE_SYSTEM_MESSAGE_BYTES,
+            "maxPersonaLines": agent_modes.MAX_MODE_PERSONA_LINES,
+        }
+
+    def test_a_patched_cap_moves_the_payload(self, workspace: Path, monkeypatch):
+        """The caps are patchable attributes; a literal payload would not follow."""
+        monkeypatch.setattr(agent_modes, "MAX_MODES", 3)
+        monkeypatch.setattr(agent_modes, "MAX_MODE_PERSONA_LINES", 4)
+        assert doc_read()["caps"]["maxModes"] == 3
+        assert doc_read()["caps"]["maxPersonaLines"] == 4
+
+    def test_an_entry_past_the_mode_cap_is_still_listed(self, workspace: Path,
+                                                        monkeypatch):
+        """The file holds five modes; a read that returned three would be the loss."""
+        monkeypatch.setattr(agent_modes, "MAX_MODES", 2)
+        agents = {f"m{i}": entry(mcptools=True) for i in range(5)}
+        write_modes(workspace, modes_json(agents, default="m0"))
+        payload = doc_read()
+        assert [item["key"] for item in payload["entries"]] == [
+            "m0", "m1", "m2", "m3", "m4"]
+        assert any("declares more than the 2 mode(s)" in message
+                   for message in doc_errors(payload))
+
+    def test_the_defaults_are_a_copy_of_the_built_in_document(self, workspace: Path):
+        """The draft and the reset source, and not a live reference to either."""
+        payload = doc_read()
+        assert payload["defaults"] == STANDIN_DOCUMENT
+        payload["defaults"]["agents"]["code"]["label"] = "mutated"
+        assert STANDIN_DOCUMENT["agents"]["code"]["label"] == "Code"
+        assert agent_modes._fallback_modes()[1].label == "Code"
+
+    def test_the_document_read_never_raises_whatever_the_file_is(self, workspace: Path):
+        for body in ["", "   ", "{", "[]", '"x"', "0", "true",
+                     '{"version": 1, "agents": null}',
+                     '{"version": 1, "default": 5, "agents": {}}']:
+            write_modes(workspace, body)
+            agent_modes.invalidate_agent_modes_cache()
+            payload = doc_read()
+            assert isinstance(payload["entries"], list)
+            assert isinstance(payload["findings"], list)
+
+    def test_the_document_read_writes_nothing(self, workspace: Path):
+        """A read that seeds a folder is the mistake the loader's rule already forbids.
+
+        Both states are checked: an unseeded workspace must not gain a reserved
+        folder from being *read*, and a seeded one must keep its bytes and its
+        listing exactly as they were.
+        """
+        doc_read()
+        assert sorted(os.listdir(workspace)) == []
+
+        path = write_modes(workspace, modes_json(GOOD_AGENTS))
+        before = (path.read_bytes(), sorted(os.listdir(workspace)))
+        doc_read()
+        doc_read()
+        assert (path.read_bytes(), sorted(os.listdir(workspace))) == before
+
+
 class TestSystemMessageForms:
     def test_a_string_and_a_list_of_lines_agree_byte_for_byte(self, workspace: Path):
         lines = ["You are working in Code mode.", "- Use the tools.", "- Prove it."]
@@ -930,7 +1284,8 @@ class TestTheReaderIsAlone:
 
     def test_the_seeder_is_reachable_but_the_reader_is_the_default(self):
         """The public read side never names the write side."""
-        for name in ("resolve_modes", "resolve_mode", "_current", "_load"):
+        for name in ("resolve_modes", "resolve_mode", "_current", "_load",
+                     "read_agent_modes_document"):
             body = next(
                 node for node in ast.walk(ast.parse(
                     Path(agent_modes.__file__).read_text(encoding="utf-8")))
@@ -966,9 +1321,21 @@ class TestConstantsAreSane:
         assert agent_modes.MAX_MODE_ID_CHARS == 32
         assert agent_modes.MAX_MODE_LABEL_CHARS == 40
         assert agent_modes.MAX_MODE_SYSTEM_MESSAGE_BYTES == 16 * 1024
+        assert agent_modes.MAX_MODE_PERSONA_LINES == 16
         assert agent_modes.RESERVED_MODE_IDS == ("todoBuilder",)
         assert agent_modes.MODE_ID_PATTERN == r"^[a-z][A-Za-z0-9_-]*$"
         assert agent_modes.POLICY_DIRNAME == ".nojae"
+
+    def test_the_persona_line_budget_is_a_positive_int(self):
+        """The soft budget the editor's form shows as a remaining-line counter.
+
+        It is a *display* number, so it is not in :func:`_self_check`'s list of
+        caps the loader enforces — but it is read straight out of the payload the
+        form renders, so a ``None`` or a string there is a broken label.
+        """
+        budget = agent_modes.MAX_MODE_PERSONA_LINES
+        assert isinstance(budget, int) and not isinstance(budget, bool)
+        assert budget > 0
 
     def test_the_folder_name_is_the_policy_module_s_not_a_second_constant(self):
         """Two constants for one reserved folder is how it stops being one folder."""
@@ -1207,16 +1574,22 @@ class TestPersonaProse:
             assert size < cap // 2, f"{mode_id} persona is {size} bytes of {cap}"
 
     def test_an_editable_persona_stays_inside_its_line_budget(self):
-        """The ~15-line budget am-02 §2 sets for the three modes a user rewrites.
+        """The line budget am-02 §2 sets for the three modes a user rewrites.
 
         The app-owned persona is longer (it carries the whole lot discipline) and
         is bounded by the byte cap instead — the assertion above.
+
+        The number is :data:`core.agent_modes.MAX_MODE_PERSONA_LINES`, not a
+        literal here: the modes editor shows that same budget as the "remaining
+        line cap" label under its persona field, and a budget spelled in two
+        places is a budget one of them will contradict.
         """
+        budget = agent_modes.MAX_MODE_PERSONA_LINES
         for attribute, mode_id in PERSONA_TUPLES:
             if mode_id == defaults.TODO_BUILDER_MODE_ID:
                 continue
             lines = persona_lines(attribute)
-            assert len(lines) <= 16, f"{mode_id} persona is {len(lines)} lines"
+            assert len(lines) <= budget, f"{mode_id} persona is {len(lines)} lines"
 
     def test_no_persona_claims_to_have_read_agents_md(self):
         """No persona names the instructions file — the block frames it.

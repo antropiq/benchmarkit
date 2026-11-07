@@ -10,6 +10,12 @@ returns. The one exception is :func:`ensure_agent_modes_file` below (am-03): the
 seeder lives here because it has to write exactly the bytes the loader reads, and
 it runs only at the two moments a folder becomes the working location.
 
+There are **two reads** here, answering two questions: :func:`resolve_modes` is
+the dropdown's (*what can I select right now*) and :func:`read_agent_modes_document`
+is the modes editor's (*what does my file say* — its entries verbatim, uncached).
+They are deliberately not merged: the reader drops an invalid entry as a unit, so
+a writer reading through it would write back fewer modes than the file holds.
+
 Two things this deliberately is **not**. It is not a hub: no live sessions, no
 subprocesses, nothing hot-toggled — where ``mcphub``/``lsphub`` own processes, a
 mode is a string and two booleans, so a hot edit costs one re-read. And it is not
@@ -86,6 +92,14 @@ MAX_MODE_LABEL_CHARS = 40
 #: short: the text is re-sent on **every** turn of the conversation, so past it a
 #: longer prompt is not a better agent, only a slower and dearer one.
 MAX_MODE_SYSTEM_MESSAGE_BYTES = 16 * 1024
+
+#: The **soft** prose budget an editable persona is written to, in lines. It is
+#: display, never a rule: the loader's verdict does not change because of it and a
+#: persona over it is still a valid entry (the byte cap above is the hard one). It
+#: lives here because the modes editor's form shows a "remaining line cap" label
+#: under its textarea, and the number already exists as a literal in the prose
+#: test that keeps the seeded personas inside it — one home for both.
+MAX_MODE_PERSONA_LINES = 16
 
 #: Modes benchmarkit owns: absent from the file, and a file that declares one is
 #: answered with a note rather than an edit (D9). :func:`resolve_modes` appends
@@ -794,6 +808,224 @@ def resolve_mode(
         if mode.id == wanted:
             return (mode, findings)
     return (None, findings)
+
+
+# -- the document read (eds-01) -------------------------------------------------
+#
+# The modes editor needs a different question answered than the dropdown does.
+# ``resolve_modes`` answers *what can I select right now* — valid entries plus
+# the built-in fallback plus the app-owned mode, no persona. The editor's dialog
+# must answer *what does my file say*, because a dialog fed by the dropdown's
+# list would show three modes for a file that holds four and a save would write
+# back three (eds-00 D2). So this is a second read beside the first, and the two
+# are never merged: the reader stays forgiving, this one is simply honest.
+
+def _document_caps() -> Dict[str, Any]:
+    """The numbers the editor's form enforces, built from the module attributes.
+
+    Read per call rather than spelled as a literal, for the same reason the caps
+    are module attributes at all: several tests patch one and expect the verdict
+    to move with it — here the payload has to move with it too, or the form would
+    enforce numbers this app no longer uses.
+    """
+    return {
+        "maxModes": MAX_MODES,
+        "maxIdChars": MAX_MODE_ID_CHARS,
+        "idPattern": MODE_ID_PATTERN,
+        "maxLabelChars": MAX_MODE_LABEL_CHARS,
+        "maxPersonaBytes": MAX_MODE_SYSTEM_MESSAGE_BYTES,
+        "maxPersonaLines": MAX_MODE_PERSONA_LINES,
+    }
+
+
+def _document_defaults() -> Dict[str, Any]:
+    """The built-in document — the same object the seeder writes.
+
+    A deep copy of the content module's ``DEFAULT_AGENTS_DOCUMENT``, because the
+    dialog edits what it is handed and that object is also what a broken file
+    falls back to: a caller that mutated the payload would be editing the app's
+    own defaults for every workspace on the machine.
+    """
+    declared = getattr(_defaults(), "DEFAULT_AGENTS_DOCUMENT", None)
+    return json.loads(json.dumps(declared if declared is not None else {}))
+
+
+def _entry_findings(key: str, value: Any,
+                    findings: List[ModeFinding]) -> List[ModeFinding]:
+    """The findings that talk about one entry, out of the file's whole verdict.
+
+    A finding about an entry names its pointer (``agents.code``) or a key under
+    it (``agents.code.systemMessage``), and every key the validator can name under
+    an entry is a key that entry actually has — so the entry's own keys decide
+    which findings are its own. Matching on the bare pointer prefix instead would
+    hand ``agents.codeX.mcptools`` to an entry named ``code`` as well, and a
+    finding shown on the wrong field is worse than no finding.
+
+    A finding about the file as a whole names the path rather than a pointer, so
+    it belongs to no entry and reaches the dialog through the payload's own
+    ``findings`` list; the overflow finding names ``agents`` for the same reason.
+    """
+    pointer = f"agents.{key}"
+    prefixes = [f"{pointer}:"]
+    if isinstance(value, dict):
+        prefixes.extend(f"{pointer}.{field}:" for field in value)
+    return [finding for finding in findings if finding.message.startswith(tuple(prefixes))]
+
+
+def _document_entry(key: str, value: Any, findings: List[ModeFinding]) -> Dict[str, Any]:
+    """One declared entry as the file spells it, plus the findings naming it.
+
+    The entry is a unit the validator either accepts whole or drops whole, so
+    this reports it in the same shape: the raw key, the values under the keys the
+    vocabulary knows (persona text verbatim, in whichever JSON form the file
+    wrote, never joined and never trimmed), and the findings that name it.
+
+    ``hasForm`` is D3's question — *are there fields to put in a form at all* —
+    and it is false for both shapes that have none: a value that is not an object,
+    and a key that is not a usable mode id. Either way the entry is still listed,
+    which is what keeps a save from quietly dropping it.
+    """
+    fields: Dict[str, Any] = {}
+    if isinstance(value, dict):
+        for key_name in MODE_KEYS:
+            if key_name in value:
+                fields[key_name] = value[key_name]
+    return {
+        "key": key,
+        "hasForm": isinstance(value, dict) and _mode_id_problem(key) is None,
+        "fields": fields,
+        "findings": _entry_findings(key, value, findings),
+    }
+
+
+def read_agent_modes_document() -> Dict[str, Any]:
+    """What the modes file **itself** says — the editor's read, uncached.
+
+    Returns ``{"entries": [...], "default": Any, "readme": Any, "findings":
+    [ModeFinding…], "source": {"path", "exists", "loaded", "mtime"}, "caps":
+    {...}, "defaults": {...}}``.
+
+    * ``entries`` — the file's own ``agents`` entries in the file's own order,
+      nothing added and nothing dropped: not the built-in fallback, not the
+      app-owned mode. Each one carries its raw key, its raw ``label`` /
+      ``mcptools`` / ``lsptools`` / ``systemMessage`` exactly as the file spells
+      them (a persona stays a string or a list, never joined), the findings whose
+      pointer names it, and ``hasForm`` — whether there are fields to put in a
+      form at all.
+    * ``default`` — the file's own value as written, even when it names something
+      the loader would refuse: the dialog shows it and blocks the save on the
+      finding that already names it. Absent is ``None``: a file with no ``default``
+      and one whose default is refused must not look alike to the writer.
+    * ``readme`` — the file's own ``readme`` if it has one, else **absent from the
+      payload**, which is how the writer can tell "none" from "empty".
+    * ``findings`` — every finding the loader produced about this file, each with
+      its ``kind`` and the pointer it names. A finding about an entry is repeated
+      on that entry; the list itself is the file's whole verdict.
+    * ``source.mtime`` — the file's ``st_mtime_ns`` as a string, or ``None`` when
+      nothing stands at the path. A string because a JSON float round-trip is not
+      exact and this value is the token a save compares against; ``None`` because
+      an absent file has no timestamp to compare, which is what tells a save to
+      create the file rather than to guard one. It is the stat taken **before**
+      the read, so an edit landing between the two makes the token older than the
+      text returned — and a save that compares it answers 409, which is the safe
+      direction for a conflict guard. Whatever stands at the path is what is
+      stamped, so a save must not treat a matching token as proof that the path is
+      a file: :data:`loaded` and the findings say that.
+    * ``caps`` / ``defaults`` — see the two helpers above.
+
+    **Not cached.** :func:`resolve_modes` keys its cache on ``(mtime_ns, size)``
+    and that is right for a per-request reader; this read is a writer's baseline,
+    so a cached ``mtime`` would hand out a stale token and defeat the conflict
+    guard the save is built on. It re-reads the file every call.
+
+    Each case the file can be in, and how it answers:
+
+    * **absent** — ``exists``/``loaded`` false, ``mtime`` null, no entries, no
+      findings, ``defaults`` present: the one case where the built-in document is
+      a legitimate draft for the dialog.
+    * **not valid JSON / not UTF-8 / a folder at the path** — ``exists`` true,
+      ``loaded`` false, its file-level error finding, no entries. The bytes stay
+      where they are.
+    * **root not an object, a ``version`` this app does not understand,
+      ``agents`` not an object** — same shape: the file-level finding and no
+      entries, because the vocabulary the entries are written in is what is in
+      question. ``default`` and ``readme`` are still reported as the file wrote
+      them, so a user can read them while the finding is fixed by hand.
+    * **an entry whose value is not an object, or a key outside the id pattern**
+      — the entry is **present** with its finding and ``hasForm`` false: it has no
+      fields to put in a form, but it is visible, which is what keeps a save from
+      quietly dropping it.
+    * **an entry the validator drops for a bad field** — present, ``hasForm``
+      true, with the finding on the field it talks about: the tab is a normal one,
+      and it is the finding that holds up the Save button.
+    * **an entry past the mode cap** — present like any other: the file holds it,
+      and a save that wrote back only the first :data:`MAX_MODES` would be the
+      silent loss this read exists to prevent. The overflow finding names it.
+    * **an entry naming a reserved id** — a **note** naming the pointer, and the
+      entry is **not** in ``entries``: there is nothing there to edit, and it
+      stays a note rather than an error so it does not hold up the save (D4).
+    """
+    root = _active_root()
+    names = (POLICY_DIRNAME, AGENT_MODES_FILENAME)
+    path = os.path.join(root, *names)
+    stamp = _file_stamp(path)
+    text, present, findings = _read_text(path)
+    document: Any = None
+    parsed = False
+    if text is not None:
+        try:
+            document = json.loads(text)
+            parsed = True
+        except json.JSONDecodeError as exc:
+            findings.append(_file_error(
+                path,
+                f"is not valid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})",
+            ))
+
+    loaded = False
+    usable = False
+    entries: List[Dict[str, Any]] = []
+    declared_default: Any = None
+    has_readme = False
+    readme: Any = None
+    if parsed:
+        # The validator answers for whatever the parse produced, including a root
+        # that is not an object: its file-level finding is the sentence the dialog
+        # has to show, and inventing a second one here would be a second voice for
+        # the same fact. A file that did not parse stops at that finding instead —
+        # there is no document left to validate, and :func:`_load` says the same.
+        _modes, _default, own, usable = _validated_document(document, path)
+        findings.extend(own)
+        loaded = usable
+    if isinstance(document, dict):
+        declared_default = document.get("default")
+        if "readme" in document:
+            # Carried only when the file has the key, and verbatim: the writer's
+            # rule is that a file with no ``readme`` gets none, so "absent" and
+            # ``null`` have to stay two different answers.
+            has_readme = True
+            readme = document["readme"]
+    if usable and isinstance(document, dict) and isinstance(document.get("agents"), dict):
+        entries = [_document_entry(key, value, findings)
+                   for key, value in document["agents"].items()
+                   if key not in RESERVED_MODE_IDS]
+
+    payload: Dict[str, Any] = {
+        "entries": entries,
+        "default": declared_default,
+        "findings": findings,
+        "source": {
+            "path": path,
+            "exists": present,
+            "loaded": loaded,
+            "mtime": None if stamp is None else str(stamp[0]),
+        },
+        "caps": _document_caps(),
+        "defaults": _document_defaults(),
+    }
+    if has_readme:
+        payload["readme"] = readme
+    return payload
 
 
 # -- the seeder (am-03) ---------------------------------------------------------

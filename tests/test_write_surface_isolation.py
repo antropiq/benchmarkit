@@ -10,12 +10,18 @@ five ways, each one a different way the promise could rot:
   ``TOOL_SPECS`` through ``tools_for_server``, which is what a hub would
   publish for the servers in the committed template). With
   ``BENCHMARKIT_DISABLE_MCP``/``_LSP`` the live hubs start disconnected, so the
-  lists here come from the sources of truth rather than a session.
+  lists here come from the sources of truth rather than a session. The same
+  lists are asked a second question (eds-04): neither carries the modes file's
+  save route nor a helper spelling of it, because that file decides whether
+  tools exist at all — a tool reaching it is the one leak no amount of
+  read-only tool design would notice.
 * **no code path spells a call to one** — a source scan for the write markers
-  (``PUT /api/fs``, ``POST /api/fs``, ``DELETE /api/fs``). They may appear in
-  ``src/api/routes.py`` (the definition) and the Editor composables (the
-  caller), and nowhere else. ``GET /api/fs`` is deliberately *not* a marker:
-  the read surface's docstrings name their routes, and always will.
+  (``PUT /api/fs``, ``POST /api/fs``, ``DELETE /api/fs`` and the modes file's
+  ``POST /api/agent-modes/save``). They may appear in ``src/api/routes.py``
+  (the definition) and the composables that call them, and nowhere else. The
+  read spellings (``GET /api/fs``, ``GET /api/agent-modes/document``) are
+  deliberately *not* markers: the read surface's docstrings name their routes,
+  and always will.
 * **the model client cannot spell an app route either** — ``core/llmkit`` is
   the one core package that speaks HTTP, and *legally* so (the import scan
   covers the connectors, not ``src/core``), so its share of the promise is the
@@ -24,12 +30,14 @@ five ways, each one a different way the promise could rot:
 * **the terminal stays a human surface** — the shell is a WebSocket reached
   from the SPA, and neither hub mentions it, so it cannot become a tool by
   someone wiring the hub to ``app.state.terminal``.
-* **the reserved folder keeps one reader per file, and it is a ``GET``** —
-  ``.nojae`` is edited by hand outside the app, so its two purpose-built
-  readers (the policy file's state, the agent-modes list) answer *about* a file
-  and write nothing. A verb on ``/agent-modes`` would put the switch that
-  decides whether tools exist behind a route, which no marker scan would see
-  because that route is not an ``/api/fs`` route.
+* **the modes file's routes are pinned per path, and only the browser's half
+  of them writes** — ``.nojae`` stays invisible to ``/api/fs/*``, so its files
+  are reached through purpose-built routes rather than a path parameter (none of
+  them is an ``/api/fs`` route). The dropdown's reader answers *about* the modes
+  file with one verb and no argument; the editor's pair is exactly two routes,
+  ``document`` a ``GET`` and ``save`` a ``POST``, and the writer behind the save
+  is reached from the routes alone. What must never happen is a **tool** reaching
+  that save: it is the switch that decides whether tools exist at all.
 
 The last test feeds each check a deliberately poisoned input, because a guard
 that cannot fail is not a guard: that is the same "assert the invariant, not
@@ -51,10 +59,19 @@ from src.core.lsphub import tools as lsp_tools
 
 REPO_ROOT = Path(editorfs.constants.PROJECT_ROOT)
 
-# The three write routes, in the exact spelling a caller would use. Chosen so
-# that a docstring naming a route *method* (``GET /api/fs/tree``) stays out of
-# the scan, and a comment or a string naming a write is caught.
-WRITE_MARKERS = ("PUT /api/fs", "POST /api/fs", "DELETE /api/fs")
+# The write routes, in the exact spelling a caller would use. Chosen so that a
+# docstring naming a route *method* (``GET /api/fs/tree``) stays out of the
+# scan, and a comment or a string naming a write is caught. The modes pair's
+# contribution (eds-04) is its save route only: the verb-and-path shape keeps
+# ``GET /api/agent-modes/document`` — which the document read's own docstrings
+# name, and will keep naming — out of the scan for the same reason ``GET
+# /api/fs`` is.
+WRITE_MARKERS = (
+    "PUT /api/fs",
+    "POST /api/fs",
+    "DELETE /api/fs",
+    "POST /api/agent-modes/save",
+)
 
 # The app's own route prefix: a URL whose path holds it could address a write
 # route. ``llmkit``'s URL builders are guarded on this below.
@@ -69,7 +86,27 @@ ALLOWED_HOMES = {
     # Declared with the route, before its caller exists: task mov-03 creates this
     # composable, whose ``fetch`` will name the batch-move route.
     Path("web/src/composables/useEditorMove.js"),    # move batch
+    # Same spirit, same reason (eds-04 declares it with the route): task eds-05
+    # gives this composable the document fetch and the save ``fetch``.
+    Path("web/src/composables/useAgentModes.js"),    # modes document / save
 }
+
+# The modes file's save route on its own, for the checks that ask only about it
+# (the tool listings, the poisoned cases): the marker scan above covers it too,
+# but a tool list is judged against *this* path and nothing else.
+MODES_SAVE_MARKER = "POST /api/agent-modes/save"
+
+# Spellings a connector or a tool description could use for reaching it without
+# naming the route verbatim — the same "belt for the prose" the helper names are
+# for the Editor's writes.
+MODES_SAVE_HELPER_SPELLINGS = (
+    "agent_modes_save",
+    "agent-modes-save",
+    "modes_save",
+    "modes-save",
+    "save_agent_modes",
+    "agent-modes/save",
+)
 
 # A connector that could speak HTTP could call a route it never names in a
 # string, so the marker scan alone would miss it. These are the clients that
@@ -116,6 +153,48 @@ def offenders_for(markers, roots, allowed=ALLOWED_HOMES) -> List[str]:
                 )
                 if Path(label) not in allowed:
                     found.append(label)
+    return found
+
+
+def modes_writer_callers(source_root: Path) -> List[str]:
+    """Every file under ``src`` that names the core writer of the modes file.
+
+    One implementation, shared by the guard below and by its self-check — the
+    same reason ``offenders_for`` is shared. The writer's own module is skipped
+    (it *defines* the entry point), so what is left is the list of callers: the
+    routes alone, or something that should not be there.
+    """
+    found: List[str] = []
+    for path in source_root.rglob("*.py"):
+        if "__pycache__" in path.parts:
+            continue
+        if path.name == "agent_modes_write.py":
+            continue  # this *defines* the writer
+        text = path.read_text(encoding="utf-8")
+        if "save_agent_modes_document" in text:
+            found.append(str(path.relative_to(source_root)))
+    return sorted(found)
+
+
+def advertisement_offenders(listing: List[Dict[str, Any]]) -> List[str]:
+    """Every advertised tool def that names the modes file's save route.
+
+    One implementation, shared by the MCP and LSP advertisement guards below and
+    by their self-checks — the same reason ``offenders_for`` is shared: a second
+    copy of the check is how a guard drifts from what it guards. Each entry is
+    judged on its whole published surface (name, description, schema), which is
+    what a client is actually told; the LSP defs are flattened to the same shape
+    by the caller.
+    """
+    found: List[str] = []
+    for tool in listing:
+        haystack = f"{tool['name']} {tool['description']} {tool['schema']}"
+        if MODES_SAVE_MARKER in haystack:
+            found.append(f"{tool['name']}: {MODES_SAVE_MARKER}")
+            continue
+        for spelling in MODES_SAVE_HELPER_SPELLINGS:
+            if spelling in haystack:
+                found.append(f"{tool['name']}: {spelling}")
     return found
 
 
@@ -244,6 +323,23 @@ class TestNoToolNamesAWriteRoute:
                                "trash_path", "delete_fs", "put_fs"):
                     assert helper not in tool["name"], f"{connector_id}: {helper}"
 
+    def test_no_mcp_tool_advertises_the_modes_save(self):
+        """eds-04: the save route is absent from every advertised connector surface.
+
+        The marker scan over the connectors' *sources* cannot see this: a tool that
+        *describes* a way to save the modes file would be a hub publishing a write
+        route, and the file it writes is the one that decides whether the hub's
+        tools exist at all. The listing here is ``list_tools`` plus the server's
+        own ``instructions`` text — the whole thing a connected client is told.
+        """
+        offenders: List[str] = []
+        for connector_id, listing in connector_tool_lists().items():
+            offenders.extend(f"{connector_id}: {item}"
+                             for item in advertisement_offenders(listing))
+        assert offenders == [], (
+            f"a connector advertises the modes file's save route: {offenders}"
+        )
+
     def test_no_lsp_tool_names_or_describes_a_write_route(self):
         definitions = lsp_tool_defs()
         names = [d["function"]["name"] for d in definitions]
@@ -262,6 +358,28 @@ class TestNoToolNamesAWriteRoute:
         }
         assert set(names) <= catalogue
         assert names, "the template declares the servers, so this cannot be empty"
+
+    def test_no_lsp_tool_advertises_the_modes_save(self):
+        """eds-04: the hub's published defs carry neither the save path nor a
+        spelling of it.
+
+        The LSP hub is the other publisher of tool defs the chat hands the model,
+        so it gets the same question as the MCP connectors: does anything it
+        advertises name the modes file's write route. The defs are built the way
+        the hub builds them (``TOOL_SPECS`` through ``tools_for_server``,
+        capabilities ``None``), so this is the catalogue a server would be given.
+        """
+        listing = [
+            {"name": definition["function"]["name"],
+             "description": definition["function"]["description"],
+             "schema": json.dumps(definition["function"]["parameters"])}
+            for definition in lsp_tool_defs()
+        ]
+        assert listing, "the hub publishes nothing to check"
+        offenders = advertisement_offenders(listing)
+        assert offenders == [], (
+            f"an LSP tool def names the modes file's save route: {offenders}"
+        )
 
     def test_every_lsp_method_is_a_query_not_a_document_mutation(self):
         """``TOOL_SPECS`` is the hub's whole surface, so this is the table."""
@@ -385,43 +503,102 @@ class TestTheTerminalStaysHumanOnly:
             ],
         ) == []
 
+    def test_the_modes_save_is_not_a_side_door_through_the_shell(self):
+        """eds-04: a reserved-folder file became app-writable; the shell is not how.
 
-class TestTheAgentModesReaderStaysReadOnly:
-    """am-06 gave the reserved folder a second purpose-built reader: a *GET*.
+        The modes file is now a store the app writes, and the tempting route for a
+        tool to reach it is the one surface that can *edit any file* — the Editor's
+        terminal. It stays a human surface: no hub, chat or batch path names the
+        save route or the writer behind it, and the connectors' own sources carry
+        neither (the marker scan covers those trees, so this asks only the in-process
+        paths that could import the writer an import away).
+        """
+        markers = (MODES_SAVE_MARKER, "agent_modes_write", "save_agent_modes_document")
+        assert offenders_for(
+            markers,
+            [
+                REPO_ROOT / "src" / "core" / "mcphub",
+                REPO_ROOT / "src" / "core" / "lsphub",
+                REPO_ROOT / "src" / "core" / "chat.py",
+                REPO_ROOT / "src" / "core" / "batch.py",
+                REPO_ROOT / "src" / "core" / "llm.py",
+                REPO_ROOT / "src" / "core" / "termhub",
+            ],
+        ) == []
 
-    ``GET /api/agent-modes`` answers *about* ``.nojae/agent-modes.json`` the way
-    ``GET /api/path-location`` answers about the policy file — one small reader,
-    no ``?path=``, no raw bytes, and nothing writable. The modes file is edited
-    by hand outside the app (D6), so a write route for it would not just break
-    the reservation: it would hand a tool the switch that decides whether tools
-    exist. The guard is on the *verb* rather than on the marker scan, because a
-    route named ``/agent-modes`` is not a route named ``/api/fs``.
+
+class TestTheAgentModesRoutesStayPinnedToTheirPaths:
+    """The modes file's routes: one argument-free reader, one pinned editor pair.
+
+    am-06 gave the reserved folder a purpose-built *reader* and this lot gave it
+    an editor pair. The reservation of ``.nojae`` was not lifted — the file is
+    still invisible to ``/api/fs/*`` — so every route that reaches it is one this
+    guard has to name, because none of them is an ``/api/fs`` route and the marker
+    scan above cannot see any of them.
+
+    What survives am-06's reason is the narrower truth it was always guarding: a
+    **tool** must not reach the switch that decides whether tools exist. The modes
+    file is now a store the app writes, but through the browser only, so what is
+    pinned is (a) the dropdown's reader keeps exactly one verb and zero arguments,
+    (b) the editor pair is exactly two routes with exactly their verbs, and (c) the
+    core writer behind the save has one caller, the routes.
     """
 
-    def test_no_agent_modes_route_accepts_a_mutation(self):
+    #: The whole surface ``/agent-modes`` may ever answer, path by path. A third
+    #: route — or a second verb on one of these — is a change to the modes file's
+    #: reach, so it has to be made here, on purpose.
+    AGENT_MODES_VERBS = {
+        "/agent-modes": ["get"],
+        "/agent-modes/document": ["get"],
+        "/agent-modes/save": ["post"],
+    }
+
+    def _registered(self):
         routes_source = (REPO_ROOT / "src" / "api" / "routes.py").read_text(
             encoding="utf-8"
         )
-        registered = route_registrations(routes_source, "/agent-modes")
-        assert registered, "am-06's reader has to exist for this to mean anything"
-        assert [entry["verb"] for entry in registered] == ["get"], (
-            "a verb on /agent-modes would put the file that decides whether "
-            "tools exist behind a route"
-        )
+        return route_registrations(routes_source, "/agent-modes")
 
-    def test_the_reader_is_a_get_and_carries_no_path_parameter(self):
-        """The one route, exactly as am-06 §3-§4 specify it: no argument at all.
+    def test_the_reader_path_has_one_verb_and_no_argument(self):
+        """am-06 §3-§4, unchanged by this lot: the dropdown's read is untouched.
 
-        A ``?path=`` query parameter is how a purpose-built reader turns into a
-        general way to reach the reserved folder, so what is pinned is the
-        handler's *arity* — not the absence of a string somewhere in the file.
+        The arity is what is pinned rather than "no ``?path=`` string in the
+        file": a query parameter is how a purpose-built reader turns into a
+        general way to reach the reserved folder, and a handler's signature is
+        the one place that cannot hide one.
         """
-        routes_source = (REPO_ROOT / "src" / "api" / "routes.py").read_text(
-            encoding="utf-8"
+        handlers = [
+            entry for entry in self._registered() if entry["path"] == "/agent-modes"
+        ]
+        assert [entry["verb"] for entry in handlers] == ["get"], (
+            "a verb on the dropdown's reader path would put the file that "
+            "decides whether tools exist behind a route no marker scan sees"
         )
-        handlers = route_registrations(routes_source, "/agent-modes")
         assert [entry["handler"].name for entry in handlers] == ["get_agent_modes"]
         assert handlers[0]["handler"].args.args == []
+
+    def test_the_editor_pair_exists_and_is_pinned_to_get_and_post(self):
+        """The pair is the modes file's whole writable reach, verbs and all."""
+        registered = self._registered()
+        by_path: Dict[str, List[str]] = {}
+        for entry in registered:
+            by_path.setdefault(entry["path"], []).append(entry["verb"])
+        assert by_path == self.AGENT_MODES_VERBS, (
+            f"the /agent-modes surface is {by_path}, expected "
+            f"{self.AGENT_MODES_VERBS}"
+        )
+
+    def test_the_save_is_the_only_writer_and_the_routes_are_its_only_caller(self):
+        """The core writer behind the save is reached from the routes alone.
+
+        Same shape as ``test_the_write_core_is_called_from_the_routes_and_nowhere_else``
+        above, applied to this pair: a hub, a tool or a chat path that imported the
+        writer would be a tool editing the file that decides whether tools exist,
+        and no scan of ``/api/fs`` markers would ever notice.
+        """
+        assert modes_writer_callers(REPO_ROOT / "src") == [
+            str(Path("api") / "routes.py")
+        ]
 
 
 class TestTheSearchReaderStaysARead:
@@ -502,15 +679,23 @@ class TestTheModelClientCannotReachAWriteRoute:
         Fed to the same walker the guards use (a scratch builder, not an edit
         to ``client.py``), so what is checked is that the *guard* sees the
         drift — the ``TestTheGuardsActuallyFail`` pattern, applied to these.
+        The drifted spelling names the **modes save** (eds-04): the guard is
+        shown to see *this* path, not merely some app path, so a builder that
+        drifts onto the one route that decides whether tools exist trips both
+        halves exactly like any other write route.
         """
         def drifted(server_url: str) -> str:
-            return f"{server_url.rstrip('/')}/api/fs/file"
+            return f"{server_url.rstrip('/')}/api/agent-modes/save"
 
         paths = builder_paths(drifted, ["http://host:8080/v1"])
         with pytest.raises(AssertionError):
             assert all(path.endswith("/v1/chat/completions") for path in paths), paths
         with pytest.raises(AssertionError):
             assert not any(APP_ROUTE_PREFIX in path for path in paths), paths
+        assert any(MODES_SAVE_MARKER.split(" ", 1)[1] in path for path in paths), (
+            "the drift named is the modes save itself: the shape guard is shown "
+            "to see this route, not just some app route"
+        )
 
     def test_the_marker_scan_still_catches_llmkit_spelling_a_write(self, tmp_path):
         """The passive scan's own teeth, shown on a scratch copy of the package.
@@ -555,6 +740,36 @@ class TestTheGuardsActuallyFail:
         fake.write_text('URL = "DELETE /api/fs/file"\n', encoding="utf-8")
         assert offenders_for(WRITE_MARKERS, [tmp_path]) == [str(fake)]
 
+    def test_the_marker_scan_catches_a_module_naming_the_modes_save(self, tmp_path):
+        """The new marker has its own teeth: the scan sees *this* route spelled.
+
+        A scratch file under a scratch root spelling the save the way a caller
+        would — the same walker the real guard runs over ``src/core``, the two
+        connector trees and ``useChat.js``. The allowed-home entry for
+        ``useAgentModes.js`` is *not* passed here (``allowed=set()``), because
+        what is being proven is that the marker itself is caught, not that a
+        declared caller is excused.
+        """
+        fake = tmp_path / "core" / "cheeky.py"
+        fake.parent.mkdir(parents=True)
+        fake.write_text(
+            'def leak(document, mtime):\n'
+            '    # a core path wired to POST /api/agent-modes/save\n'
+            '    return client.post("/api/agent-modes/save",\n'
+            '                       json={"document": document, "mtime": mtime})\n',
+            encoding="utf-8",
+        )
+        assert offenders_for(WRITE_MARKERS, [fake.parent], allowed=set()) == [str(fake)]
+        # And the *read* spelling of the pair stays out of the scan, which is what
+        # keeps every document-read docstring from becoming an offender: the same
+        # reason ``GET /api/fs`` is not a marker.
+        read = tmp_path / "core" / "reader.py"
+        read.write_text(
+            '"""The editor read (``GET /api/agent-modes/document``)."""\n',
+            encoding="utf-8",
+        )
+        assert offenders_for(WRITE_MARKERS, [tmp_path], allowed=set()) == [str(fake)]
+
     def test_the_tool_scan_catches_a_poisoned_tool_list(self):
         poisoned = [{"name": "fs_delete", "description": "POST /api/fs/file",
                      "schema": "{}"}]
@@ -563,6 +778,100 @@ class TestTheGuardsActuallyFail:
             for tool in poisoned
         )
         assert any(marker in haystack for marker in WRITE_MARKERS)
+
+    def test_the_modes_save_tool_guard_catches_a_poisoned_connector_list(self):
+        """A connector advertising the modes save trips the advertisement guard.
+
+        Fed to the same walker the guards use (a scratch listing, not an edit to
+        a connector), so what is checked is that the *guard* sees this route:
+        first the verbatim path, then a helper spelling that names the save
+        without spelling the verb — the shape the pinned helper list exists to
+        catch. A clean listing answers nothing, which is what makes the empty
+        answer of the guards above a verdict rather than an absence of checking.
+        """
+        poisoned = [
+            {"name": "modes_save", "description": f"Call {MODES_SAVE_MARKER}.",
+             "schema": "{}"},
+            {"name": "save_modes", "description": "Writes the modes document.",
+             "schema": json.dumps({"helper": "save_agent_modes_document"})},
+            {"name": "clean_tool", "description": "Reads a file.", "schema": "{}"},
+        ]
+        assert advertisement_offenders(poisoned) == [
+            f"modes_save: {MODES_SAVE_MARKER}",
+            "save_modes: save_agent_modes",
+        ]
+
+    def test_the_modes_save_tool_guard_catches_a_poisoned_lsp_spec(self, monkeypatch):
+        """The LSP half trips too: a poisoned catalogue def names the save route.
+
+        The poisoning goes into a spec the committed template *declares* (every
+        server there asks for ``diagnostics``), because the hub publishes the
+        declared list — a spec no server declares would never be published, and
+        a guard that only sees unpublished specs is not guarding the surface.
+        """
+        monkeypatch.setitem(
+            lsp_tools.TOOL_SPECS,
+            "diagnostics",
+            {**lsp_tools.TOOL_SPECS["diagnostics"],
+             "description": f"Save the modes document ({MODES_SAVE_MARKER})."},
+        )
+        listing = [
+            {"name": definition["function"]["name"],
+             "description": definition["function"]["description"],
+             "schema": json.dumps(definition["function"]["parameters"])}
+            for definition in lsp_tool_defs()
+        ]
+        offenders = advertisement_offenders(listing)
+        assert offenders, "the poisoned def is published, so the guard has to see it"
+        with pytest.raises(AssertionError):
+            assert offenders == [], offenders
+
+    def test_the_modes_writer_caller_scan_catches_a_second_caller(self, tmp_path):
+        """A second caller of the core writer is named by the caller scan.
+
+        A scratch ``src`` tree with the routes and a hub that imports the writer:
+        the guard's answer is *both*, which is what makes the real guard's
+        one-entry answer a verdict. The writer module itself is skipped by the
+        shared walker, exactly as it is for the real tree.
+        """
+        (tmp_path / "api").mkdir()
+        (tmp_path / "api" / "routes.py").write_text(
+            "from src.core import agent_modes_write\n\n"
+            "def route(body):\n"
+            "    return agent_modes_write.save_agent_modes_document(body)\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "core" / "mcphub").mkdir(parents=True)
+        (tmp_path / "core" / "mcphub" / "manager.py").write_text(
+            "from src.core.agent_modes_write import save_agent_modes_document\n\n"
+            "def tool_save(document):\n"
+            "    return save_agent_modes_document(document)\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "core" / "agent_modes_write.py").write_text(
+            "def save_agent_modes_document(document):\n    return {}\n",
+            encoding="utf-8",
+        )
+        assert modes_writer_callers(tmp_path) == [
+            str(Path("api") / "routes.py"),
+            str(Path("core") / "mcphub" / "manager.py"),
+        ]
+
+    def test_the_shell_side_door_guard_catches_a_poisoned_hub(self, tmp_path):
+        """A hub naming the modes save trips the terminal-stays-human-only scan.
+
+        The same walker the guard uses, over a scratch hub file: the point is that
+        the *guard* sees a hub wiring itself to the writer of the file that decides
+        whether tools exist — which is how this class's other checks are proven.
+        """
+        fake = tmp_path / "cheeky_hub.py"
+        fake.write_text(
+            "# a hub wiring its tools to POST /api/agent-modes/save\n"
+            "from src.core import agent_modes_write\n",
+            encoding="utf-8",
+        )
+        markers = (MODES_SAVE_MARKER, "agent_modes_write", "save_agent_modes_document")
+        assert offenders_for(markers, [tmp_path], allowed=set()) == [str(fake)]
 
     def test_the_http_import_scan_catches_a_poisoned_connector(self, tmp_path):
         """The new guard sees an HTTP client, and the marker scan sees the route."""
@@ -597,24 +906,47 @@ class TestTheGuardsActuallyFail:
                 for word in forbidden:
                     assert word not in method, f"{action} calls {method}"
 
-    def test_the_agent_modes_verb_guard_catches_a_poisoned_route(self):
-        """One added ``@router.post`` on the reader's path trips the guard.
+    def test_the_agent_modes_verb_guard_catches_a_poisoned_pair(self):
+        """A verb moved onto either modes path trips the rewritten guard.
 
         Fed to the same walk the guard uses (a string, not an edit to the real
         file), so the check is that the *guard* sees a mutation — which is what
-        makes the assertion in the class above a guard rather than a comment.
+        makes the assertions in the class above guards rather than comments. Two
+        poisonings, because the pair has two halves: a ``post`` on the editor's
+        **read** path (a second way to write the file, on a path the dialog only
+        reads) and a ``get`` on the **save** path (a reader that shares the
+        writer's path, so the pinned verb set is what refuses it).
         """
         poisoned = (
             "@router.get(\"/agent-modes\")\n"
             "def get_agent_modes():\n"
             "    return {}\n\n"
-            "@router.post(\"/agent-modes\")\n"
-            "def post_agent_modes(body: ModesIn):\n"
+            "@router.get(\"/agent-modes/document\")\n"
+            "def get_agent_modes_document():\n"
+            "    return {}\n\n"
+            "@router.post(\"/agent-modes/document\")\n"
+            "def post_agent_modes_document(body: ModesIn):\n"
+            "    return {}\n\n"
+            "@router.get(\"/agent-modes/save\")\n"
+            "def get_agent_modes_save():\n"
+            "    return {}\n\n"
+            "@router.post(\"/agent-modes/save\")\n"
+            "def post_agent_modes_save(body: ModesIn):\n"
             "    return {}\n"
         )
         registered = route_registrations(poisoned, "/agent-modes")
-        assert [entry["verb"] for entry in registered] == ["get", "post"]
+        by_path: Dict[str, List[str]] = {}
+        for entry in registered:
+            by_path.setdefault(entry["path"], []).append(entry["verb"])
+        assert by_path == {
+            "/agent-modes": ["get"],
+            "/agent-modes/document": ["get", "post"],
+            "/agent-modes/save": ["get", "post"],
+        }
         with pytest.raises(AssertionError):
-            assert [entry["verb"] for entry in registered] == ["get"]
-        # And the arity guard sees the body argument the poisoned route needs.
-        assert registered[1]["handler"].args.args != []
+            assert by_path == TestTheAgentModesRoutesStayPinnedToTheirPaths.AGENT_MODES_VERBS
+        # And the arity guard still sees the reader's signature: the dropdown's
+        # path stays argument-free even while the poisoned neighbours carry bodies.
+        reader = [entry for entry in registered if entry["path"] == "/agent-modes"]
+        assert [entry["handler"].args.args for entry in reader] == [[]]
+        assert registered[2]["handler"].args.args != []

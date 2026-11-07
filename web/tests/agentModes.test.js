@@ -4,18 +4,38 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 import {
+  addModeToDraft,
   agentModePayloadId,
   agentModesLoaded,
   applySessionAgentMode,
+  blockingFindings,
+  createAgentModesDraft,
+  createDisabledFor,
   currentMode,
+  deleteDisabledFor,
+  deleteModeFromDraft,
+  draftIsDirty,
+  draftWillCreateFile,
+  fetchAgentModesDocument,
   findingsLine,
+  idEditableFor,
+  idValidityProblem,
   loadAgentModes,
   modeBlocksHub,
+  modeCountProblem,
   modeHint,
   modeOptionDisabled,
   modeSelectDisabled,
   modeSelectTitle,
+  personaByteCount,
+  personaLineBudget,
+  personaOverByteCap,
+  resetDecisionAfterSave,
+  saveAgentModesDocument,
+  saveDisabledFor,
   setAgentMode,
+  slugForDraft,
+  slugForModeId,
   syncAgentModeLock,
   useAgentModes,
 } from '../src/composables/useAgentModes'
@@ -466,6 +486,731 @@ describe('the session envelope', () => {
     chat.messages = [{ role: 'user', raw: 'x', html: '', images: [] }]
     const doc = conversationJson(chat.messages)
     expect('agentMode' in doc).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The modes editor (eds-05): the dialog's rules over a draft document.
+//
+// These are Layer-1 tests on purpose: every one judges a *draft* — the editable
+// copy of what `GET /api/agent-modes/document` answers — through the plain
+// functions in useAgentModes.js, because that is exactly what the dialog
+// component (eds-06) will render instead of re-deriving. The fixtures mirror
+// the real payload shape from `src/core/agent_modes.read_agent_modes_document`.
+// ---------------------------------------------------------------------------
+
+// The caps as the document payload publishes them. No test here hardcodes a
+// rule *number* except through this object, and one case patches it to prove
+// the verdict follows the payload rather than a literal.
+const EDITOR_CAPS = {
+  maxModes: 16,
+  maxIdChars: 32,
+  idPattern: '^[a-z][A-Za-z0-9_-]*$',
+  maxLabelChars: 40,
+  maxPersonaBytes: 16384,
+  maxPersonaLines: 16,
+}
+
+const EDITOR_DEFAULTS = {
+  version: 1,
+  readme: ['This file lists the workspace agent modes.'],
+  default: 'code',
+  agents: {
+    chat: { label: 'Chat', mcptools: false, lsptools: false, systemMessage: ['You never call a tool.'] },
+    code: { label: 'Code', mcptools: true, lsptools: true, systemMessage: ['You edit files.'] },
+    architect: { label: 'Architect', mcptools: true, lsptools: false, systemMessage: ['You design.'] },
+  },
+}
+
+function editorEntry(key, fields = {}, extra = {}) {
+  return { key, hasForm: true, fields, findings: [], ...extra }
+}
+
+function documentBody({
+  entries = [
+    editorEntry('chat', EDITOR_DEFAULTS.agents.chat),
+    editorEntry('code', EDITOR_DEFAULTS.agents.code),
+    editorEntry('architect', EDITOR_DEFAULTS.agents.architect),
+  ],
+  defaultId = 'code',
+  findings = [],
+  caps = EDITOR_CAPS,
+  defaults = EDITOR_DEFAULTS,
+  source = {},
+  readme,
+} = {}) {
+  const body = {
+    entries,
+    default: defaultId,
+    findings,
+    source: {
+      path: '/work/.nojae/agent-modes.json',
+      exists: true,
+      loaded: true,
+      mtime: '1700000000000000000',
+      ...source,
+    },
+    caps,
+    defaults,
+  }
+  if (readme !== undefined) body.readme = readme
+  return body
+}
+
+// What `POST /api/agent-modes/save` answers: the new verdict in the dropdown's
+// own shape plus the new mtime token.
+function saveResponse({ defaultId = 'code', modes, mtime = '1700000009000000000' } = {}) {
+  const base = modesBody({ defaultId })
+  return {
+    saved: true,
+    created: false,
+    backedUp: true,
+    modes: modes ?? base.modes,
+    default: defaultId,
+    findings: [],
+    source: { ...base.source, mtime },
+  }
+}
+
+function resetEditor() {
+  const editor = useAgentModes().editor
+  editor.open = false
+  editor.loading = false
+  editor.saving = false
+  editor.error = null
+  editor.conflict = null
+  editor.invalidFindings = []
+}
+
+// A fetch stub for the whole agent-modes surface: the dropdown's reader (so a
+// test can load the list first) and the two editor routes. Only the **editor**
+// pair lands in `calls`, in order, so a test can assert "no second round-trip"
+// instead of inferring it.
+function stubEditorRoutes({ document = documentBody(), save = saveResponse(), calls = [] } = {}) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+    const key = String(url)
+    if (key === '/api/agent-modes') {
+      return jsonResponse(modesBody())
+    }
+    if (key === '/api/agent-modes/document') {
+      calls.push({ key, init })
+      return document === null ? jsonResponse({}, false, 500) : jsonResponse(document)
+    }
+    if (key === '/api/agent-modes/save') {
+      calls.push({ key, init })
+      if (save === null) return jsonResponse({}, false, 500)
+      if (typeof save === 'object' && save.__fail) {
+        return jsonResponse({ detail: save.detail }, false, save.status)
+      }
+      return jsonResponse(save)
+    }
+    throw new Error(`unexpected fetch: ${key}`)
+  })
+}
+
+describe('the draft document', () => {
+  beforeEach(() => {
+    resetAll()
+    resetEditor()
+  })
+
+  it('holds the file entries in the file order, persona verbatim', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        entries: [
+          editorEntry('architect', { label: 'Architect', mcptools: true, systemMessage: ['a\nb'] }),
+          editorEntry('chat', { label: 'Chat', systemMessage: null }),
+        ],
+        defaultId: 'architect',
+      }),
+    )
+    expect(draft.entries.map((entry) => entry.key)).toEqual(['architect', 'chat'])
+    // A list persona joins the way the loader joins it, so the round-trip is
+    // byte-identical; a null one is "use the configured prompt" — empty text.
+    expect(draft.entries[0].personaText).toBe('a\nb')
+    expect(draft.entries[1].personaText).toBe('')
+    expect(draft.entries[1].personaNull).toBe(true)
+    expect(draft.default).toBe('architect')
+    expect(draft.mtime).toBe('1700000000000000000')
+    expect(draftIsDirty(draft)).toBe(false)
+  })
+
+  it('an absent file drafts from the built-in document and says saving creates it', () => {
+    const draft = createAgentModesDraft(
+      documentBody({ entries: [], defaultId: null, source: { exists: false, loaded: false, mtime: null } }),
+    )
+    expect(draft.entries.map((entry) => entry.key)).toEqual(['chat', 'code', 'architect'])
+    expect(draft.default).toBe('code')
+    expect(draft.mtime).toBeNull()
+    expect(draftWillCreateFile(draft)).toBe(true)
+  })
+
+  it('a file-level finding is carried, and the draft is not silently emptied', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        entries: [],
+        defaultId: null,
+        findings: [{ kind: 'error', message: 'The agent-modes file /work/x is not valid JSON: boom (line 1, column 2)' }],
+        source: { exists: true, loaded: false },
+      }),
+    )
+    expect(draft.entries).toEqual([])
+    expect(draft.findings).toHaveLength(1)
+    expect(saveDisabledFor(draft)).toBe(true)
+  })
+})
+
+describe('slugForModeId', () => {
+  it('from a plain label', () => {
+    expect(slugForModeId('Reviewer', [], EDITOR_CAPS)).toBe('reviewer')
+  })
+
+  it('from a label with punctuation', () => {
+    expect(slugForModeId('Docs Review (v2)!', [], EDITOR_CAPS)).toBe('docs-review-v2')
+    expect(slugForModeId('  Spaced   Out  ', [], EDITOR_CAPS)).toBe('spaced-out')
+  })
+
+  it('colliding with an existing id gains a suffix', () => {
+    expect(slugForModeId('Reviewer', ['reviewer'], EDITOR_CAPS)).toBe('reviewer-2')
+    expect(slugForModeId('Reviewer', ['reviewer', 'reviewer-2'], EDITOR_CAPS)).toBe('reviewer-3')
+  })
+
+  it('stays within the payload cap, suffix included', () => {
+    const long = 'x'.repeat(80)
+    const slug = slugForModeId(long, [], EDITOR_CAPS)
+    expect(slug.length).toBeLessThanOrEqual(EDITOR_CAPS.maxIdChars)
+    // A collision at the cap cannot push the id past it: the base gives up its
+    // tail for the suffix.
+    const taken = [slug]
+    const next = slugForModeId(long, taken, EDITOR_CAPS)
+    expect(next.length).toBeLessThanOrEqual(EDITOR_CAPS.maxIdChars)
+    expect(taken).not.toContain(next)
+  })
+
+  it('follows a patched cap, not a literal', () => {
+    const caps = { ...EDITOR_CAPS, maxIdChars: 8 }
+    expect(slugForModeId('Reviewer Of Docs', [], caps)).toHaveLength(8)
+  })
+
+  it('produces an id the payload pattern accepts, even from a label that cannot start one', () => {
+    const caps = EDITOR_CAPS
+    for (const label of ['2 Fast', 'Ünicode Näme', '', '---']) {
+      const slug = slugForModeId(label, [], caps)
+      expect(slug, `label ${JSON.stringify(label)}`).toMatch(new RegExp(caps.idPattern))
+    }
+  })
+
+  it('slugForDraft judges against the ids the draft already holds', () => {
+    const draft = createAgentModesDraft(documentBody())
+    expect(slugForDraft(draft, 'Code')).toBe('code-2')
+  })
+})
+
+describe('the id field (D5)', () => {
+  beforeEach(() => {
+    resetAll()
+    resetEditor()
+  })
+
+  it('an existing mode id is read-only while a new one is editable', () => {
+    const draft = createAgentModesDraft(documentBody())
+    expect(idEditableFor(draft.entries[0])).toBe(false)
+    const created = addModeToDraft(draft, 'Reviewer')
+    expect(idEditableFor(created)).toBe(true)
+  })
+
+  it('a new id is judged against the pattern, the cap and the other ids', () => {
+    const draft = createAgentModesDraft(documentBody())
+    const created = addModeToDraft(draft, 'Reviewer')
+    expect(idValidityProblem(draft, created)).toBeNull()
+    created.key = 'Reviewer' // uppercase: the pattern wants a lowercase start
+    expect(idValidityProblem(draft, created)).toContain('must match')
+    created.key = 'x'.repeat(33)
+    expect(idValidityProblem(draft, created)).toContain('at most 32')
+    created.key = 'code'
+    expect(idValidityProblem(draft, created)).toContain('already used')
+    created.key = 'reviewer'
+    expect(idValidityProblem(draft, created)).toBeNull()
+  })
+
+  it('an existing entry is never judged by the id rule — its field is read-only', () => {
+    const draft = createAgentModesDraft(documentBody())
+    expect(idValidityProblem(draft, draft.entries[1])).toBeNull()
+  })
+})
+
+describe('the persona counters', () => {
+  beforeEach(() => {
+    resetAll()
+    resetEditor()
+  })
+
+  it('counts UTF-8 bytes, not characters', () => {
+    expect(personaByteCount('ascii')).toBe(5)
+    expect(personaByteCount('héllo wörld')).toBe(13) // two 2-byte letters
+    expect(personaByteCount('日本語')).toBe(9) // three 3-byte letters
+    expect(personaByteCount('')).toBe(0)
+  })
+
+  it('over the byte cap is invalid, and the verdict follows the payload', () => {
+    const draft = createAgentModesDraft(documentBody())
+    const text = 'a'.repeat(16385)
+    expect(personaOverByteCap(draft, text)).toBe(true)
+    draft.entries[0].personaText = text
+    expect(saveDisabledFor(draft)).toBe(true)
+    expect(blockingFindings(draft)[0].message).toContain('agents.chat.systemMessage')
+
+    // Patch the cap in the payload: the same text is fine under a bigger one,
+    // so the rule is the payload's number and not a literal in this file.
+    const roomy = createAgentModesDraft(
+      documentBody({ caps: { ...EDITOR_CAPS, maxPersonaBytes: 32768 } }),
+    )
+    roomy.entries[0].personaText = text
+    expect(personaOverByteCap(roomy, text)).toBe(false)
+    expect(saveDisabledFor(roomy)).toBe(false)
+  })
+
+  it('the line budget warns and does not block Save', () => {
+    const draft = createAgentModesDraft(documentBody())
+    const text = Array.from({ length: 20 }, (_unused, i) => `line ${i}`).join('\n')
+    const budget = personaLineBudget(draft, text)
+    expect(budget.budget).toBe(16)
+    expect(budget.lines).toBe(20)
+    expect(budget.over).toBe(true)
+    expect(budget.remaining).toBe(0)
+    expect(budget.warning).toContain('16-line')
+    draft.entries[0].personaText = text
+    expect(saveDisabledFor(draft)).toBe(false) // soft: it warns, it never blocks
+  })
+
+  it('within the budget there is nothing to warn about', () => {
+    const draft = createAgentModesDraft(documentBody())
+    const budget = personaLineBudget(draft, 'one\nthree')
+    expect(budget.over).toBe(false)
+    expect(budget.warning).toBeNull()
+    expect(budget.remaining).toBe(14)
+  })
+})
+
+describe('blockingFindings (D3)', () => {
+  beforeEach(() => {
+    resetAll()
+    resetEditor()
+  })
+
+  it('an entry error blocks Save', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        entries: [
+          editorEntry('code', EDITOR_DEFAULTS.agents.code, {
+            findings: [{ kind: 'error', message: 'agents.code.mcptool: unknown key (expected label, mcptools, lsptools, systemMessage)' }],
+          }),
+        ],
+        defaultId: 'code',
+      }),
+    )
+    expect(blockingFindings(draft).map((finding) => finding.message)).toEqual([
+      'agents.code.mcptool: unknown key (expected label, mcptools, lsptools, systemMessage)',
+    ])
+    expect(saveDisabledFor(draft)).toBe(true)
+  })
+
+  it('a file-level error blocks Save', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        findings: [{ kind: 'error', message: 'The agent-modes file /work/x "version" is 2; this benchmarkit understands version 1 only' }],
+      }),
+    )
+    expect(blockingFindings(draft)).toHaveLength(1)
+    expect(saveDisabledFor(draft)).toBe(true)
+  })
+
+  it('a note does not block Save', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        entries: [
+          editorEntry('code', EDITOR_DEFAULTS.agents.code),
+          editorEntry('x', EDITOR_DEFAULTS.agents.chat, {
+            findings: [{ kind: 'note', message: 'agents.x: "x" is defined by benchmarkit and cannot be set here; this entry is ignored' }],
+          }),
+        ],
+      }),
+    )
+    expect(blockingFindings(draft)).toEqual([])
+    expect(saveDisabledFor(draft)).toBe(false)
+  })
+
+  it('an entry with no form blocks until it is deleted', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        entries: [
+          editorEntry('code', EDITOR_DEFAULTS.agents.code),
+          editorEntry('broken', {}, { hasForm: false, fields: {}, findings: [{ kind: 'error', message: 'agents.broken: is a string, not an object with label, mcptools, lsptools, systemMessage' }] }),
+        ],
+      }),
+    )
+    expect(saveDisabledFor(draft)).toBe(true)
+    expect(deleteModeFromDraft(draft, 'broken')).toBe(true)
+    expect(saveDisabledFor(draft)).toBe(false)
+  })
+
+  it('a finding the form can only produce validly for is resolved by the draft', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        entries: [
+          editorEntry('code', { label: 'Code', mcptools: true }, {
+            findings: [
+              { kind: 'error', message: 'agents.code.label: is a number, not a string' },
+              { kind: 'error', message: 'agents.code.mcptools: is a string, not a boolean: write "mcptools": true or "mcptools": false' },
+            ],
+          }),
+        ],
+      }),
+    )
+    // The draft holds a string and a boolean for both — the shapes the finding
+    // named no longer exist, so the entry is fixed.
+    expect(blockingFindings(draft)).toEqual([])
+  })
+
+  it('a persona over the cap blocks even when the file said it was fine', () => {
+    const draft = createAgentModesDraft(documentBody())
+    draft.entries[1].personaText = 'b'.repeat(EDITOR_CAPS.maxPersonaBytes + 1)
+    expect(saveDisabledFor(draft)).toBe(true)
+    draft.entries[1].personaText = 'short'
+    expect(saveDisabledFor(draft)).toBe(false)
+  })
+
+  it('a refused file default is answered by the Common tab, not by Save', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        defaultId: 'gone', // the file's own value, naming nothing it declares
+        findings: [{ kind: 'error', message: 'The agent-modes file /work/x "default" is "gone", which is not one of the modes it declares' }],
+      }),
+    )
+    // The refused value is never adopted as a choice; the draft starts on a
+    // default that *is* declared, so the finding is already answered and does
+    // not hold up the Save the user came here to make.
+    expect(draft.default).toBe('code')
+    expect(saveDisabledFor(draft)).toBe(false)
+  })
+
+  it('a default naming no declared mode blocks Save', () => {
+    const draft = createAgentModesDraft(documentBody())
+    draft.default = 'gone'
+    expect(saveDisabledFor(draft)).toBe(true)
+    expect(blockingFindings(draft)[0].message).toContain('must name one of the modes')
+  })
+
+  it('the mode cap blocks past the cap, and Create is inert at it', () => {
+    const entries = Array.from({ length: 16 }, (_unused, i) =>
+      editorEntry(`mode${i}`, { label: `Mode ${i}`, mcptools: false, lsptools: false }),
+    )
+    const atCap = createAgentModesDraft(documentBody({ entries, defaultId: 'mode0' }))
+    expect(modeCountProblem(atCap)).toBeNull()
+    expect(saveDisabledFor(atCap)).toBe(false)
+    expect(createDisabledFor(atCap)).toBe(true) // the cap is felt at the button, not at Save
+
+    entries.push(editorEntry('mode16', { label: 'Mode 16' }))
+    const over = createAgentModesDraft(
+      documentBody({
+        entries,
+        defaultId: 'mode0',
+        findings: [{ kind: 'error', message: 'agents: declares more than the 16 mode(s) this file may hold' }],
+      }),
+    )
+    expect(modeCountProblem(over)).toContain('17 modes')
+    expect(saveDisabledFor(over)).toBe(true)
+  })
+
+  it('a label over the label cap is not a form error — the server trims it', () => {
+    const draft = createAgentModesDraft(
+      documentBody({
+        entries: [editorEntry('code', { ...EDITOR_DEFAULTS.agents.code, label: 'L'.repeat(60) })],
+      }),
+    )
+    expect(blockingFindings(draft)).toEqual([])
+    expect(saveDisabledFor(draft)).toBe(false)
+  })
+
+  it('a draft with no entries at all is not blocked by the default rule', () => {
+    const draft = createAgentModesDraft(
+      documentBody({ entries: [], defaultId: null, source: { exists: true, loaded: true } }),
+    )
+    expect(draft.default).toBe('code') // the built-in document's own default
+    expect(saveDisabledFor(draft)).toBe(false)
+  })
+})
+
+describe('dirty tracking', () => {
+  beforeEach(() => {
+    resetAll()
+    resetEditor()
+  })
+
+  it('an untouched draft is clean, a touched one is dirty', () => {
+    const draft = createAgentModesDraft(documentBody())
+    expect(draftIsDirty(draft)).toBe(false)
+    draft.entries[0].label = 'Chatting'
+    expect(draftIsDirty(draft)).toBe(true)
+  })
+
+  it('Create makes the draft dirty without writing anything', () => {
+    stubEditorRoutes()
+    const draft = createAgentModesDraft(documentBody())
+    addModeToDraft(draft, 'Reviewer')
+    expect(draftIsDirty(draft)).toBe(true)
+    expect(draft.entries).toHaveLength(4)
+    expect(fetch.mock.calls).toHaveLength(0) // nothing is written until Save
+  })
+
+  it('Delete is refused for the mode that is the default', () => {
+    const draft = createAgentModesDraft(documentBody())
+    expect(deleteDisabledFor(draft, 'code')).toBe(true)
+    expect(deleteModeFromDraft(draft, 'code')).toBe(false)
+    expect(deleteDisabledFor(draft, 'chat')).toBe(false)
+    expect(deleteModeFromDraft(draft, 'chat')).toBe(true)
+  })
+})
+
+describe('the two calls', () => {
+  beforeEach(() => {
+    resetAll()
+    resetEditor()
+  })
+
+  it('the document read answers a draft and touches nothing else', async () => {
+    stubEditorRoutes()
+    await loadAgentModes() // the dropdown's own list
+    const before = { ...agentModes }
+    const draft = await fetchAgentModesDocument()
+    expect(draft.entries.map((entry) => entry.key)).toEqual(['chat', 'code', 'architect'])
+    expect(agentModes.modes).toEqual(before.modes)
+    expect(agentModes.current).toBe(before.current)
+  })
+
+  it('the save body is D6 shape: no version, no readme, entries in draft order', async () => {
+    const calls = []
+    stubEditorRoutes({ save: saveResponse(), calls })
+    const draft = await fetchAgentModesDocument()
+    addModeToDraft(draft, 'Reviewer')
+    draft.default = 'reviewer'
+    await saveAgentModesDocument(draft)
+    expect(calls.map((call) => call.key)).toEqual([
+      '/api/agent-modes/document',
+      '/api/agent-modes/save',
+    ])
+    const body = JSON.parse(calls[1].init.body)
+    expect('version' in body.document).toBe(false)
+    expect('readme' in body.document).toBe(false)
+    expect(Object.keys(body.document.agents)).toEqual(['chat', 'code', 'architect', 'reviewer'])
+    expect(body.document.default).toBe('reviewer')
+    expect(body.mtime).toBe('1700000000000000000') // the token the read returned
+    // A new mode with no persona says nothing about the persona at all, and an
+    // existing one keeps its text — as the textarea holds it (a string): the
+    // writer is what chooses the JSON form (D6), not the client.
+    expect('systemMessage' in body.document.agents.reviewer).toBe(false)
+    expect(body.document.agents.chat.systemMessage).toBe('You never call a tool.')
+    expect(body.document.agents.architect.lsptools).toBe(false)
+  })
+
+  it('a failed document read says so and leaves the dropdown exactly as it was', async () => {
+    stubEditorRoutes({ document: null })
+    await loadAgentModes() // the dropdown's reader still works
+    stubEditorRoutes({ document: null })
+    const draft = await fetchAgentModesDocument()
+    expect(draft).toBeNull()
+    expect(useAgentModes().editor.error).toContain('500')
+    expect(agentModes.loaded).toBe(true)
+    expect(agentModes.current).toBe('code')
+  })
+
+  it('a save reloads the dropdown from its own response — no second round-trip', async () => {
+    const calls = []
+    const modes = [
+      { id: 'chat', label: 'Chat', mcptools: false, lsptools: false, editable: true },
+      { id: 'code', label: 'Code', mcptools: true, lsptools: true, editable: true },
+      { id: 'reviewer', label: 'Reviewer', mcptools: true, lsptools: false, editable: true },
+      { id: RESERVED_ID, label: 'Reserved', mcptools: true, lsptools: false, editable: false },
+    ]
+    stubEditorRoutes({ save: saveResponse({ defaultId: 'reviewer', modes }), calls })
+    await loadAgentModes()
+    const fetchesBefore = fetch.mock.calls.length
+    const draft = await fetchAgentModesDocument()
+    addModeToDraft(draft, 'Reviewer')
+    draft.default = 'reviewer'
+    const ok = await saveAgentModesDocument(draft)
+    expect(ok).toBe(true)
+    // Only the two editor calls happened after the dropdown's own load: the
+    // list was not re-fetched.
+    expect(fetch.mock.calls.length).toBe(fetchesBefore + 2)
+    expect(calls.map((call) => call.key)).toEqual([
+      '/api/agent-modes/document',
+      '/api/agent-modes/save',
+    ])
+    expect(agentModes.modes.map((mode) => mode.id)).toEqual(['chat', 'code', 'reviewer', RESERVED_ID])
+    expect(agentModes.current).toBe('reviewer') // D9: the selection moves to the new default
+    expect(agentModes.default).toBe('reviewer')
+  })
+
+  it('a saved draft is clean and carries the new token', async () => {
+    stubEditorRoutes({ save: saveResponse({ mtime: '1700000009000000000' }) })
+    const draft = await fetchAgentModesDocument()
+    draft.entries[0].label = 'Chatting'
+    expect(draftIsDirty(draft)).toBe(true)
+    expect(await saveAgentModesDocument(draft)).toBe(true)
+    expect(draftIsDirty(draft)).toBe(false)
+    expect(draft.mtime).toBe('1700000009000000000')
+  })
+
+  it('a 409 leaves the dialog open with the conflict named and the draft intact', async () => {
+    stubEditorRoutes({
+      save: {
+        __fail: true,
+        status: 409,
+        detail: {
+          reason: 'stale',
+          path: '/work/.nojae/agent-modes.json',
+          diskMtime: '1700000005000000000',
+          documentMtime: '1700000000000000000',
+        },
+      },
+    })
+    await loadAgentModes()
+    const editor = useAgentModes().editor
+    editor.open = true
+    const draft = await fetchAgentModesDocument()
+    draft.entries[0].label = 'Chatting'
+    expect(await saveAgentModesDocument(draft)).toBe(false)
+    expect(editor.open).toBe(true) // stays open, D7
+    expect(editor.conflict).toEqual({
+      path: '/work/.nojae/agent-modes.json',
+      diskMtime: '1700000005000000000',
+      documentMtime: '1700000000000000000',
+    })
+    expect(editor.error).toBeNull()
+    // Nothing was merged, nothing was overwritten, and the user's text survives.
+    expect(draft.entries[0].label).toBe('Chatting')
+    expect(draftIsDirty(draft)).toBe(true)
+    expect(draft.mtime).toBe('1700000000000000000')
+    expect(agentModes.current).toBe('code') // the dropdown was not touched
+  })
+
+  it('a saved file whose reload of the verdict failed is still said to be saved', async () => {
+    // A 200 whose body carries no modes: the bytes landed, only the dropdown's
+    // reload *of them* failed. The previous list stands and `loaded` goes false
+    // — the same non-destructive degradation `loadAgentModes` already does.
+    stubEditorRoutes({ save: { saved: true, created: false, modes: [], default: 'code', findings: [], source: {} } })
+    await loadAgentModes()
+    const draft = await fetchAgentModesDocument()
+    expect(await saveAgentModesDocument(draft)).toBe(true)
+    expect(agentModes.loaded).toBe(false)
+    expect(agentModes.current).toBe('code') // never silently downgraded
+    expect(agentModePayloadId()).toBeNull() // so send() omits the key
+    expect(useAgentModes().editor.error).toBeNull()
+  })
+
+  it('a server 422 shows its findings rather than swallowing them', async () => {
+    stubEditorRoutes({
+      save: {
+        __fail: true,
+        status: 422,
+        detail: { reason: 'invalid', findings: [{ kind: 'error', message: 'agents.x: unknown key' }] },
+      },
+    })
+    const draft = await fetchAgentModesDocument()
+    expect(await saveAgentModesDocument(draft)).toBe(false)
+    expect(useAgentModes().editor.invalidFindings).toEqual([
+      { kind: 'error', message: 'agents.x: unknown key' },
+    ])
+  })
+})
+
+describe('the D9 reset decision', () => {
+  beforeEach(() => {
+    resetAll()
+    resetEditor()
+  })
+
+  it('unlocked: the selection moves to the newly set default', async () => {
+    stubEditorRoutes({ save: saveResponse({ defaultId: 'architect' }) })
+    await loadAgentModes()
+    setAgentMode('chat')
+    const draft = await fetchAgentModesDocument()
+    expect(resetDecisionAfterSave()).toEqual({ move: true, reason: null })
+    expect(await saveAgentModesDocument(draft)).toBe(true)
+    expect(agentModes.current).toBe('architect')
+    expect(agentModes.notice).toBeNull()
+  })
+
+  it('locked: it does not move, and the quiet line says why', async () => {
+    stubEditorRoutes({ save: saveResponse({ defaultId: 'code' }) })
+    await loadAgentModes()
+    chat.messages = [{ role: 'user', raw: 'one turn', html: '', images: [] }]
+    setAgentMode(RESERVED_ID)
+    expect(agentModes.locked).toBe(true)
+    const decision = resetDecisionAfterSave()
+    expect(decision.move).toBe(false)
+    expect(decision.reason).toContain('fixed once it has a turn')
+    const draft = await fetchAgentModesDocument()
+    expect(await saveAgentModesDocument(draft)).toBe(true)
+    expect(agentModes.current).toBe(RESERVED_ID) // the lock survives the save
+    expect(agentModes.locked).toBe(true)
+    expect(agentModes.notice).toContain('did not move')
+    expect(agentModes.notice).toContain('fixed once it has a turn')
+  })
+
+  it('a locked selection the save deleted falls back out loud, not onto nothing', async () => {
+    // The saved document no longer declares the mode the lock was holding, so
+    // there is nothing to keep: pointing `current` at a mode this workspace no
+    // longer has would be a 422 on the next turn.
+    const modes = [
+      { id: 'chat', label: 'Chat', mcptools: false, lsptools: false, editable: true },
+      { id: 'code', label: 'Code', mcptools: true, lsptools: true, editable: true },
+    ]
+    stubEditorRoutes({ save: saveResponse({ defaultId: 'code', modes }) })
+    await loadAgentModes()
+    chat.messages = [{ role: 'user', raw: 'one turn', html: '', images: [] }]
+    setAgentMode(RESERVED_ID)
+    expect(agentModes.locked).toBe(true)
+    const draft = await fetchAgentModesDocument()
+    deleteModeFromDraft(draft, 'architect') // the response above is what this wrote
+    expect(await saveAgentModesDocument(draft)).toBe(true)
+    expect(agentModes.current).toBe('code')
+    expect(agentModes.locked).toBe(false) // the mode that owned the contract is gone
+    expect(agentModes.notice).toContain(`"${RESERVED_ID}"`)
+    expect(agentModes.notice).toContain('using code')
+  })
+
+  it('a running lot: its mode is pinned at launch and a save cannot move it', async () => {
+    stubEditorRoutes({ save: saveResponse({ defaultId: 'architect' }) })
+    await loadAgentModes()
+    batch.active = true
+    const decision = resetDecisionAfterSave({ batchActive: true })
+    expect(decision.move).toBe(false)
+    expect(decision.reason).toContain('running lot')
+    const draft = await fetchAgentModesDocument()
+    expect(await saveAgentModesDocument(draft, { batchActive: true })).toBe(true)
+    expect(agentModes.current).toBe('code')
+    expect(agentModes.notice).toContain('running lot')
+  })
+
+  it('a deleted-while-selected mode lands on the default', async () => {
+    // The save response publishes the new verdict the way `GET /api/agent-modes`
+    // does — the app-owned mode last, appended by the server — and `architect`
+    // is gone from it, because the save wrote the draft that deleted it.
+    const modes = [
+      { id: 'chat', label: 'Chat', mcptools: false, lsptools: false, editable: true },
+      { id: 'code', label: 'Code', mcptools: true, lsptools: true, editable: true },
+      { id: RESERVED_ID, label: 'Reserved', mcptools: true, lsptools: false, editable: false },
+    ]
+    stubEditorRoutes({ save: saveResponse({ defaultId: 'code', modes }) })
+    await loadAgentModes()
+    setAgentMode('architect')
+    const draft = await fetchAgentModesDocument()
+    deleteModeFromDraft(draft, 'architect') // the selected one
+    expect(await saveAgentModesDocument(draft)).toBe(true)
+    expect(agentModes.current).toBe('code')
+    expect(agentModes.modes.map((mode) => mode.id)).toEqual(['chat', 'code', RESERVED_ID])
   })
 })
 

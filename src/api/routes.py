@@ -52,6 +52,7 @@ from src.core import editorfs
 from src.core.editorfs import fscase, policy_seed
 from src.core.editorfs.policy import _is_within
 from src.core import agent_modes
+from src.core import agent_modes_write
 from src.core import prompt_helpers
 from src.core import termhub
 from src.core.termhub import policy as term_policy
@@ -270,6 +271,36 @@ class FileCreateIn(BaseModel):
 
     path: str
     dir: bool = False
+
+
+class AgentModesSaveIn(BaseModel):
+    """The whole agent-modes document, back to disk (``POST /api/agent-modes/save``).
+
+    ``document`` is the dialog's own shape: its entries in the dialog's order plus
+    its ``default``. It stays **loose JSON** here on purpose — the rules about what
+    a modes document may hold (the closed vocabulary, the caps, a reserved id, a
+    ``default`` naming no declared mode) are :mod:`core.agent_modes_write`'s, and
+    they are reported as the *loader's* findings naming the JSON pointer. A Pydantic
+    model mirroring those rules here would answer a broken entry with FastAPI's
+    field-path error instead of the sentence the dialog already knows how to put on
+    the field, and it would be a second voice for one vocabulary.
+
+    What *is* validated here is the transport half: ``document`` must be an object
+    (a body holding a list or a string could not name entries at all), and
+    ``mtime`` is the token ``GET /api/agent-modes/document`` published — the same
+    optimistic-concurrency token ``FileSaveIn.ifUnmodifiedSince`` is, in the string
+    spelling the document read hands out. A malformed *body* is a 422 from FastAPI;
+    a malformed *document* is a 422 from the core.
+
+    ``version`` and ``readme`` are deliberately not fields: D6 says the version is
+    the app's constant and the readme belongs to the file on disk, so a body that
+    carried them would be asking for something this save ignores.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    document: Dict[str, Any]
+    mtime: Optional[str] = None
 
 
 # Base64-decoded image size limit for multimodal chat messages (the client
@@ -2212,6 +2243,101 @@ def build_router(state: RunState) -> APIRouter:
                 for finding in resolved["findings"]
             ],
         }
+
+    @router.get("/agent-modes/document")
+    def get_agent_modes_document() -> Dict[str, Any]:
+        """What this workspace's modes file **itself** says (the editor's read).
+
+        The editor's half of the two reads, and the reason it is a second route
+        rather than a wider version of the one above: ``GET /api/agent-modes``
+        answers *what can I select right now* (valid entries, plus the built-in
+        fallback, plus the app-owned mode last, no persona), while this answers
+        *what does my file say* — the file's own entries in the file's own order,
+        nothing added and nothing dropped, each persona verbatim in whichever JSON
+        form the file wrote it, and a **broken entry shown** with the finding that
+        names it. A dialog fed by the dropdown's list would show three modes for a
+        file that holds four, and its save would write back three.
+
+        All of the rules live in :func:`src.core.agent_modes.read_agent_modes_document`;
+        this route only serialises its ``ModeFinding`` objects into the same
+        ``{"kind", "message"}`` shape every other modes payload uses. Two things it
+        carries that the dropdown's read must not:
+
+        * ``source.mtime`` — the token the save below compares against, so this read
+          is **not cached** (a cached token would hand out a stale one and defeat
+          the conflict guard);
+        * ``caps`` / ``defaults`` — the numbers the form enforces and the built-in
+          document, so no cap is spelled in the client.
+
+        A broken file answers **200** like the reader does: the dialog is most
+        useful exactly then, and its findings are what the form puts on each field.
+        The app-owned mode is absent from ``entries`` (a hand-written entry for it
+        stays a *note* naming the pointer, which is correct server data and is not
+        filtered out).
+
+        Browser-only, and still no ``?path=``: this is a purpose-built reader for
+        one reserved-folder file — the pattern ``GET /api/path-location`` plus
+        ``policy_file_state`` establishes — never a way to read the folder.
+        """
+        document = agent_modes.read_agent_modes_document()
+
+        def rendered(findings: List[Any]) -> List[Dict[str, str]]:
+            return [{"kind": finding.kind, "message": finding.message}
+                    for finding in findings]
+
+        return {
+            **document,
+            "entries": [
+                {**entry, "findings": rendered(entry["findings"])}
+                for entry in document["entries"]
+            ],
+            "findings": rendered(document["findings"]),
+        }
+
+    @router.post("/agent-modes/save")
+    def post_agent_modes_save(body: AgentModesSaveIn) -> Dict[str, Any]:
+        """The whole modes document, back to disk (the editor's write).
+
+        The rules all live in :func:`src.core.agent_modes_write.save_agent_modes_document`:
+        it refuses what the loader itself would drop (422 whose ``detail`` is the
+        findings naming each JSON pointer), refuses a body declaring a mode
+        benchmarkit owns, guards against landing on someone else's edit (409 whose
+        ``detail`` carries **both** ``mtime`` numbers), refuses to overwrite bytes
+        its own reader refuses, writes D6's shape (``version`` from the app's
+        constant, ``readme`` preserved from the file, entries in the dialog's order,
+        a persona as a list only when no line is blank), keeps the bytes it replaced
+        in the app's backup folder, and creates exclusively when the file was
+        absent. This route only maps those errors to their status — it decides
+        nothing about the file.
+
+        Refused while a chat reply streams: that reply is the only other writer of
+        the workspace, so this is the same gate every Editor write asks. It is
+        deliberately **not** gated during a benchmark run — a run never consults a
+        mode, so gating it would be a rule with no race behind it.
+
+        The answer is the **new** verdict in the shape ``GET /api/agent-modes``
+        publishes, plus the new ``mtime``, so the dropdown reloads from this response
+        instead of a second round-trip.
+
+        Browser-only, like every other write route: no connector tool, no LSP spec
+        and no chat path may reach it — which matters here more than anywhere,
+        because this file decides whether tools exist at all.
+        """
+        _refuse_if_chat_streaming("save the agent-modes file")
+        try:
+            return agent_modes_write.save_agent_modes_document(
+                body.document,
+                body.mtime,
+                backup=editorfs.backup_for_write,
+            )
+        except (agent_modes_write.AgentModesSaveConflict,
+                agent_modes_write.AgentModesDocumentInvalid) as exc:
+            # The object, not the sentence: a conflict has to be *acted on* (the
+            # dialog stays open and names both numbers) and an invalid document has
+            # to be shown per field, which needs the findings, not prose.
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail_object)
+        except agent_modes_write.AgentModesSaveError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
     @router.post("/chat")
     async def post_chat(body: ChatIn, request: Request) -> StreamingResponse:

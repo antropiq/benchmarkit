@@ -15,6 +15,7 @@ from src.api import routes
 from src.core import agent_modes
 from src.core import agent_modes_defaults as modes_defaults
 from src.core import batch as batch_core
+from src.core import editorfs
 from src.core import prompt_helpers
 
 
@@ -1376,6 +1377,413 @@ class TestAgentModesEndpoint:
             "zulu", "alpha", "mike", modes_defaults.TODO_BUILDER_MODE_ID,
         ]
         assert body["default"] == "mike"
+
+
+def _modes_file(root: Path) -> Path:
+    """The scratch root's modes file, built from the module's own names."""
+    return root / agent_modes.POLICY_DIRNAME / agent_modes.AGENT_MODES_FILENAME
+
+
+@pytest.fixture
+def mode_backups(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A private backup folder, so a modes save never reads the app's real chain.
+
+    The save route hands the writer ``editorfs.backup_for_write``, which resolves
+    ``BACKUP_DIR`` at call time — the same pin ``tests/test_editorfs_write.py``'s
+    ``backups`` fixture uses, so this suite asserts the one chain.
+    """
+    folder = tmp_path / "app-backups"
+    monkeypatch.setattr(editorfs.constants, "BACKUP_DIR", folder)
+    return folder
+
+
+class TestAgentModesDocumentEndpoint:
+    """eds-03: ``GET /api/agent-modes/document`` is the editor's read (D2)."""
+
+    def test_it_takes_no_query_parameter(self, client, mode_root):
+        # The reader's rule, unchanged: a purpose-built reader for one file, never
+        # a way to reach the reserved folder through a parameter.
+        spec = client.get("/openapi.json").json()["paths"]
+        operation = spec["/api/agent-modes/document"]["get"]
+        assert {p["name"] for p in operation.get("parameters", [])} == set()
+
+    def test_an_absent_file_answers_the_defaults_draft_and_a_null_mtime(
+        self, client, mode_root
+    ):
+        response = client.get("/api/agent-modes/document")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["entries"] == []
+        assert body["default"] is None
+        assert "readme" not in body, "an absent file has no readme to preserve"
+        assert body["findings"] == []
+        assert body["source"] == {
+            "path": str(_modes_file(mode_root)),
+            "exists": False,
+            "loaded": False,
+            "mtime": None,
+        }
+        # D3's one legitimate draft: the built-in document, and the caps the form
+        # enforces — no cap is spelled in the client, so they travel with the file.
+        assert body["defaults"]["agents"]
+        assert body["caps"] == {
+            "maxModes": agent_modes.MAX_MODES,
+            "maxIdChars": agent_modes.MAX_MODE_ID_CHARS,
+            "idPattern": agent_modes.MODE_ID_PATTERN,
+            "maxLabelChars": agent_modes.MAX_MODE_LABEL_CHARS,
+            "maxPersonaBytes": agent_modes.MAX_MODE_SYSTEM_MESSAGE_BYTES,
+            "maxPersonaLines": agent_modes.MAX_MODE_PERSONA_LINES,
+        }
+        # A GET never seeds (the same rule as the dropdown's reader).
+        assert not _modes_file(mode_root).exists()
+
+    def test_the_files_own_entries_answer_in_the_files_order_with_personas(
+        self, client, mode_root
+    ):
+        _write_modes(mode_root, {
+            "version": agent_modes.AGENT_MODES_VERSION,
+            "readme": ["Hand-written prose.", "Preserved verbatim."],
+            "default": "zulu",
+            "agents": {
+                "zulu": {"label": "Zulu", "mcptools": True, "lsptools": False,
+                         "systemMessage": "Zulu persona line."},
+                "alpha": {"label": "Alpha", "mcptools": False, "lsptools": True,
+                          "systemMessage": ["Alpha line one.", "Alpha line two."]},
+            },
+        })
+        body = client.get("/api/agent-modes/document").json()
+        assert [entry["key"] for entry in body["entries"]] == ["zulu", "alpha"]
+        zulu, alpha = body["entries"]
+        # Persona verbatim, in whichever JSON form the file wrote it — never joined.
+        assert zulu["fields"]["systemMessage"] == "Zulu persona line."
+        assert alpha["fields"]["systemMessage"] == ["Alpha line one.", "Alpha line two."]
+        assert zulu["hasForm"] is True and zulu["findings"] == []
+        assert body["default"] == "zulu"
+        assert body["readme"] == ["Hand-written prose.", "Preserved verbatim."]
+        assert body["findings"] == []
+        assert body["source"]["exists"] is True
+        assert body["source"]["loaded"] is True
+        # The token a save compares against, in the string spelling the read hands out.
+        assert body["source"]["mtime"] == str(
+            _modes_file(mode_root).stat().st_mtime_ns
+        )
+
+    def test_a_hand_broken_file_lists_the_broken_entry_with_its_finding(
+        self, client, mode_root
+    ):
+        # D2's contrast with the dropdown's reader, on the same file: the reader
+        # drops the entry (three modes answer), this read shows it (four entries),
+        # because a dialog fed by the reader would save back three.
+        _write_modes(mode_root, _modes_document({
+            "chat": {"label": "Chat", "mcptools": False, "lsptools": False},
+            "code": {"label": "Code", "mcptools": True, "lsptools": True},
+            "architect": {"label": "Architect", "mcptool": True},
+        }))
+        response = client.get("/api/agent-modes/document")
+        assert response.status_code == 200
+        body = response.json()
+        assert [entry["key"] for entry in body["entries"]] == [
+            "chat", "code", "architect",
+        ]
+        broken = body["entries"][2]
+        assert broken["hasForm"] is True, "the tab is a normal one; the finding holds Save"
+        assert len(broken["findings"]) == 1
+        finding = broken["findings"][0]
+        assert set(finding) == {"kind", "message"}
+        assert finding["kind"] == "error"
+        assert "agents.architect.mcptool" in finding["message"]
+        assert body["findings"] == [finding]
+        # The reader, same file, same moment: the entry is gone from its list.
+        assert [mode["id"] for mode in client.get("/api/agent-modes").json()["modes"]] == [
+            "chat", "code", modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+
+    def test_an_entry_with_no_fields_to_edit_is_still_listed(self, client, mode_root):
+        # D3's raw-key tab: a value that is not an object and a key outside the
+        # pattern both get a tab with Delete only — visible, which is what keeps a
+        # save from quietly dropping them.
+        _write_modes(mode_root, _modes_document({
+            "code": {"label": "Code"},
+            "Broken Id": "not an object",
+        }))
+        body = client.get("/api/agent-modes/document").json()
+        assert [entry["key"] for entry in body["entries"]] == ["code", "Broken Id"]
+        odd = body["entries"][1]
+        assert odd["hasForm"] is False
+        assert odd["fields"] == {}
+        assert [finding["kind"] for finding in odd["findings"]] == ["error"]
+
+    def test_the_document_payload_carries_no_app_owned_entry(self, client, mode_root):
+        # D4: the dialog never learns the reserved id. A hand-written entry for it
+        # keeps today's shape — a note naming the pointer, no tab — and the note is
+        # server data, not something to filter out.
+        agent_modes.ensure_agent_modes_file(str(mode_root))
+        body = client.get("/api/agent-modes/document").json()
+        assert [entry["key"] for entry in body["entries"]] == [
+            modes_defaults.CHAT_MODE_ID, modes_defaults.CODE_MODE_ID,
+            modes_defaults.ARCHITECT_MODE_ID,
+        ]
+
+        _write_modes(mode_root, _modes_document({
+            "chat": {"label": "My Chat"},
+            modes_defaults.TODO_BUILDER_MODE_ID: {"label": "Mine"},
+        }, default="chat"))
+        second = client.get("/api/agent-modes/document").json()
+        assert [entry["key"] for entry in second["entries"]] == ["chat"]
+        assert [finding["kind"] for finding in second["findings"]] == ["note"]
+        assert "cannot be set here" in second["findings"][0]["message"]
+
+    def test_the_document_read_is_not_cached(self, client, mode_root):
+        # The save compares against this token, so a cached mtime would defeat the
+        # conflict guard: a hand-edit between two reads has to move it.
+        _write_modes(mode_root, _modes_document({"code": {"label": "Code"}}))
+        first = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        _write_modes(mode_root, _modes_document({
+            "code": {"label": "Code"}, "extra": {"label": "Extra"},
+        }, default="extra"))
+        second = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        assert first != second
+
+
+class TestAgentModesSaveEndpoint:
+    """eds-03: ``POST /api/agent-modes/save`` is the whole-document write."""
+
+    def test_a_save_writes_the_file_and_answers_the_new_verdict(
+        self, client, mode_root, mode_backups
+    ):
+        _write_modes(mode_root, _modes_document({"code": {"label": "Code"}}))
+        token = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        response = client.post("/api/agent-modes/save", json={
+            "document": {
+                "default": "reviewer",
+                "agents": {
+                    "code": {"label": "Code", "mcptools": True, "lsptools": True},
+                    "reviewer": {"label": "Reviewer", "mcptools": False,
+                                 "lsptools": False,
+                                 "systemMessage": ["Review carefully."]},
+                },
+            },
+            "mtime": token,
+        })
+        assert response.status_code == 200
+        body = response.json()
+        assert body["saved"] is True and body["created"] is False
+        assert body["backedUp"] is True
+        # D9: the new verdict in the dropdown's shape (the app-owned mode appended
+        # last like every other verdict), so no second round-trip.
+        assert [mode["id"] for mode in body["modes"]] == [
+            "code", "reviewer", modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+        assert body["default"] == "reviewer"
+        assert body["findings"] == []
+        assert body["source"]["exists"] is True
+        assert body["source"]["mtime"] == str(_modes_file(mode_root).stat().st_mtime_ns)
+        # What landed on disk, and the bytes it replaced.
+        written = json.loads(_modes_file(mode_root).read_text(encoding="utf-8"))
+        assert list(written["agents"]) == ["code", "reviewer"]
+        assert written["version"] == agent_modes.AGENT_MODES_VERSION
+        chain = editorfs.files.list_backups(Path(agent_modes.agent_modes_path()))
+        assert len(chain) == 1
+        assert json.loads(Path(chain[0]).read_text(encoding="utf-8"))["agents"] == {
+            "code": {"label": "Code"}
+        }
+
+    def test_a_save_of_an_absent_file_creates_it_exclusively_with_the_readme(
+        self, client, mode_root, mode_backups
+    ):
+        response = client.post("/api/agent-modes/save", json={
+            "document": {"default": "code",
+                         "agents": {"code": {"label": "Code"}}},
+            "mtime": None,
+        })
+        assert response.status_code == 200
+        body = response.json()
+        assert body["created"] is True and body["backedUp"] is False
+        written = json.loads(_modes_file(mode_root).read_text(encoding="utf-8"))
+        assert written["readme"], "a created file gets the built-in readme"
+        assert not editorfs.files.list_backups(Path(agent_modes.agent_modes_path()))
+
+    def test_a_save_against_a_moved_file_is_409_carrying_both_numbers(
+        self, client, mode_root, mode_backups
+    ):
+        _write_modes(mode_root, _modes_document({"code": {"label": "Code"}}))
+        stale = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        _write_modes(mode_root, _modes_document({
+            "code": {"label": "Code"}, "someone": {"label": "Else"},
+        }, default="someone"))
+        before = _modes_file(mode_root).read_text(encoding="utf-8")
+
+        response = client.post("/api/agent-modes/save", json={
+            "document": {"default": "code", "agents": {"code": {"label": "Mine"}}},
+            "mtime": stale,
+        })
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["reason"] == "stale"
+        assert detail["diskMtime"] == str(_modes_file(mode_root).stat().st_mtime_ns)
+        assert detail["documentMtime"] == stale
+        assert _modes_file(mode_root).read_text(encoding="utf-8") == before
+        assert not editorfs.files.list_backups(Path(agent_modes.agent_modes_path()))
+
+    def test_a_save_declaring_a_reserved_id_is_422_and_the_disk_is_untouched(
+        self, client, mode_root, mode_backups
+    ):
+        _write_modes(mode_root, _modes_document({"code": {"label": "Code"}}))
+        before = _modes_file(mode_root).read_text(encoding="utf-8")
+        token = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+
+        response = client.post("/api/agent-modes/save", json={
+            "document": {
+                "default": "code",
+                "agents": {
+                    "code": {"label": "Code"},
+                    modes_defaults.TODO_BUILDER_MODE_ID: {"label": "Mine"},
+                },
+            },
+            "mtime": token,
+        })
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail["reason"] == "invalid"
+        assert any(modes_defaults.TODO_BUILDER_MODE_ID in item["message"]
+                   for item in detail["findings"])
+        assert _modes_file(mode_root).read_text(encoding="utf-8") == before
+
+    def test_a_save_of_a_document_the_loader_would_drop_is_422(
+        self, client, mode_root, mode_backups
+    ):
+        # D3's server-side half: what the reader would drop, the writer refuses —
+        # naming the JSON pointer rather than a Pydantic field path.
+        _write_modes(mode_root, _modes_document({"code": {"label": "Code"}}))
+        token = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        response = client.post("/api/agent-modes/save", json={
+            "document": {
+                "default": "code",
+                "agents": {"code": {"label": "Code", "mcptool": True}},
+            },
+            "mtime": token,
+        })
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail["findings"][0]["kind"] == "error"
+        assert "agents.code.mcptool" in detail["findings"][0]["message"]
+        assert json.loads(_modes_file(mode_root).read_text(encoding="utf-8")) == {
+            "version": agent_modes.AGENT_MODES_VERSION,
+            "default": "code",
+            "agents": {"code": {"label": "Code"}},
+        }
+
+    def test_a_save_over_bytes_the_reader_refuses_is_422(
+        self, client, mode_root, mode_backups
+    ):
+        # D3: a file-level finding holds the Save button down, and a server that
+        # wrote over those bytes would undo that.
+        folder = mode_root / agent_modes.POLICY_DIRNAME
+        folder.mkdir(parents=True, exist_ok=True)
+        _modes_file(mode_root).write_text("{not json", encoding="utf-8")
+        # The token the document read hands out for those bytes: the guard has to
+        # match before the writer can say anything about what is inside.
+        token = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        response = client.post("/api/agent-modes/save", json={
+            "document": {"default": "code", "agents": {"code": {"label": "Code"}}},
+            "mtime": token,
+        })
+        assert response.status_code == 422
+        assert "is not valid JSON" in response.json()["detail"]["findings"][0]["message"]
+        assert _modes_file(mode_root).read_text(encoding="utf-8") == "{not json"
+        assert not editorfs.files.list_backups(Path(agent_modes.agent_modes_path()))
+
+    def test_a_malformed_body_is_a_422_never_a_500(self, client, mode_root):
+        # The transport half of the validation discipline: FastAPI's own 422. The
+        # token is the string the document read published, so a body holding a
+        # number or a bool for it is refused here rather than reaching the guard.
+        assert client.post("/api/agent-modes/save", json={"nope": 1}).status_code == 422
+        assert client.post("/api/agent-modes/save", json={
+            "document": ["not", "an", "object"],
+        }).status_code == 422
+        assert client.post("/api/agent-modes/save", json={
+            "document": {"default": "code", "agents": {}}, "mtime": 12345,
+        }).status_code == 422
+        assert client.post("/api/agent-modes/save", json={
+            "document": {"default": "code", "agents": {}}, "mtime": True,
+        }).status_code == 422
+        assert not _modes_file(mode_root).exists()
+
+    def test_a_save_while_a_chat_reply_streams_is_409(
+        self, client, mode_root, mode_backups
+    ):
+        # The one place the streaming rule is written, applied to this pair like
+        # every other browser write: a reply is the only other writer.
+        _write_modes(mode_root, _modes_document({"code": {"label": "Code"}}))
+        token = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        before = _modes_file(mode_root).read_text(encoding="utf-8")
+        cancel_event = threading.Event()
+        routes._arm_chat_handle(cancel_event, threading.Event())
+        try:
+            response = client.post("/api/agent-modes/save", json={
+                "document": {"default": "code", "agents": {"code": {"label": "Mine"}}},
+                "mtime": token,
+            })
+            assert response.status_code == 409
+            assert "while a chat reply is streaming" in response.json()["detail"]
+        finally:
+            routes._clear_chat_handle(cancel_event)
+        assert _modes_file(mode_root).read_text(encoding="utf-8") == before
+
+    def test_a_save_is_not_gated_during_a_benchmark_run(
+        self, client, mode_root, mode_backups
+    ):
+        # Pinned so nobody adds the settings routes' run-check here by analogy: a
+        # run never consults a mode, so gating it would be a rule with no race
+        # behind it.
+        _write_modes(mode_root, _modes_document({"code": {"label": "Code"}}))
+        token = client.get("/api/agent-modes/document").json()["source"]["mtime"]
+        client.app.state.run_state.status = "running"
+        try:
+            response = client.post("/api/agent-modes/save", json={
+                "document": {
+                    "default": "code",
+                    "agents": {"code": {"label": "Code"},
+                               "reviewer": {"label": "Reviewer"}},
+                },
+                "mtime": token,
+            })
+        finally:
+            client.app.state.run_state.status = "idle"
+        assert response.status_code == 200
+        assert [mode["id"] for mode in response.json()["modes"]] == [
+            "code", "reviewer", modes_defaults.TODO_BUILDER_MODE_ID,
+        ]
+
+    def test_the_document_read_leaves_nothing_behind(self, client, mode_root):
+        before = sorted(p.name for p in mode_root.iterdir())
+        for _ in range(3):
+            assert client.get("/api/agent-modes/document").status_code == 200
+        assert sorted(p.name for p in mode_root.iterdir()) == before
+
+    def test_the_modes_file_stays_unreachable_through_the_editor_surface(
+        self, client, mode_root
+    ):
+        # The pair is a purpose-built route for one file; the reservation stands.
+        agent_modes.ensure_agent_modes_file(str(mode_root))
+        rel = f"{agent_modes.POLICY_DIRNAME}/{agent_modes.AGENT_MODES_FILENAME}"
+        read = client.get("/api/fs/file", params={"path": rel})
+        assert read.status_code == 404
+        assert "does not exist" in read.json()["detail"]
+        assert "systemMessage" not in read.text
+
+        tree = client.get("/api/fs/tree", params={"path": agent_modes.POLICY_DIRNAME})
+        assert tree.status_code in (404, 422)
+        assert "entries" not in tree.json()
+
+        # A mutation is the one answer that *names* the rule (the same shape
+        # ``tests/test_agent_modes_seed.py`` pins for a create), and it changes
+        # nothing: the seeded bytes are still there, unedited.
+        before = _modes_file(mode_root).read_text(encoding="utf-8")
+        save = client.put("/api/fs/file", json={"path": rel, "text": "x\n"})
+        assert save.status_code == 422
+        assert agent_modes.POLICY_DIRNAME in save.json()["detail"]
+        assert _modes_file(mode_root).read_text(encoding="utf-8") == before
 
 
 class _ChatHubDouble:
